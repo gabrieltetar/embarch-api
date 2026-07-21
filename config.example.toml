@@ -1,0 +1,47 @@
+# Example embarch-api config. Copy this to a real path (e.g. ~/.config/embarch/api.toml),
+# fill in the real EMBARCH_TOKEN, and pass it via `--config <path>` or the
+# EMBARCH_API_CONFIG env var. Do not commit a copy of this file with a real
+# token inline — use token_env instead, or chmod 600 it and keep it out of git.
+
+[core]
+base_url = "http://127.0.0.1:4884"
+# Either inline the token (then chmod 600 this file and gitignore it), or
+# point at an env var name so the secret never has to live in the file:
+# token = "same-value-as-Core's-EMBARCH_TOKEN"
+token_env = "EMBARCH_TOKEN"
+status_timeout_secs = 10
+reset_timeout_secs = 10
+flash_timeout_secs = 120
+serial_timeout_secs = 15
+
+# Example project #1: Zephyr/west-based board.
+# Board arg and artifact path below are the standard `west build` layout
+# (CMakeCache.txt / build/zephyr/zephyr.hex).
+[[projects]]
+name = "my-nrf-project"
+source_path = "/path/to/my-nrf-project"
+build_cwd = "app/firmware"
+build_command = ["west", "build", "-b", "my_board@1/nrf54l15/cpuapp"]
+artifact_path = "build/zephyr/zephyr.hex"
+# Confirm the exact probe-rs target name, e.g. via
+# `probe-rs chip list | grep -i nrf54`.
+chip = "nRF54L15"
+flash_format = "hex"
+build_timeout_secs = 900
+# Optional: only needed when embarch-core runs on a different machine/OS than
+# the build (e.g. Core on Windows, build here in WSL2). Windows-visible UNC
+# form of the same artifact file, sent to Core's /flash instead of the
+# WSL2-local artifact_path above. When unset, behavior is unchanged.
+# artifact_path_for_core = "\\\\wsl.localhost\\Ubuntu-24.04\\home\\myuser\\my-nrf-project\\app\\firmware\\build\\zephyr\\zephyr.hex"
+
+# Example project #2: also Zephyr/west-based, different chip family.
+[[projects]]
+name = "my-stm32-project"
+source_path = "/path/to/my-stm32-project"
+build_command = ["west", "build", "-b", "my_other_board"]
+artifact_path = "build/zephyr/zephyr.hex"
+# Confirm the exact probe-rs target name, e.g. via
+# `probe-rs chip list | grep -i stm32f446`.
+chip = "STM32F446ZE"
+flash_format = "hex"
+build_timeout_secs = 900
