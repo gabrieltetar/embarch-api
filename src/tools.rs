@@ -171,7 +171,9 @@ impl EmbarchApi {
             Err(e) => return Err(e),
         };
 
-        let path = firmware_path.unwrap_or_else(|| project.resolved_artifact_path().display().to_string());
+        let path = firmware_path
+            .or_else(|| project.artifact_path_for_core.clone())
+            .unwrap_or_else(|| project.resolved_artifact_path().display().to_string());
 
         match self.core.flash(&project.chip, &path, &project.flash_format).await {
             Ok(resp) => Self::ok_json(serde_json::json!({
@@ -219,9 +221,13 @@ impl EmbarchApi {
         }
 
         let artifact_path = outcome.artifact_path.display().to_string();
+        let core_firmware_path = project
+            .artifact_path_for_core
+            .clone()
+            .unwrap_or_else(|| artifact_path.clone());
         match self
             .core
-            .flash(&project.chip, &artifact_path, &project.flash_format)
+            .flash(&project.chip, &core_firmware_path, &project.flash_format)
             .await
         {
             Ok(resp) => Self::ok_json(serde_json::json!({
@@ -229,7 +235,7 @@ impl EmbarchApi {
                 "build": build_json,
                 "flashed": resp.flashed,
                 "chip": resp.chip,
-                "firmware_path": artifact_path,
+                "firmware_path": core_firmware_path,
             })),
             Err(e) => Self::err_text(format!(
                 "build succeeded but flash failed for '{}': {e:#}",

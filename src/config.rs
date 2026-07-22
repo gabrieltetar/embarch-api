@@ -37,18 +37,13 @@ pub struct CoreConfig {
 }
 
 impl CoreConfig {
-    /// Resolve the bearer token from either the inline `token` field or the
-    /// environment variable named by `token_env`. `token_env` wins if both
-    /// are set, so a secret never has to live in the file at all.
+    /// Resolve the bearer token: `token_env` wins if set, then inline
+    /// `token`, then the machine-wide token file embarch-core generates
+    /// (see `token_discovery`) — so a secret never has to live in the
+    /// config file at all, and a fresh embarch-core can be discovered with
+    /// no config changes.
     pub fn resolve_token(&self) -> Result<String> {
-        if let Some(var) = &self.token_env {
-            return std::env::var(var)
-                .with_context(|| format!("token_env '{var}' is set in config but not in the environment"));
-        }
-        if let Some(token) = &self.token {
-            return Ok(token.clone());
-        }
-        bail!("[core] config has neither `token` nor `token_env` set")
+        crate::token_discovery::resolve_token(self.token.clone(), self.token_env.clone())
     }
 }
 
@@ -70,6 +65,8 @@ pub struct ProjectConfig {
     pub serial_port: Option<String>,
     #[serde(default)]
     pub serial_baud: Option<u32>,
+    #[serde(default)]
+    pub artifact_path_for_core: Option<String>,
 }
 
 impl ProjectConfig {
