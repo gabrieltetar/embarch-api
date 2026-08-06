@@ -7,7 +7,7 @@ Part of the [EmbArch](https://github.com/gabrieltetar/embarch-doc) suite — a s
 ## What it does
 
 - **MCP server** (stdio transport): exposes `list_projects`, `status`, `build`, `flash`, `build_and_flash`, `reset`, and `serial_log` as MCP tools, for any MCP client — Claude Code included.
-- **CLI**: the identical six operations, invoked directly by a human at a terminal (`embarch-api build my-project`, `embarch-api flash my-project --firmware-path ...`, etc.) — no agent required.
+- **CLI**: the identical operations, invoked directly by a human at a terminal (kebab-case there — `list-projects`, `build-and-flash`, `serial-log` — while the MCP tools above are snake_case) (`embarch-api build my-project`, `embarch-api flash my-project --firmware-path ...`, etc.) — no agent required.
 - **Build orchestrator**: runs a project's configured build command (`west`, `arduino-cli`, or anything else — it's toolchain-agnostic) as a subprocess, checks the resulting artifact is actually fresh, and hands it to Core's `/flash`.
 
 Both front-ends — MCP and CLI — converge on the same underlying modules; there's no privileged or special code path for either.
@@ -46,9 +46,9 @@ embarch-api --config ~/.config/embarch/api.toml
 Run directly from a terminal, no MCP client involved:
 
 ```sh
-embarch-api --config ~/.config/embarch/api.toml list_projects
+embarch-api --config ~/.config/embarch/api.toml list-projects
 embarch-api --config ~/.config/embarch/api.toml build my-project
-embarch-api --config ~/.config/embarch/api.toml build_and_flash my-project
+embarch-api --config ~/.config/embarch/api.toml build-and-flash my-project
 embarch-api --config ~/.config/embarch/api.toml --json build my-project   # machine-readable output
 ```
 

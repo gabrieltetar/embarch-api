@@ -4,7 +4,18 @@
 # token inline — use token_env instead, or chmod 600 it and keep it out of git.
 
 [core]
-base_url = "http://127.0.0.1:4884"
+# Either an explicit URL, or the literal "auto" to discover Core at first use.
+# Prefer "auto" unless you have a reason not to: it probes loopback, then the
+# Windows host gateway when running under WSL2, then `host` below — so a WSL2
+# restart changing that gateway IP costs you nothing. An explicit URL is still
+# honored as-is and always wins.
+base_url = "auto"
+# base_url = "http://127.0.0.1:4884"
+#
+# Only consulted by base_url = "auto": Core on a genuinely separate machine,
+# probed last, after the local candidates.
+# host = "bench.local"
+# port = 4884
 # Either inline the token (then chmod 600 this file and gitignore it), or
 # point at an env var name so the secret never has to live in the file:
 # token = "same-value-as-Core's-EMBARCH_TOKEN"
@@ -14,14 +25,21 @@ reset_timeout_secs = 10
 flash_timeout_secs = 120
 serial_timeout_secs = 15
 
-# Example project #1: Zephyr/west-based board.
+# Example project #1: Zephyr/west-based board, app source in a subdirectory.
 # Board arg and artifact path below are the standard `west build` layout
-# (CMakeCache.txt / build/zephyr/zephyr.hex).
+# (CMakeCache.txt / build/zephyr/zephyr.hex). Only set build_cwd if your west
+# invocation is actually cd'ed into that subdirectory — west's default build
+# dir is <cwd>/build, so if you instead run `west build ... <app-path>` from
+# source_path (passing the app dir as an argument, as below), leave build_cwd
+# unset: the artifact still lands under source_path/build, not
+# source_path/<app-path>/build. Confirm which pattern your own build actually
+# uses (see e.g. build/build_info.yml's recorded `west.command` after a real
+# build) rather than assuming — a mismatch here silently makes
+# build_and_flash/flash never find a fresh artifact.
 [[projects]]
 name = "my-nrf-project"
 source_path = "/path/to/my-nrf-project"
-build_cwd = "app/firmware"
-build_command = ["west", "build", "-b", "my_board@1/nrf54l15/cpuapp"]
+build_command = ["west", "build", "-b", "my_board@1/nrf54l15/cpuapp", "app/firmware"]
 artifact_path = "build/zephyr/zephyr.hex"
 # Confirm the exact probe-rs target name, e.g. via
 # `probe-rs chip list | grep -i nrf54`.

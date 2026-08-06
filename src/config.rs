@@ -19,9 +19,24 @@ fn default_build_timeout_secs() -> u64 {
     300
 }
 
+fn default_core_port() -> u16 {
+    crate::topology::DEFAULT_CORE_PORT
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CoreConfig {
+    /// Core's base URL, or the literal `"auto"` to resolve it at first use
+    /// (design.md §3.11). `"auto"` exists because the WSL2 host-gateway
+    /// address changes on every WSL restart, so any literal IP written here
+    /// is guaranteed to go stale — and did, before this field accepted it.
     pub base_url: String,
+    /// Only consulted by `base_url = "auto"`, as its last candidate: a Core
+    /// on a genuinely separate machine.
+    #[serde(default)]
+    pub host: Option<String>,
+    /// Only consulted by `base_url = "auto"`, when building candidates.
+    #[serde(default = "default_core_port")]
+    pub port: u16,
     #[serde(default)]
     pub token: Option<String>,
     #[serde(default)]
@@ -44,6 +59,11 @@ impl CoreConfig {
     /// no config changes.
     pub fn resolve_token(&self) -> Result<String> {
         crate::token_discovery::resolve_token(self.token.clone(), self.token_env.clone())
+    }
+
+    /// Is Core's address to be discovered rather than declared?
+    pub fn is_auto(&self) -> bool {
+        self.base_url.trim().eq_ignore_ascii_case("auto")
     }
 }
 

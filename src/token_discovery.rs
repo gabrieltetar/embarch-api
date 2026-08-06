@@ -11,8 +11,16 @@ use std::sync::OnceLock;
 ///    to the Windows-side file when running under WSL2.
 pub fn resolve_token(explicit_token: Option<String>, explicit_token_env: Option<String>) -> Result<String> {
     if let Some(var) = &explicit_token_env {
-        return std::env::var(var)
-            .with_context(|| format!("token_env '{var}' is set in config but not in the environment"));
+        if let Ok(value) = std::env::var(var) {
+            return Ok(value);
+        }
+        // token_env configured but not actually present in the environment
+        // does not resolve — per embarch-token.md §2 / milestone-2.md §3.1,
+        // that falls through to `token` and then file discovery below,
+        // rather than failing immediately. A stale `token_env` left over in
+        // config (e.g. from before the machine-wide token file existed)
+        // would otherwise permanently block the fallback this milestone
+        // exists to provide.
     }
     if let Some(token) = explicit_token {
         return Ok(token);
@@ -172,6 +180,19 @@ mod tests {
     #[test]
     fn inline_token_used_when_no_env_set() {
         let result = resolve_token(Some("inline-token".to_string()), None);
+        assert_eq!(result.unwrap(), "inline-token");
+    }
+
+    #[test]
+    fn falls_through_to_inline_token_when_token_env_not_present() {
+        // token_env names a variable that isn't actually set in the
+        // environment — this must fall through to the inline token, not
+        // fail immediately (the bug this test guards against).
+        std::env::remove_var("EMBARCH_TEST_TOKEN_ABSENT");
+        let result = resolve_token(
+            Some("inline-token".to_string()),
+            Some("EMBARCH_TEST_TOKEN_ABSENT".to_string()),
+        );
         assert_eq!(result.unwrap(), "inline-token");
     }
 

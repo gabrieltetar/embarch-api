@@ -2,8 +2,11 @@ mod build;
 mod cli;
 mod config;
 mod core_client;
+mod env;
+mod probe;
 mod token_discovery;
 mod tools;
+mod topology;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -92,9 +95,14 @@ async fn main() -> Result<()> {
     }
 
     tracing::info!(
-        "embarch-api starting: {} project(s) configured, core base_url={}",
+        "embarch-api starting: {} project(s) configured, core base_url={}{}",
         config.projects.len(),
-        config.core.base_url
+        config.core.base_url,
+        if config.core.is_auto() {
+            " (resolved on first use)"
+        } else {
+            ""
+        }
     );
 
     let server = EmbarchApi::new(Arc::new(config), core);

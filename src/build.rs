@@ -14,6 +14,15 @@ use crate::config::ProjectConfig;
 /// build log doesn't blow up the tool response.
 const OUTPUT_CAP_BYTES: usize = 64 * 1024;
 
+/// Tolerance absorbing wall-clock read jitter between the parent's
+/// pre-spawn `SystemTime::now()` and whatever clock stamped the child's
+/// file write — observed on WSL2 as the child's mtime landing a few ms
+/// *before* the parent's own timestamp (Hyper-V/WSL2 clock-sync jitter
+/// between two reads taken microseconds apart, not mtime-resolution
+/// truncation). A build takes at least seconds, so this grace can't mask a
+/// genuinely stale artifact from a previous run.
+const FRESHNESS_CLOCK_GRACE: Duration = Duration::from_millis(500);
+
 pub struct BuildOutcome {
     pub timed_out: bool,
     pub exit_code: Option<i32>,
@@ -172,7 +181,10 @@ fn artifact_is_fresh(path: &PathBuf, existed_before: bool, build_start: SystemTi
         return true;
     }
     match std::fs::metadata(path).and_then(|m| m.modified()) {
-        Ok(mtime) => mtime >= build_start,
+        Ok(mtime) => match mtime.checked_add(FRESHNESS_CLOCK_GRACE) {
+            Some(grace_adjusted_mtime) => grace_adjusted_mtime >= build_start,
+            None => true,
+        },
         Err(_) => false,
     }
 }

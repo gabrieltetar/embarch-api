@@ -1,12 +1,33 @@
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::OnceCell;
 
 use crate::config::CoreConfig;
+use crate::topology::{self, ProbeOutcome};
+
+/// Where Core's address comes from.
+enum Address {
+    /// Declared in config, used as-is.
+    Declared(String),
+    /// `base_url = "auto"` — discovered by probing (config.rs, design.md
+    /// §3.11). Deliberately not resolved at construction time: the startup
+    /// connectivity check is MCP-mode-only and `list_projects` is meant to
+    /// work with Core down, both of which eager resolution would break.
+    Auto {
+        host: Option<String>,
+        port: u16,
+    },
+}
 
 #[derive(Clone)]
 pub struct CoreClient {
-    base_url: String,
+    address: Arc<Address>,
+    /// Resolution happens at most once per process. Not persisted anywhere:
+    /// the next invocation re-resolves, which is exactly what makes a changed
+    /// WSL2 gateway IP a non-event.
+    resolved: Arc<OnceCell<String>>,
     token: String,
     client: reqwest::Client,
     status_timeout: Duration,
@@ -65,8 +86,18 @@ impl CoreClient {
             .build()
             .context("failed to build reqwest client")?;
 
+        let address = if config.is_auto() {
+            Address::Auto {
+                host: config.host.clone(),
+                port: config.port,
+            }
+        } else {
+            Address::Declared(config.base_url.trim_end_matches('/').to_string())
+        };
+
         Ok(CoreClient {
-            base_url: config.base_url.trim_end_matches('/').to_string(),
+            address: Arc::new(address),
+            resolved: Arc::new(OnceCell::new()),
             token,
             client,
             status_timeout: Duration::from_secs(config.status_timeout_secs),
@@ -74,6 +105,71 @@ impl CoreClient {
             flash_timeout: Duration::from_secs(config.flash_timeout_secs),
             serial_timeout: Duration::from_secs(config.serial_timeout_secs),
         })
+    }
+
+    /// Core's base URL, discovering it on first use if `base_url = "auto"`.
+    ///
+    /// The failure message names every candidate tried and what each one
+    /// said, because "couldn't find Core" is useless on its own — the useful
+    /// information is whether nothing was listening, or something answered
+    /// and wasn't Core.
+    async fn base_url(&self) -> Result<&str> {
+        let url = self
+            .resolved
+            .get_or_try_init(|| async {
+                let (host, port) = match self.address.as_ref() {
+                    Address::Declared(url) => return Ok::<String, anyhow::Error>(url.clone()),
+                    Address::Auto { host, port } => (host.as_deref(), *port),
+                };
+
+                let under_wsl2 = crate::env::under_wsl2();
+                let gateway = if under_wsl2 {
+                    crate::env::default_gateway()
+                } else {
+                    None
+                };
+                let candidates =
+                    topology::candidates(under_wsl2, gateway.as_deref(), host, port);
+
+                let client = &self.client;
+                let attempts = topology::resolve(&candidates, move |url| async move {
+                    crate::probe::probe_core(client, &url).await
+                })
+                .await;
+
+                match topology::winner(&attempts) {
+                    Some(found) => {
+                        tracing::info!(
+                            "embarch-core found at {} ({})",
+                            found.candidate.base_url,
+                            found.candidate.class.as_str()
+                        );
+                        Ok(found.candidate.base_url.clone())
+                    }
+                    None => {
+                        let tried = attempts
+                            .iter()
+                            .map(|a| {
+                                let why = match a.outcome {
+                                    ProbeOutcome::Unreachable => "nothing listening".to_string(),
+                                    ProbeOutcome::NotCore { status } => format!(
+                                        "answered HTTP {status}, but isn't embarch-core"
+                                    ),
+                                    ProbeOutcome::Core { .. } => unreachable!("a hit would win"),
+                                };
+                                format!("\n  {} ({}) — {why}", a.candidate.base_url, a.candidate.class.as_str())
+                            })
+                            .collect::<String>();
+                        Err(anyhow!(
+                            "embarch-core not found (base_url = \"auto\"). Tried:{tried}\n\
+                             Start embarch-core, or set [core].base_url to an explicit URL \
+                             (or [core].host, for a Core on another machine)."
+                        ))
+                    }
+                }
+            })
+            .await?;
+        Ok(url.as_str())
     }
 
     /// Core's error responses are plain-text bodies (axum's IntoResponse for
@@ -107,12 +203,12 @@ impl CoreClient {
     }
 
     pub async fn status(&self) -> Result<StatusResponse> {
-        let url = format!("{}/status", self.base_url);
+        let url = format!("{}/status", self.base_url().await?);
         self.send(self.client.get(url), self.status_timeout).await
     }
 
     pub async fn flash(&self, chip: &str, firmware_path: &str, format: &str) -> Result<FlashResponse> {
-        let url = format!("{}/flash", self.base_url);
+        let url = format!("{}/flash", self.base_url().await?);
         let body = FlashRequest {
             chip,
             firmware_path,
@@ -123,7 +219,7 @@ impl CoreClient {
     }
 
     pub async fn reset(&self, chip: &str) -> Result<ResetResponse> {
-        let url = format!("{}/reset", self.base_url);
+        let url = format!("{}/reset", self.base_url().await?);
         let body = ResetRequest { chip };
         self.send(self.client.post(url).json(&body), self.reset_timeout)
             .await
@@ -135,7 +231,7 @@ impl CoreClient {
         baud: u32,
         duration_ms: u64,
     ) -> Result<SerialLogResponse> {
-        let url = format!("{}/serial-log", self.base_url);
+        let url = format!("{}/serial-log", self.base_url().await?);
         let request = self
             .client
             .get(url)
