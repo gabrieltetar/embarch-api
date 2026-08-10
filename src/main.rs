@@ -19,7 +19,7 @@ use core_client::CoreClient;
 use tools::EmbarchApi;
 
 #[derive(Parser)]
-#[command(name = "embarch-api")]
+#[command(name = "embarch-api", version)]
 #[command(about = "MCP server + build orchestrator sitting between Claude Code and embarch-core")]
 struct Cli {
     /// Path to the TOML config file. Falls back to the EMBARCH_API_CONFIG
