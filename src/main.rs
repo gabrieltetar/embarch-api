@@ -65,6 +65,14 @@ pub struct TargetSelection {
     /// snippets" — see `list-targets` for what's available.
     #[arg(long = "snippet")]
     pub snippet: Vec<String>,
+    /// An extra `west build` flag (e.g. `-p`, `always`, passed as two
+    /// separate --extra-arg occurrences); may be given more than once. Only
+    /// meaningful for a discovery = "zephyr-west" project. Opaque passthrough
+    /// — unlike snippets, not validated against anything. Omitted entirely
+    /// falls back to the project's configured default_extra_args, not "no
+    /// extra args".
+    #[arg(long = "extra-arg")]
+    pub extra_arg: Vec<String>,
 }
 
 /// CLI subcommand surface (design.md §3.10/§5a) — mirrors embarch-api's MCP

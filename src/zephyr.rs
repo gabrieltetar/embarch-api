@@ -154,13 +154,18 @@ impl Target {
     /// Per-target build directory name, satisfying
     /// `embarch-umbrella/design.md` §3 decision 10's no-shared-build-dir
     /// rule without a human naming each one:
-    /// `<board>-<variant-or-'default'>-<revision-or-'none'>-<app>[-<snippets>]`.
+    /// `<board>-<variant-or-'default'>-<revision-or-'none'>-<app>[-<snippets>][-args<hash>]`.
     /// `snippets` (already sorted+deduped by the caller — `resolve.rs`) is
     /// folded in here too: two builds of the same (board, variant, revision,
     /// app) with a different `-S` selection are different CMake
     /// configurations and must not share a build directory, same reasoning
-    /// as every other axis in this name.
-    pub fn build_dir_name(&self, snippets: &[String]) -> String {
+    /// as every other axis in this name. `extra_args` (arbitrary passthrough
+    /// `west build` flags — see `build_command`) is folded in via a hash
+    /// rather than joined verbatim: unlike snippet names, an arbitrary flag
+    /// can contain characters unsafe in a directory name (`=`, `/`, quotes),
+    /// and preserves caller-given order (flag order can be meaningful,
+    /// unlike snippets, so it isn't sorted first).
+    pub fn build_dir_name(&self, snippets: &[String], extra_args: &[String]) -> String {
         let mut name = format!(
             "{}-{}-{}-{}",
             self.board,
@@ -171,6 +176,12 @@ impl Target {
         if !snippets.is_empty() {
             name.push('-');
             name.push_str(&snippets.join("_"));
+        }
+        if !extra_args.is_empty() {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            extra_args.hash(&mut hasher);
+            name.push_str(&format!("-args{:016x}", hasher.finish()));
         }
         name
     }
@@ -576,24 +587,30 @@ pub fn available_snippets(source_path: &Path, app: &str) -> Vec<String> {
     scan_snippets(source_path, app)
 }
 
-/// The `west build` argv for a resolved target: `west build -b
-/// <qualifier> -S <snippet> [-S <snippet> ...] -d <build_dir> <app_path>`.
-/// One repeated `-S` per snippet — confirmed against the real `west build`
-/// argument parser (`-S`/`--snippet`, `action='append'`), not a single
-/// comma-joined value.
+/// The `west build` argv for a resolved target: `west build [extra_args...]
+/// -b <qualifier> -S <snippet> [-S <snippet> ...] -d <build_dir>
+/// <app_path>`. One repeated `-S` per snippet — confirmed against the real
+/// `west build` argument parser (`-S`/`--snippet`, `action='append'`), not a
+/// single comma-joined value. `extra_args` is opaque, unvalidated passthrough
+/// — arbitrary `west build` flags (e.g. `-p always` for a pristine rebuild),
+/// the same posture `discovery = "static"`'s hand-authored `build_command`
+/// already has for its whole argv (decision 5): there's no fixed set of
+/// "valid" west flags to check against, unlike `snippets`, which really can
+/// be validated against real files. Inserted right after the `build`
+/// subcommand, matching the shape a real hand-run `west build -p always -b
+/// ...` invocation has, not appended at the end.
 pub fn build_command(
     west_binary: &Path,
     target: &Target,
     snippets: &[String],
+    extra_args: &[String],
     build_dir: &Path,
     app_path: &Path,
 ) -> Vec<String> {
-    let mut cmd = vec![
-        west_binary.display().to_string(),
-        "build".to_string(),
-        "-b".to_string(),
-        target.board_qualifier(),
-    ];
+    let mut cmd = vec![west_binary.display().to_string(), "build".to_string()];
+    cmd.extend(extra_args.iter().cloned());
+    cmd.push("-b".to_string());
+    cmd.push(target.board_qualifier());
     for snippet in snippets {
         cmd.push("-S".to_string());
         cmd.push(snippet.clone());
@@ -977,7 +994,7 @@ board:
             revision: Some("evt1".into()),
             app: "widget".into(),
         };
-        assert_eq!(a.build_dir_name(&[]), "roadrunner-os_5led-evt1-widget");
+        assert_eq!(a.build_dir_name(&[], &[]), "roadrunner-os_5led-evt1-widget");
     }
 
     #[test]
@@ -992,10 +1009,65 @@ board:
         };
         let snippets = vec!["ble-shell".to_string(), "wdt31".to_string()];
         assert_eq!(
-            a.build_dir_name(&snippets),
+            a.build_dir_name(&snippets, &[]),
             "roadrunner-os_5led-evt1-widget-ble-shell_wdt31"
         );
-        assert_ne!(a.build_dir_name(&snippets), a.build_dir_name(&[]));
+        assert_ne!(a.build_dir_name(&snippets, &[]), a.build_dir_name(&[], &[]));
+    }
+
+    #[test]
+    fn build_dir_name_folds_in_extra_args_so_they_dont_share_a_build_dir() {
+        let a = Target {
+            board: "roadrunner".into(),
+            soc: "nrf54l15".into(),
+            cpucluster: Some("cpuapp".into()),
+            variant: None,
+            revision: Some("2".into()),
+            app: "widget".into(),
+        };
+        let with_pristine = vec!["-p".to_string(), "always".to_string()];
+        assert_ne!(a.build_dir_name(&[], &with_pristine), a.build_dir_name(&[], &[]));
+        // Stable for the same input.
+        assert_eq!(a.build_dir_name(&[], &with_pristine), a.build_dir_name(&[], &with_pristine));
+    }
+
+    #[test]
+    fn build_command_places_extra_args_right_after_the_build_subcommand() {
+        let t = Target {
+            board: "dut_dev".into(),
+            soc: "nrf54l15".into(),
+            cpucluster: Some("cpuapp".into()),
+            variant: None,
+            revision: Some("7".into()),
+            app: "widget".into(),
+        };
+        let cmd = build_command(
+            Path::new("/venv/bin/west"),
+            &t,
+            &["ble-shell".to_string()],
+            &["-p".to_string(), "always".to_string()],
+            Path::new("/repo/build"),
+            Path::new("/repo/app/widget"),
+        );
+        // Matches the real, hand-run invocation this feature is modeled on:
+        // `west build -p always -b dut_dev@7/nrf54l15/cpuapp -S ble-shell -d
+        // <dir> <app>`.
+        assert_eq!(
+            cmd,
+            vec![
+                "/venv/bin/west",
+                "build",
+                "-p",
+                "always",
+                "-b",
+                "dut_dev@7/nrf54l15/cpuapp",
+                "-S",
+                "ble-shell",
+                "-d",
+                "/repo/build",
+                "/repo/app/widget",
+            ]
+        );
     }
 
     #[test]

@@ -153,6 +153,15 @@ pub struct ProjectConfig {
     /// remembered to pass `snippets` by hand every time.
     #[serde(default)]
     pub default_snippets: Vec<String>,
+    /// Only meaningful for `discovery = "zephyr-west"`: extra `west build`
+    /// flags (e.g. `-p always` for a pristine rebuild) applied when a call
+    /// omits `extra_args` entirely (`resolve::Selection`). Opaque, unlike
+    /// `default_snippets` — there's no real-file list to validate arbitrary
+    /// flags against, so these are passed straight through to `west build`,
+    /// same posture `discovery = "static"`'s `build_command` already has for
+    /// its whole argv.
+    #[serde(default)]
+    pub default_extra_args: Vec<String>,
 }
 
 impl ProjectConfig {
