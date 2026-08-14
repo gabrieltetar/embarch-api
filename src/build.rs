@@ -8,11 +8,29 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::config::ProjectConfig;
-
 /// Cap on captured stdout/stderr text handed back through MCP, so a runaway
 /// build log doesn't blow up the tool response.
 const OUTPUT_CAP_BYTES: usize = 64 * 1024;
+
+/// Everything a build actually needs to run, independent of whether it came
+/// from a `discovery = "static"` project (today's fully-static schema) or a
+/// `discovery = "zephyr-west"` project's live, per-call target resolution
+/// (`resolve.rs`, `design.md` §3 decision 12) — `build.rs` itself doesn't
+/// know or care which produced it.
+pub struct BuildPlan {
+    /// Locks per distinct build output, not just per project: two different
+    /// targets of the same `zephyr-west` project (different board/variant)
+    /// build into different directories and shouldn't serialize against
+    /// each other, only against themselves.
+    pub lock_key: String,
+    /// Working directory the build command runs in.
+    pub cwd: PathBuf,
+    /// Full argv, program included (split via `.split_first()` below).
+    pub command: Vec<String>,
+    pub artifact_path: PathBuf,
+    pub timeout_secs: u64,
+    pub env: HashMap<String, String>,
+}
 
 /// Tolerance absorbing wall-clock read jitter between the parent's
 /// pre-spawn `SystemTime::now()` and whatever clock stamped the child's
@@ -56,18 +74,18 @@ impl BuildLocks {
         BuildLocks::default()
     }
 
-    fn lock_for(&self, project: &str) -> Arc<AsyncMutex<()>> {
+    fn lock_for(&self, key: &str) -> Arc<AsyncMutex<()>> {
         let mut locks = self.locks.lock().expect("build locks poisoned");
         locks
-            .entry(project.to_string())
+            .entry(key.to_string())
             .or_insert_with(|| Arc::new(AsyncMutex::new(())))
             .clone()
     }
 
-    pub async fn run_build(&self, project: &ProjectConfig) -> Result<BuildOutcome> {
-        let project_lock = self.lock_for(&project.name);
-        let _guard = project_lock.lock().await;
-        run_build_locked(project).await
+    pub async fn run_build(&self, plan: &BuildPlan) -> Result<BuildOutcome> {
+        let lock = self.lock_for(&plan.lock_key);
+        let _guard = lock.lock().await;
+        run_build_locked(plan).await
     }
 }
 
@@ -94,30 +112,25 @@ async fn drain_stream<R: tokio::io::AsyncRead + Unpin>(reader: R) -> String {
     out
 }
 
-async fn run_build_locked(project: &ProjectConfig) -> Result<BuildOutcome> {
-    let build_dir = project.build_dir();
-    if !build_dir.exists() {
-        anyhow::bail!(
-            "build directory {} does not exist for project '{}'",
-            build_dir.display(),
-            project.name
-        );
+async fn run_build_locked(plan: &BuildPlan) -> Result<BuildOutcome> {
+    if !plan.cwd.exists() {
+        anyhow::bail!("build working directory {} does not exist", plan.cwd.display());
     }
 
-    let artifact_path = project.resolved_artifact_path();
+    let artifact_path = plan.artifact_path.clone();
     let artifact_existed_before = artifact_path.exists();
     let build_start = SystemTime::now();
 
-    let (program, args) = project
-        .build_command
+    let (program, args) = plan
+        .command
         .split_first()
-        .context("build_command must have at least one element")?;
+        .context("build command must have at least one element")?;
 
     let mut command = Command::new(program);
     command
         .args(args)
-        .current_dir(&build_dir)
-        .envs(&project.env)
+        .current_dir(&plan.cwd)
+        .envs(&plan.env)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -132,14 +145,14 @@ async fn run_build_locked(project: &ProjectConfig) -> Result<BuildOutcome> {
 
     let mut child = command
         .spawn()
-        .with_context(|| format!("failed to spawn build command for project '{}'", project.name))?;
+        .with_context(|| format!("failed to spawn build command ({})", plan.lock_key))?;
 
     let stdout = child.stdout.take().expect("stdout was piped");
     let stderr = child.stderr.take().expect("stderr was piped");
     let stdout_task = tokio::spawn(drain_stream(stdout));
     let stderr_task = tokio::spawn(drain_stream(stderr));
 
-    let timeout = Duration::from_secs(project.build_timeout_secs);
+    let timeout = Duration::from_secs(plan.timeout_secs);
     let wait_result = tokio::time::timeout(timeout, child.wait()).await;
 
     let timed_out = wait_result.is_err();

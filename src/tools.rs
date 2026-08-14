@@ -7,6 +7,7 @@ use std::sync::Arc;
 use crate::build::{BuildLocks, BuildOutcome};
 use crate::config::{Config, ProjectConfig};
 use crate::core_client::CoreClient;
+use crate::resolve::{self, Selection};
 
 #[derive(Clone)]
 pub struct EmbarchApi {
@@ -67,14 +68,67 @@ pub struct ProjectParams {
     pub project: String,
 }
 
+/// The four `discovery = "zephyr-west"` selection params (`design.md` §3
+/// decision 12), shared by every tool that resolves a build target. Ignored
+/// entirely for a `discovery = "static"` project.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct TargetParams {
+    /// Name of a project from embarch-api's config file.
+    pub project: String,
+    /// Zephyr board name. Only meaningful for a discovery = "zephyr-west"
+    /// project — see `list_targets`.
+    pub board: Option<String>,
+    /// Board variant (e.g. a product LED configuration). Only meaningful for
+    /// a discovery = "zephyr-west" project.
+    pub variant: Option<String>,
+    /// Hardware revision. Only meaningful for a discovery = "zephyr-west"
+    /// project.
+    pub revision: Option<String>,
+    /// App directory name under app/. Only meaningful for a discovery =
+    /// "zephyr-west" project.
+    pub app: Option<String>,
+}
+
+impl TargetParams {
+    fn selection(&self) -> Selection<'_> {
+        Selection {
+            board: self.board.as_deref(),
+            variant: self.variant.as_deref(),
+            revision: self.revision.as_deref(),
+            app: self.app.as_deref(),
+        }
+    }
+}
+
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct FlashParams {
     /// Name of a project from embarch-api's config file.
     pub project: String,
+    /// Zephyr board name. Only meaningful for a discovery = "zephyr-west"
+    /// project.
+    pub board: Option<String>,
+    /// Board variant. Only meaningful for a discovery = "zephyr-west" project.
+    pub variant: Option<String>,
+    /// Hardware revision. Only meaningful for a discovery = "zephyr-west" project.
+    pub revision: Option<String>,
+    /// App directory name under app/. Only meaningful for a discovery =
+    /// "zephyr-west" project.
+    pub app: Option<String>,
     /// Path to a firmware file to flash instead of the project's configured
     /// artifact_path — use this to flash an already-built file without
-    /// rebuilding.
+    /// rebuilding. Bypasses target resolution entirely.
     pub firmware_path: Option<String>,
+}
+
+impl FlashParams {
+    fn selection(&self) -> Selection<'_> {
+        Selection {
+            board: self.board.as_deref(),
+            variant: self.variant.as_deref(),
+            revision: self.revision.as_deref(),
+            app: self.app.as_deref(),
+        }
+    }
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -92,7 +146,7 @@ pub struct SerialLogParams {
 
 #[tool_router]
 impl EmbarchApi {
-    #[tool(description = "List every project configured in embarch-api's config file, with its chip, flash format, and source path.")]
+    #[tool(description = "List every project configured in embarch-api's config file, with its chip, flash format, and source path. chip is omitted for a discovery = \"zephyr-west\" project, since it's resolved per call via list_targets/build/flash instead of stored.")]
     async fn list_projects(&self) -> Result<CallToolResult, McpError> {
         let projects: Vec<_> = self
             .config
@@ -101,6 +155,7 @@ impl EmbarchApi {
             .map(|p| {
                 serde_json::json!({
                     "name": p.name,
+                    "discovery": if p.is_zephyr_west() { "zephyr-west" } else { "static" },
                     "chip": p.chip,
                     "flash_format": p.flash_format,
                     "source_path": p.source_path.display().to_string(),
@@ -109,6 +164,22 @@ impl EmbarchApi {
             })
             .collect();
         Self::ok_json(serde_json::json!({ "projects": projects }))
+    }
+
+    #[tool(description = "List a project's buildable targets. For a discovery = \"zephyr-west\" project: live-scans boards/ and app/ and returns every file-backing-validated (board, soc, cpucluster, variant, revision, app) tuple. For a discovery = \"static\" project with [[projects.targets]] rows: returns those verbatim. Otherwise errors with the TOML shape needed to populate [[projects.targets]] by hand.")]
+    async fn list_targets(
+        &self,
+        Parameters(ProjectParams { project }): Parameters<ProjectParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let project = match self.project(&project) {
+            Ok(p) => p,
+            Err(e) => return Err(e),
+        };
+
+        match resolve::list_targets(project) {
+            Ok(value) => Self::ok_json(value),
+            Err(e) => Self::err_text(format!("{e:#}")),
+        }
     }
 
     #[tool(description = "Get embarch-core's status: whether it's reachable and what debug probes it currently sees.")]
@@ -129,20 +200,26 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Build a configured project by running its configured build command. Does not touch hardware. Use build_and_flash to build and then flash in one call.")]
+    #[tool(description = "Build a configured project by running its build command (configured, or, for a discovery = \"zephyr-west\" project, assembled at call time from board/variant/revision/app). Does not touch hardware. Use build_and_flash to build and then flash in one call.")]
     async fn build(
         &self,
-        Parameters(ProjectParams { project }): Parameters<ProjectParams>,
+        Parameters(params): Parameters<TargetParams>,
     ) -> Result<CallToolResult, McpError> {
-        let project = match self.project(&project) {
+        let project = match self.project(&params.project) {
             Ok(p) => p,
             Err(e) => return Err(e),
         };
 
-        match self.build_locks.run_build(project).await {
+        let resolved = match resolve::resolve(project, params.selection(), &self.core).await {
+            Ok(r) => r,
+            Err(e) => return Self::err_text(format!("{e:#}")),
+        };
+
+        match self.build_locks.run_build(&resolved.plan).await {
             Ok(outcome) => {
                 let mut value = Self::build_outcome_json(&outcome);
                 value["success"] = serde_json::Value::Bool(outcome.build_succeeded());
+                value["target"] = resolved.descriptor.clone();
                 if outcome.build_succeeded() && !outcome.artifact_fresh {
                     value["warning"] = serde_json::Value::String(
                         "build exited 0 but no fresh artifact was found at artifact_path".into(),
@@ -158,28 +235,51 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Flash a firmware artifact via embarch-core. Defaults to the project's configured artifact_path, or pass firmware_path to flash a specific file without rebuilding.")]
+    #[tool(description = "Flash a firmware artifact via embarch-core. Defaults to the resolved artifact_path (configured, or computed at call time for a discovery = \"zephyr-west\" target), or pass firmware_path to flash a specific file without rebuilding — this bypasses target resolution entirely.")]
     async fn flash(
         &self,
-        Parameters(FlashParams {
-            project,
-            firmware_path,
-        }): Parameters<FlashParams>,
+        Parameters(params): Parameters<FlashParams>,
     ) -> Result<CallToolResult, McpError> {
-        let project = match self.project(&project) {
+        let project = match self.project(&params.project) {
             Ok(p) => p,
             Err(e) => return Err(e),
         };
 
-        let path = firmware_path
-            .or_else(|| project.artifact_path_for_core.clone())
-            .unwrap_or_else(|| project.resolved_artifact_path().display().to_string());
+        if let Some(firmware_path) = &params.firmware_path {
+            // Bypasses target resolution entirely — still needs a chip,
+            // which for a zephyr-west project only resolution can provide,
+            // so an override still requires enough of a selection to
+            // resolve one target's chip.
+            let resolved = match resolve::resolve(project, params.selection(), &self.core).await {
+                Ok(r) => r,
+                Err(e) => return Self::err_text(format!("{e:#}")),
+            };
+            return match self.core.flash(&resolved.chip, firmware_path, &project.flash_format).await {
+                Ok(resp) => Self::ok_json(serde_json::json!({
+                    "flashed": resp.flashed,
+                    "chip": resp.chip,
+                    "firmware_path": firmware_path,
+                    "target": resolved.descriptor,
+                })),
+                Err(e) => Self::err_text(format!("flash failed for '{}': {e:#}", project.name)),
+            };
+        }
 
-        match self.core.flash(&project.chip, &path, &project.flash_format).await {
+        let resolved = match resolve::resolve(project, params.selection(), &self.core).await {
+            Ok(r) => r,
+            Err(e) => return Self::err_text(format!("{e:#}")),
+        };
+        let path = resolved
+            .artifact_path_for_core
+            .clone()
+            .unwrap_or_else(|| resolved.plan.artifact_path.display().to_string());
+
+        match self.core.flash(&resolved.chip, &path, &project.flash_format).await {
             Ok(resp) => Self::ok_json(serde_json::json!({
                 "flashed": resp.flashed,
                 "chip": resp.chip,
                 "firmware_path": path,
+                "target": resolved.descriptor,
             })),
             Err(e) => Self::err_text(format!("flash failed for '{}': {e:#}", project.name)),
         }
@@ -188,14 +288,19 @@ impl EmbarchApi {
     #[tool(description = "Build a project and, only if the build succeeds and produces a fresh artifact, flash it via embarch-core. Refuses to flash a stale or failed build.")]
     async fn build_and_flash(
         &self,
-        Parameters(ProjectParams { project }): Parameters<ProjectParams>,
+        Parameters(params): Parameters<TargetParams>,
     ) -> Result<CallToolResult, McpError> {
-        let project = match self.project(&project) {
+        let project = match self.project(&params.project) {
             Ok(p) => p,
             Err(e) => return Err(e),
         };
 
-        let outcome = match self.build_locks.run_build(project).await {
+        let resolved = match resolve::resolve(project, params.selection(), &self.core).await {
+            Ok(r) => r,
+            Err(e) => return Self::err_text(format!("{e:#}")),
+        };
+
+        let outcome = match self.build_locks.run_build(&resolved.plan).await {
             Ok(outcome) => outcome,
             Err(e) => {
                 return Self::err_text(format!(
@@ -205,7 +310,8 @@ impl EmbarchApi {
             }
         };
 
-        let build_json = Self::build_outcome_json(&outcome);
+        let mut build_json = Self::build_outcome_json(&outcome);
+        build_json["target"] = resolved.descriptor.clone();
 
         if !outcome.ready_to_flash() {
             let mut value = build_json;
@@ -221,13 +327,13 @@ impl EmbarchApi {
         }
 
         let artifact_path = outcome.artifact_path.display().to_string();
-        let core_firmware_path = project
+        let core_firmware_path = resolved
             .artifact_path_for_core
             .clone()
             .unwrap_or_else(|| artifact_path.clone());
         match self
             .core
-            .flash(&project.chip, &core_firmware_path, &project.flash_format)
+            .flash(&resolved.chip, &core_firmware_path, &project.flash_format)
             .await
         {
             Ok(resp) => Self::ok_json(serde_json::json!({
@@ -244,18 +350,23 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Reset a project's target chip via embarch-core.")]
+    #[tool(description = "Reset a project's target chip via embarch-core. For a discovery = \"zephyr-west\" project, board/variant/revision/app select which target's chip to reset (extends design.md §3 decision 12's params to reset, for the same reason build/flash need them: there's no single stored chip to fall back to).")]
     async fn reset(
         &self,
-        Parameters(ProjectParams { project }): Parameters<ProjectParams>,
+        Parameters(params): Parameters<TargetParams>,
     ) -> Result<CallToolResult, McpError> {
-        let project = match self.project(&project) {
+        let project = match self.project(&params.project) {
             Ok(p) => p,
             Err(e) => return Err(e),
         };
 
-        match self.core.reset(&project.chip).await {
-            Ok(resp) => Self::ok_json(serde_json::json!({ "reset": resp.reset })),
+        let resolved = match resolve::resolve(project, params.selection(), &self.core).await {
+            Ok(r) => r,
+            Err(e) => return Self::err_text(format!("{e:#}")),
+        };
+
+        match self.core.reset(&resolved.chip).await {
+            Ok(resp) => Self::ok_json(serde_json::json!({ "reset": resp.reset, "target": resolved.descriptor })),
             Err(e) => Self::err_text(format!("reset failed for '{}': {e:#}", project.name)),
         }
     }

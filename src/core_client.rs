@@ -79,6 +79,16 @@ pub struct SerialLogResponse {
     pub lines: Vec<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct ResolveChipRequest<'a> {
+    soc: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResolveChipResponse {
+    chip: String,
+}
+
 impl CoreClient {
     pub fn new(config: &CoreConfig) -> Result<CoreClient> {
         let token = config.resolve_token()?;
@@ -237,5 +247,20 @@ impl CoreClient {
             .get(url)
             .query(&[("port", port), ("baud", &baud.to_string()), ("duration_ms", &duration_ms.to_string())]);
         self.send(request, self.serial_timeout).await
+    }
+
+    /// Resolve a Zephyr SoC name to a probe-rs chip target string via
+    /// Core's `POST /resolve-chip` (`embarch-core/design.md` §3 decision 8) —
+    /// used by a `discovery = "zephyr-west"` project's per-call target
+    /// resolution (`resolve.rs`, `design.md` §3 decision 12), since Core
+    /// owns the one copy of this mapping. Reuses `status_timeout`: this is
+    /// as quick a call as `/status`, no hardware touched on either end.
+    pub async fn resolve_chip(&self, soc: &str) -> Result<String> {
+        let url = format!("{}/resolve-chip", self.base_url().await?);
+        let body = ResolveChipRequest { soc };
+        let resp: ResolveChipResponse = self
+            .send(self.client.post(url).json(&body), self.status_timeout)
+            .await?;
+        Ok(resp.chip)
     }
 }

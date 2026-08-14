@@ -67,15 +67,58 @@ impl CoreConfig {
     }
 }
 
+/// How a project's build command / chip / artifact path are determined
+/// (`design.md` §3 decision 12). `Static` is the default and today's
+/// fully-unchanged schema; `ZephyrWest` defers all of that to a live,
+/// per-call scan (`zephyr.rs`) instead of a hand-maintained config entry.
+#[derive(Debug, Default, Deserialize, PartialEq, Eq, Clone, Copy)]
+#[serde(rename_all = "kebab-case")]
+pub enum Discovery {
+    #[default]
+    Static,
+    ZephyrWest,
+}
+
+/// A hand-authored target row for a `discovery = "static"` project that
+/// wants a selectable menu (`design.md` §3 decision 12's escape hatch) —
+/// `list_targets` returns these verbatim. Each field overrides the
+/// project-level field of the same name when this target is selected;
+/// selection itself is not yet wired into `build`/`flash` (§3's own
+/// `build`/`flash` rows: the four new params are ignored for a `static`
+/// project), so today this only changes what `list_targets` reports.
+#[derive(Debug, Deserialize)]
+pub struct StaticTarget {
+    pub name: String,
+    #[serde(default)]
+    pub build_command: Option<Vec<String>>,
+    #[serde(default)]
+    pub chip: Option<String>,
+    #[serde(default)]
+    pub artifact_path: Option<PathBuf>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ProjectConfig {
     pub name: String,
     pub source_path: PathBuf,
     #[serde(default)]
+    pub discovery: Discovery,
+    #[serde(default)]
     pub build_cwd: Option<PathBuf>,
-    pub build_command: Vec<String>,
-    pub artifact_path: PathBuf,
-    pub chip: String,
+    /// Required when `discovery = "static"` (the default); absent for
+    /// `discovery = "zephyr-west"`, where it's assembled per call instead
+    /// (`zephyr::build_command`).
+    #[serde(default)]
+    pub build_command: Option<Vec<String>>,
+    /// Required when `discovery = "static"`; absent for `zephyr-west`,
+    /// where it's computed per call (`zephyr::artifact_path`).
+    #[serde(default)]
+    pub artifact_path: Option<PathBuf>,
+    /// Required when `discovery = "static"`; absent for `zephyr-west`,
+    /// where it's resolved per call via Core's `POST /resolve-chip`
+    /// (`embarch-core/design.md` §3 decision 8).
+    #[serde(default)]
+    pub chip: Option<String>,
     pub flash_format: String,
     #[serde(default = "default_build_timeout_secs")]
     pub build_timeout_secs: u64,
@@ -87,11 +130,28 @@ pub struct ProjectConfig {
     pub serial_baud: Option<u32>,
     #[serde(default)]
     pub artifact_path_for_core: Option<String>,
+    /// Only meaningful for `discovery = "zephyr-west"`: the `west` binary to
+    /// invoke (often not on bare `PATH` — see `config.example.toml`).
+    #[serde(default)]
+    pub west_binary: Option<PathBuf>,
+    /// Only meaningful for `discovery = "zephyr-west"`: parent directory
+    /// under which each distinct target gets its own build subdirectory
+    /// (`embarch-umbrella/design.md` §3 decision 10's no-shared-build-dir
+    /// rule), named by `zephyr::Target::build_dir_name`.
+    #[serde(default)]
+    pub build_dir_root: Option<PathBuf>,
+    /// Only meaningful for `discovery = "static"`: a hand-authored menu
+    /// `list_targets` can return verbatim (see `StaticTarget`).
+    #[serde(default, rename = "targets")]
+    pub static_targets: Vec<StaticTarget>,
 }
 
 impl ProjectConfig {
     /// The directory the build command should run in: `source_path` joined
-    /// with `build_cwd` if set, else `source_path` itself.
+    /// with `build_cwd` if set, else `source_path` itself. Only meaningful
+    /// for `discovery = "static"` — a `zephyr-west` project's build
+    /// directory is per-target (`zephyr::Target::build_dir_name`), not
+    /// project-wide.
     pub fn build_dir(&self) -> PathBuf {
         match &self.build_cwd {
             Some(cwd) => self.source_path.join(cwd),
@@ -99,9 +159,20 @@ impl ProjectConfig {
         }
     }
 
-    /// The artifact path resolved relative to the build directory.
+    /// The artifact path resolved relative to the build directory. Only
+    /// meaningful for `discovery = "static"`; panics if `artifact_path` is
+    /// unset, which `validate()` already guarantees can't happen for a
+    /// `static` project.
     pub fn resolved_artifact_path(&self) -> PathBuf {
-        self.build_dir().join(&self.artifact_path)
+        self.build_dir().join(
+            self.artifact_path
+                .as_ref()
+                .expect("static project always has artifact_path (validate() enforces this)"),
+        )
+    }
+
+    pub fn is_zephyr_west(&self) -> bool {
+        self.discovery == Discovery::ZephyrWest
     }
 }
 
@@ -147,11 +218,206 @@ impl Config {
                     project.source_path.display()
                 );
             }
-            if project.build_command.is_empty() {
-                bail!("project '{}' has an empty build_command", project.name);
+
+            match project.discovery {
+                Discovery::Static => {
+                    if project.build_command.as_ref().is_none_or(|c| c.is_empty()) {
+                        bail!(
+                            "project '{}' (discovery = \"static\") has no build_command",
+                            project.name
+                        );
+                    }
+                    if project.chip.is_none() {
+                        bail!(
+                            "project '{}' (discovery = \"static\") has no chip",
+                            project.name
+                        );
+                    }
+                    if project.artifact_path.is_none() {
+                        bail!(
+                            "project '{}' (discovery = \"static\") has no artifact_path",
+                            project.name
+                        );
+                    }
+                }
+                Discovery::ZephyrWest => {
+                    if project.west_binary.is_none() {
+                        bail!(
+                            "project '{}' (discovery = \"zephyr-west\") has no west_binary",
+                            project.name
+                        );
+                    }
+                    if project.build_dir_root.is_none() {
+                        bail!(
+                            "project '{}' (discovery = \"zephyr-west\") has no build_dir_root",
+                            project.name
+                        );
+                    }
+                    if project.build_command.is_some()
+                        || project.chip.is_some()
+                        || project.artifact_path.is_some()
+                    {
+                        bail!(
+                            "project '{}' (discovery = \"zephyr-west\") must not set build_command/chip/artifact_path — these are resolved per call instead",
+                            project.name
+                        );
+                    }
+                }
             }
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Minimal tempdir helper, same pattern as `zephyr.rs`'s tests — avoids
+    // pulling in the `tempfile` crate for a handful of directory-existence
+    // checks.
+    struct TempDir(PathBuf);
+    impl TempDir {
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn tempdir() -> TempDir {
+        let mut base = std::env::temp_dir();
+        base.push(format!(
+            "embarch-api-config-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&base).unwrap();
+        TempDir(base)
+    }
+
+    fn write_config(dir: &Path, body: &str) -> Config {
+        let path = dir.join("config.toml");
+        std::fs::write(&path, body).unwrap();
+        Config::load_from_path(&path).expect("config should load")
+    }
+
+    #[test]
+    fn discovery_defaults_to_static_when_omitted() {
+        let dir = tempdir();
+        let config = write_config(
+            dir.path(),
+            &format!(
+                r#"
+[core]
+base_url = "auto"
+token_env = "EMBARCH_TOKEN"
+
+[[projects]]
+name = "p"
+source_path = "{}"
+build_command = ["true"]
+chip = "nRF54L15"
+artifact_path = "out.hex"
+flash_format = "hex"
+"#,
+                dir.path().display()
+            ),
+        );
+        assert_eq!(config.projects[0].discovery, Discovery::Static);
+        assert!(!config.projects[0].is_zephyr_west());
+    }
+
+    #[test]
+    fn static_project_missing_chip_fails_validation() {
+        let dir = tempdir();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            format!(
+                r#"
+[core]
+base_url = "auto"
+token_env = "EMBARCH_TOKEN"
+
+[[projects]]
+name = "p"
+source_path = "{}"
+build_command = ["true"]
+artifact_path = "out.hex"
+flash_format = "hex"
+"#,
+                dir.path().display()
+            ),
+        )
+        .unwrap();
+        let err = Config::load_from_path(&path).unwrap_err();
+        assert!(err.to_string().contains("no chip"), "{err}");
+    }
+
+    #[test]
+    fn zephyr_west_project_setting_chip_fails_validation() {
+        let dir = tempdir();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            format!(
+                r#"
+[core]
+base_url = "auto"
+token_env = "EMBARCH_TOKEN"
+
+[[projects]]
+name = "p"
+source_path = "{}"
+discovery = "zephyr-west"
+west_binary = "west"
+build_dir_root = "{}"
+chip = "nRF54L15"
+flash_format = "hex"
+"#,
+                dir.path().display(),
+                dir.path().display()
+            ),
+        )
+        .unwrap();
+        let err = Config::load_from_path(&path).unwrap_err();
+        assert!(err.to_string().contains("must not set"), "{err}");
+    }
+
+    #[test]
+    fn zephyr_west_project_loads_cleanly_without_static_fields() {
+        let dir = tempdir();
+        let config = write_config(
+            dir.path(),
+            &format!(
+                r#"
+[core]
+base_url = "auto"
+token_env = "EMBARCH_TOKEN"
+
+[[projects]]
+name = "p"
+source_path = "{}"
+discovery = "zephyr-west"
+west_binary = "west"
+build_dir_root = "{}"
+flash_format = "hex"
+"#,
+                dir.path().display(),
+                dir.path().display()
+            ),
+        );
+        let project = &config.projects[0];
+        assert!(project.is_zephyr_west());
+        assert!(project.chip.is_none());
+        assert!(project.build_command.is_none());
+        assert!(project.artifact_path.is_none());
     }
 }
