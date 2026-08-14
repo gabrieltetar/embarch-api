@@ -25,7 +25,8 @@ reset_timeout_secs = 10
 flash_timeout_secs = 120
 serial_timeout_secs = 15
 
-# Example project #1: Zephyr/west-based board, app source in a subdirectory.
+# Example project #1: Zephyr/west-based board, app source in a subdirectory,
+# discovery = "static" (the default — omitted below since it's implicit).
 # Board arg and artifact path below are the standard `west build` layout
 # (CMakeCache.txt / build/zephyr/zephyr.hex). Only set build_cwd if your west
 # invocation is actually cd'ed into that subdirectory — west's default build
@@ -36,6 +37,12 @@ serial_timeout_secs = 15
 # uses (see e.g. build/build_info.yml's recorded `west.command` after a real
 # build) rather than assuming — a mismatch here silently makes
 # build_and_flash/flash never find a fresh artifact.
+#
+# A project shaped like this one (Zephyr/west, one hand-picked board) is a
+# fine, fully-supported way to configure it. If the repo actually has several
+# real boards/variants/revisions worth selecting between at call time instead
+# of one hand-picked combination, see example project #3 below
+# (discovery = "zephyr-west", design.md §3 decision 12) instead.
 [[projects]]
 name = "my-nrf-project"
 source_path = "/path/to/my-nrf-project"
@@ -61,5 +68,27 @@ artifact_path = "build/zephyr/zephyr.hex"
 # Confirm the exact probe-rs target name, e.g. via
 # `probe-rs chip list | grep -i stm32f446`.
 chip = "STM32F446ZE"
+flash_format = "hex"
+build_timeout_secs = 900
+
+# Example project #3: discovery = "zephyr-west" (design.md §3 decision 12) —
+# for a repo with several real boards/variants/hardware-revisions worth
+# selecting between at call time, rather than one hand-picked combination
+# baked into config. Note what's absent compared to projects #1/#2: no
+# build_command, chip, or artifact_path — those are resolved live, per call,
+# from board/variant/revision/app params on build/flash/build_and_flash (see
+# list_targets), validated against what boards/*/*.yml and app/*/ actually
+# declare and back with real revision-suffixed overlay/defconfig files. chip
+# comes from embarch-core's POST /resolve-chip, not a value typed here.
+[[projects]]
+name = "my-multi-board-project"
+source_path = "/path/to/my-multi-board-project"
+discovery = "zephyr-west"
+# west isn't always on bare PATH (e.g. inside a workspace venv) — point at
+# the exact binary this repo's build actually uses.
+west_binary = "/path/to/my-multi-board-project/.venv/bin/west"
+# Parent directory under which each distinct (board, variant, revision, app)
+# target gets its own build subdirectory — never shared between targets.
+build_dir_root = "/path/to/my-multi-board-project/embarch/build"
 flash_format = "hex"
 build_timeout_secs = 900

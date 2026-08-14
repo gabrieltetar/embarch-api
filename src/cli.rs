@@ -1,21 +1,26 @@
 use std::sync::Arc;
 
-use crate::build::{BuildLocks, BuildOutcome};
+use crate::build::BuildOutcome;
 use crate::config::{Config, ProjectConfig};
 use crate::core_client::CoreClient;
-use crate::Commands;
+use crate::resolve::{self, Resolved, Selection};
+use crate::{Commands, TargetSelection};
 
 pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreClient) -> i32 {
     match command {
         Commands::ListProjects => list_projects(&config, json),
+        Commands::ListTargets { project } => list_targets(&config, &project, json),
         Commands::Status => status(&core, json).await,
-        Commands::Build { project } => build(&config, &project, json).await,
+        Commands::Build { project, target } => build(&config, &core, &project, &target, json).await,
         Commands::Flash {
             project,
+            target,
             firmware_path,
-        } => flash(&config, &core, &project, firmware_path, json).await,
-        Commands::BuildAndFlash { project } => build_and_flash(&config, &core, &project, json).await,
-        Commands::Reset { project } => reset(&config, &core, &project, json).await,
+        } => flash(&config, &core, &project, &target, firmware_path, json).await,
+        Commands::BuildAndFlash { project, target } => {
+            build_and_flash(&config, &core, &project, &target, json).await
+        }
+        Commands::Reset { project, target } => reset(&config, &core, &project, &target, json).await,
         Commands::SerialLog {
             project,
             port,
@@ -27,6 +32,33 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
 
 fn lookup_project<'a>(config: &'a Config, name: &str) -> Result<&'a ProjectConfig, String> {
     config.project(name).map_err(|e| e.to_string())
+}
+
+impl TargetSelection {
+    fn selection(&self) -> Selection<'_> {
+        Selection {
+            board: self.board.as_deref(),
+            variant: self.variant.as_deref(),
+            revision: self.revision.as_deref(),
+            app: self.app.as_deref(),
+        }
+    }
+}
+
+async fn resolve_or_exit(
+    config: &Config,
+    core: &CoreClient,
+    project_name: &str,
+    target: &TargetSelection,
+    json: bool,
+) -> Result<Resolved, i32> {
+    let project = match lookup_project(config, project_name) {
+        Ok(p) => p,
+        Err(e) => return Err(error_result(json, e)),
+    };
+    resolve::resolve(project, target.selection(), core)
+        .await
+        .map_err(|e| error_result(json, format!("{e:#}")))
 }
 
 /// Prints `value` (in `--json` mode) or `human` (otherwise) to the right
@@ -69,6 +101,7 @@ fn list_projects(config: &Config, json: bool) -> i32 {
         .map(|p| {
             serde_json::json!({
                 "name": p.name,
+                "discovery": if p.is_zephyr_west() { "zephyr-west" } else { "static" },
                 "chip": p.chip,
                 "flash_format": p.flash_format,
                 "source_path": p.source_path.display().to_string(),
@@ -85,9 +118,10 @@ fn list_projects(config: &Config, json: bool) -> i32 {
             .iter()
             .map(|p| {
                 format!(
-                    "{} (chip={}, flash_format={}, source_path={}, serial_defaults={})",
+                    "{} (discovery={}, chip={}, flash_format={}, source_path={}, serial_defaults={})",
                     p.name,
-                    p.chip,
+                    if p.is_zephyr_west() { "zephyr-west" } else { "static" },
+                    p.chip.as_deref().unwrap_or("<resolved per call>"),
                     p.flash_format,
                     p.source_path.display(),
                     p.serial_port.is_some()
@@ -103,6 +137,21 @@ fn list_projects(config: &Config, json: bool) -> i32 {
         serde_json::json!({ "success": true, "projects": projects }),
         human,
     )
+}
+
+fn list_targets(config: &Config, project_name: &str, json: bool) -> i32 {
+    let project = match lookup_project(config, project_name) {
+        Ok(p) => p,
+        Err(e) => return error_result(json, e),
+    };
+
+    match resolve::list_targets(project) {
+        Ok(value) => {
+            let human = serde_json::to_string_pretty(&value).unwrap_or_default();
+            finish(json, true, serde_json::json!({ "success": true, "targets": value["targets"] }), human)
+        }
+        Err(e) => error_result(json, format!("{e:#}")),
+    }
 }
 
 async fn status(core: &CoreClient, json: bool) -> i32 {
@@ -187,21 +236,28 @@ fn build_human_summary(project: &str, outcome: &BuildOutcome) -> String {
     }
 }
 
-async fn build(config: &Config, project_name: &str, json: bool) -> i32 {
-    let project = match lookup_project(config, project_name) {
-        Ok(p) => p,
-        Err(e) => return error_result(json, e),
+async fn build(
+    config: &Config,
+    core: &CoreClient,
+    project_name: &str,
+    target: &TargetSelection,
+    json: bool,
+) -> i32 {
+    let resolved = match resolve_or_exit(config, core, project_name, target, json).await {
+        Ok(r) => r,
+        Err(code) => return code,
     };
 
-    let build_locks = BuildLocks::new();
-    match build_locks.run_build(project).await {
+    let build_locks = crate::build::BuildLocks::new();
+    match build_locks.run_build(&resolved.plan).await {
         Ok(outcome) => {
             let mut value = build_outcome_json(&outcome);
             value["success"] = serde_json::Value::Bool(outcome.build_succeeded());
-            let human = build_human_summary(&project.name, &outcome);
+            value["target"] = resolved.descriptor.clone();
+            let human = build_human_summary(project_name, &outcome);
             finish(json, outcome.build_succeeded(), value, human)
         }
-        Err(e) => error_result(json, format!("failed to run build for '{}': {e:#}", project.name)),
+        Err(e) => error_result(json, format!("failed to run build for '{project_name}': {e:#}")),
     }
 }
 
@@ -209,19 +265,20 @@ async fn flash(
     config: &Config,
     core: &CoreClient,
     project_name: &str,
+    target: &TargetSelection,
     firmware_path: Option<String>,
     json: bool,
 ) -> i32 {
-    let project = match lookup_project(config, project_name) {
-        Ok(p) => p,
-        Err(e) => return error_result(json, e),
+    let resolved = match resolve_or_exit(config, core, project_name, target, json).await {
+        Ok(r) => r,
+        Err(code) => return code,
     };
 
     let path = firmware_path
-        .or_else(|| project.artifact_path_for_core.clone())
-        .unwrap_or_else(|| project.resolved_artifact_path().display().to_string());
+        .or(resolved.artifact_path_for_core.clone())
+        .unwrap_or_else(|| resolved.plan.artifact_path.display().to_string());
 
-    match core.flash(&project.chip, &path, &project.flash_format).await {
+    match core.flash(&resolved.chip, &path, &resolved.flash_format).await {
         Ok(resp) => finish(
             json,
             true,
@@ -230,26 +287,34 @@ async fn flash(
                 "flashed": resp.flashed,
                 "chip": resp.chip,
                 "firmware_path": path,
+                "target": resolved.descriptor,
             }),
-            format!("flashed '{}' via chip {} ({})", project.name, resp.chip, path),
+            format!("flashed '{project_name}' via chip {} ({})", resp.chip, path),
         ),
-        Err(e) => error_result(json, format!("flash failed for '{}': {e:#}", project.name)),
+        Err(e) => error_result(json, format!("flash failed for '{project_name}': {e:#}")),
     }
 }
 
-async fn build_and_flash(config: &Config, core: &CoreClient, project_name: &str, json: bool) -> i32 {
-    let project = match lookup_project(config, project_name) {
-        Ok(p) => p,
-        Err(e) => return error_result(json, e),
+async fn build_and_flash(
+    config: &Config,
+    core: &CoreClient,
+    project_name: &str,
+    target: &TargetSelection,
+    json: bool,
+) -> i32 {
+    let resolved = match resolve_or_exit(config, core, project_name, target, json).await {
+        Ok(r) => r,
+        Err(code) => return code,
     };
 
-    let build_locks = BuildLocks::new();
-    let outcome = match build_locks.run_build(project).await {
+    let build_locks = crate::build::BuildLocks::new();
+    let outcome = match build_locks.run_build(&resolved.plan).await {
         Ok(outcome) => outcome,
-        Err(e) => return error_result(json, format!("failed to run build for '{}': {e:#}", project.name)),
+        Err(e) => return error_result(json, format!("failed to run build for '{project_name}': {e:#}")),
     };
 
-    let build_json = build_outcome_json(&outcome);
+    let mut build_json = build_outcome_json(&outcome);
+    build_json["target"] = resolved.descriptor.clone();
 
     if !outcome.ready_to_flash() {
         let mut value = build_json;
@@ -262,20 +327,17 @@ async fn build_and_flash(config: &Config, core: &CoreClient, project_name: &str,
             "build succeeded but no fresh artifact was found — refusing to flash".to_string()
         };
         value["reason"] = serde_json::Value::String(reason.clone());
-        let human = format!("{reason} for '{}' — refusing to flash", project.name);
+        let human = format!("{reason} for '{project_name}' — refusing to flash");
         return finish(json, false, value, human);
     }
 
     let artifact_path = outcome.artifact_path.display().to_string();
-    let core_firmware_path = project
+    let core_firmware_path = resolved
         .artifact_path_for_core
         .clone()
         .unwrap_or_else(|| artifact_path.clone());
 
-    match core
-        .flash(&project.chip, &core_firmware_path, &project.flash_format)
-        .await
-    {
+    match core.flash(&resolved.chip, &core_firmware_path, &resolved.flash_format).await {
         Ok(resp) => finish(
             json,
             true,
@@ -287,31 +349,37 @@ async fn build_and_flash(config: &Config, core: &CoreClient, project_name: &str,
                 "firmware_path": core_firmware_path,
             }),
             format!(
-                "build and flash succeeded for '{}' via chip {} ({})",
-                project.name, resp.chip, core_firmware_path
+                "build and flash succeeded for '{project_name}' via chip {} ({})",
+                resp.chip, core_firmware_path
             ),
         ),
         Err(e) => error_result(
             json,
-            format!("build succeeded but flash failed for '{}': {e:#}", project.name),
+            format!("build succeeded but flash failed for '{project_name}': {e:#}"),
         ),
     }
 }
 
-async fn reset(config: &Config, core: &CoreClient, project_name: &str, json: bool) -> i32 {
-    let project = match lookup_project(config, project_name) {
-        Ok(p) => p,
-        Err(e) => return error_result(json, e),
+async fn reset(
+    config: &Config,
+    core: &CoreClient,
+    project_name: &str,
+    target: &TargetSelection,
+    json: bool,
+) -> i32 {
+    let resolved = match resolve_or_exit(config, core, project_name, target, json).await {
+        Ok(r) => r,
+        Err(code) => return code,
     };
 
-    match core.reset(&project.chip).await {
+    match core.reset(&resolved.chip).await {
         Ok(resp) => finish(
             json,
             true,
-            serde_json::json!({ "success": true, "reset": resp.reset }),
-            format!("reset '{}': {}", project.name, resp.reset),
+            serde_json::json!({ "success": true, "reset": resp.reset, "target": resolved.descriptor }),
+            format!("reset '{project_name}': {}", resp.reset),
         ),
-        Err(e) => error_result(json, format!("reset failed for '{}': {e:#}", project.name)),
+        Err(e) => error_result(json, format!("reset failed for '{project_name}': {e:#}")),
     }
 }
 

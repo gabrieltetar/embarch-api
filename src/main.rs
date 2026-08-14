@@ -4,9 +4,11 @@ mod config;
 mod core_client;
 mod env;
 mod probe;
+mod resolve;
 mod token_discovery;
 mod tools;
 mod topology;
+mod zephyr;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -36,28 +38,69 @@ struct Cli {
     command: Option<Commands>,
 }
 
-/// CLI subcommand surface (design.md §3.10/§5a) — mirrors embarch-api's six
-/// MCP tools in `tools.rs` one-for-one, so a human with no MCP client can
-/// invoke the identical operations directly.
+/// The four `discovery = "zephyr-west"` selection flags (`design.md` §3
+/// decision 12), shared by every subcommand that runs a build or needs a
+/// chip. Ignored entirely for a `discovery = "static"` project.
+#[derive(clap::Args)]
+pub struct TargetSelection {
+    /// Zephyr board name. Only meaningful for a discovery = "zephyr-west"
+    /// project; ignored otherwise.
+    #[arg(long)]
+    pub board: Option<String>,
+    /// Board variant (e.g. a product LED configuration). Only meaningful for
+    /// a discovery = "zephyr-west" project.
+    #[arg(long)]
+    pub variant: Option<String>,
+    /// Hardware revision. Only meaningful for a discovery = "zephyr-west"
+    /// project.
+    #[arg(long)]
+    pub revision: Option<String>,
+    /// App directory name under app/. Only meaningful for a discovery =
+    /// "zephyr-west" project.
+    #[arg(long)]
+    pub app: Option<String>,
+}
+
+/// CLI subcommand surface (design.md §3.10/§5a) — mirrors embarch-api's MCP
+/// tools in `tools.rs` one-for-one, so a human with no MCP client can invoke
+/// the identical operations directly.
 #[derive(Subcommand)]
 pub enum Commands {
     /// List every project configured in embarch-api's config file.
     ListProjects,
+    /// List live-discovered build targets for a discovery = "zephyr-west"
+    /// project, or the hand-authored [[projects.targets]] menu for a
+    /// discovery = "static" one.
+    ListTargets { project: String },
     /// Get embarch-core's status: reachability and connected debug probes.
     Status,
     /// Build a configured project by running its configured build command.
-    Build { project: String },
+    Build {
+        project: String,
+        #[command(flatten)]
+        target: TargetSelection,
+    },
     /// Flash a firmware artifact via embarch-core.
     Flash {
         project: String,
+        #[command(flatten)]
+        target: TargetSelection,
         /// Flash this file instead of the project's configured artifact_path.
         #[arg(long)]
         firmware_path: Option<String>,
     },
     /// Build a project and, only if it succeeds with a fresh artifact, flash it.
-    BuildAndFlash { project: String },
+    BuildAndFlash {
+        project: String,
+        #[command(flatten)]
+        target: TargetSelection,
+    },
     /// Reset a project's target chip via embarch-core.
-    Reset { project: String },
+    Reset {
+        project: String,
+        #[command(flatten)]
+        target: TargetSelection,
+    },
     /// Read the serial console log for a project via embarch-core.
     SerialLog {
         project: String,
