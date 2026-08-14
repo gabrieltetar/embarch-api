@@ -87,8 +87,18 @@ discovery = "zephyr-west"
 # west isn't always on bare PATH (e.g. inside a workspace venv) — point at
 # the exact binary this repo's build actually uses.
 west_binary = "/path/to/my-multi-board-project/.venv/bin/west"
-# Parent directory under which each distinct (board, variant, revision, app)
-# target gets its own build subdirectory — never shared between targets.
+# Parent directory under which each distinct (board, variant, revision, app,
+# snippets) target gets its own build subdirectory — never shared between
+# targets.
 build_dir_root = "/path/to/my-multi-board-project/embarch/build"
 flash_format = "hex"
 build_timeout_secs = 900
+# Optional: -S snippet(s) applied whenever a build/flash/build_and_flash call
+# omits `snippets` entirely — for a repo whose normal dev build always wants
+# the same one(s) (e.g. a shell-over-BLE snippet), so moving it to
+# discovery = "zephyr-west" doesn't silently drop that from every call unless
+# a caller remembers to pass snippets by hand. A call that does pass
+# snippets overrides this entirely, it doesn't add to it. Validated against
+# app/<app>/snippets/*/snippet.yml the same way board/variant/revision are
+# validated against boards/*/*.yml — see list_targets' snippets_by_app.
+# default_snippets = ["ble-shell"]

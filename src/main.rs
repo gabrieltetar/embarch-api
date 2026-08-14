@@ -59,6 +59,12 @@ pub struct TargetSelection {
     /// "zephyr-west" project.
     #[arg(long)]
     pub app: Option<String>,
+    /// A `-S` snippet to build with; may be given more than once. Only
+    /// meaningful for a discovery = "zephyr-west" project. Omitted entirely
+    /// falls back to the project's configured default_snippets, not "no
+    /// snippets" — see `list-targets` for what's available.
+    #[arg(long = "snippet")]
+    pub snippet: Vec<String>,
 }
 
 /// CLI subcommand surface (design.md §3.10/§5a) — mirrors embarch-api's MCP

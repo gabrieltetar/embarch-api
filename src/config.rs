@@ -144,6 +144,15 @@ pub struct ProjectConfig {
     /// `list_targets` can return verbatim (see `StaticTarget`).
     #[serde(default, rename = "targets")]
     pub static_targets: Vec<StaticTarget>,
+    /// Only meaningful for `discovery = "zephyr-west"`: the `-S` snippets a
+    /// build uses when a call omits `snippets` entirely (`resolve::Selection`).
+    /// Exists because a repo's normal dev build often always wants the same
+    /// snippet(s) (e.g. this repo's own prior static config always built
+    /// with `-S ble-shell`) — without this, moving that project to
+    /// `zephyr-west` would silently drop it on every call unless a caller
+    /// remembered to pass `snippets` by hand every time.
+    #[serde(default)]
+    pub default_snippets: Vec<String>,
 }
 
 impl ProjectConfig {

@@ -87,6 +87,11 @@ pub struct TargetParams {
     /// App directory name under app/. Only meaningful for a discovery =
     /// "zephyr-west" project.
     pub app: Option<String>,
+    /// `-S` snippets to build with. Only meaningful for a discovery =
+    /// "zephyr-west" project — see `list_targets`'s `snippets_by_app`.
+    /// Omitted or empty falls back to the project's configured
+    /// default_snippets, not "no snippets".
+    pub snippets: Option<Vec<String>>,
 }
 
 impl TargetParams {
@@ -96,6 +101,7 @@ impl TargetParams {
             variant: self.variant.as_deref(),
             revision: self.revision.as_deref(),
             app: self.app.as_deref(),
+            snippets: self.snippets.as_deref().unwrap_or(&[]),
         }
     }
 }
@@ -114,6 +120,10 @@ pub struct FlashParams {
     /// App directory name under app/. Only meaningful for a discovery =
     /// "zephyr-west" project.
     pub app: Option<String>,
+    /// `-S` snippets to build with. Only meaningful for a discovery =
+    /// "zephyr-west" project. Omitted or empty falls back to the project's
+    /// configured default_snippets, not "no snippets".
+    pub snippets: Option<Vec<String>>,
     /// Path to a firmware file to flash instead of the project's configured
     /// artifact_path — use this to flash an already-built file without
     /// rebuilding. Bypasses target resolution entirely.
@@ -127,6 +137,7 @@ impl FlashParams {
             variant: self.variant.as_deref(),
             revision: self.revision.as_deref(),
             app: self.app.as_deref(),
+            snippets: self.snippets.as_deref().unwrap_or(&[]),
         }
     }
 }
@@ -166,7 +177,7 @@ impl EmbarchApi {
         Self::ok_json(serde_json::json!({ "projects": projects }))
     }
 
-    #[tool(description = "List a project's buildable targets. For a discovery = \"zephyr-west\" project: live-scans boards/ and app/ and returns every file-backing-validated (board, soc, cpucluster, variant, revision, app) tuple. For a discovery = \"static\" project with [[projects.targets]] rows: returns those verbatim. Otherwise errors with the TOML shape needed to populate [[projects.targets]] by hand.")]
+    #[tool(description = "List a project's buildable targets. For a discovery = \"zephyr-west\" project: live-scans boards/ and app/ and returns every file-backing-validated (board, soc, cpucluster, variant, revision, app) tuple, plus snippets_by_app (every real -S snippet available per app) and the project's configured default_snippets. For a discovery = \"static\" project with [[projects.targets]] rows: returns those verbatim. Otherwise errors with the TOML shape needed to populate [[projects.targets]] by hand.")]
     async fn list_targets(
         &self,
         Parameters(ProjectParams { project }): Parameters<ProjectParams>,
@@ -200,7 +211,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Build a configured project by running its build command (configured, or, for a discovery = \"zephyr-west\" project, assembled at call time from board/variant/revision/app). Does not touch hardware. Use build_and_flash to build and then flash in one call.")]
+    #[tool(description = "Build a configured project by running its build command (configured, or, for a discovery = \"zephyr-west\" project, assembled at call time from board/variant/revision/app/snippets). snippets, if omitted, falls back to the project's configured default_snippets, not \"no snippets\". Does not touch hardware. Use build_and_flash to build and then flash in one call.")]
     async fn build(
         &self,
         Parameters(params): Parameters<TargetParams>,

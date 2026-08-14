@@ -77,6 +77,16 @@ struct RevisionEntry {
     name: String,
 }
 
+/// A `snippets/<dir>/snippet.yml` file. Only `name` matters here — real
+/// snippets add `EXTRA_CONF_FILE`/`EXTRA_DTC_OVERLAY_FILE` and more, which
+/// this module doesn't need: it only has to know a snippet exists and what
+/// it's called, to validate a call-time `-S` selection and pass it through
+/// to `west build` unchanged.
+#[derive(Debug, Deserialize)]
+struct SnippetYml {
+    name: String,
+}
+
 /// A parsed `board.yml`, plus the directory it lives in — needed later to
 /// check whether a revision-suffixed overlay/defconfig file actually exists
 /// there.
@@ -130,15 +140,25 @@ impl Target {
     /// Per-target build directory name, satisfying
     /// `embarch-umbrella/design.md` §3 decision 10's no-shared-build-dir
     /// rule without a human naming each one:
-    /// `<board>-<variant-or-'default'>-<revision-or-'none'>-<app>`.
-    pub fn build_dir_name(&self) -> String {
-        format!(
+    /// `<board>-<variant-or-'default'>-<revision-or-'none'>-<app>[-<snippets>]`.
+    /// `snippets` (already sorted+deduped by the caller — `resolve.rs`) is
+    /// folded in here too: two builds of the same (board, variant, revision,
+    /// app) with a different `-S` selection are different CMake
+    /// configurations and must not share a build directory, same reasoning
+    /// as every other axis in this name.
+    pub fn build_dir_name(&self, snippets: &[String]) -> String {
+        let mut name = format!(
             "{}-{}-{}-{}",
             self.board,
             self.variant.as_deref().unwrap_or("default"),
             self.revision.as_deref().unwrap_or("none"),
             self.app
-        )
+        );
+        if !snippets.is_empty() {
+            name.push('-');
+            name.push_str(&snippets.join("_"));
+        }
+        name
     }
 }
 
@@ -351,6 +371,50 @@ fn scan_boards(source_path: &Path) -> Vec<BoardDef> {
     out
 }
 
+/// Every snippet name declared under `source_path/app/<app>/snippets`,
+/// recursively — matching Zephyr's own `snippets.py` (`os.walk` under a
+/// snippet root, not a fixed one-level nesting), since a `snippet.yml`'s
+/// directory nesting depth isn't itself meaningful. Confirmed against a
+/// real target repo: ten snippets (`ble-shell`, `release`,
+/// `factory-test`, `datalogging_cli`, `charging-state`, `wdt31`,
+/// `sensor01-evk`, `sensor01-evt-3led`, `sensor01-evt-5led`, `max_signal`)
+/// all one level deep, but not assumed to always be. The name comes from `snippet.yml`'s
+/// own `name:` field, not the directory name — they match by convention in
+/// every real example here, but Zephyr doesn't require it.
+///
+/// Only `app/<app>/snippets` is scanned, not `boards/**/snippets` or a
+/// workspace-wide `snippets/` root — both real Zephyr snippet locations this
+/// module doesn't yet cover, since the real repo only uses the former.
+fn scan_snippets(source_path: &Path, app: &str) -> Vec<String> {
+    let snippets_dir = source_path.join("app").join(app).join("snippets");
+    let mut out = Vec::new();
+    let mut stack = vec![snippets_dir];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.file_name().and_then(|n| n.to_str()) != Some("snippet.yml") {
+                continue;
+            }
+            let Ok(raw) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            if let Ok(yml) = serde_yaml::from_str::<SnippetYml>(&raw) {
+                out.push(yml.name);
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// Every `app/<name>/CMakeLists.txt` under `source_path` — app name is the
 /// directory name. Same shape `embarch-umbrella`'s `init` already
 /// recognizes as "this repo has a west app."
@@ -410,23 +474,42 @@ pub fn artifact_path(build_dir: &Path, flash_format: &str) -> PathBuf {
     build_dir.join("zephyr").join(format!("zephyr.{flash_format}"))
 }
 
+/// Every real snippet name declared for `target`'s app — see `scan_snippets`
+/// for what's scanned and why. Exposed separately from `Target` itself
+/// (rather than as one of its fields) because a snippet selection isn't part
+/// of the (board, soc, cpucluster, variant, revision, app) tuple `select`
+/// narrows: it's an independent, purely additive build flag, validated
+/// against this list at `build_command` call time instead.
+pub fn available_snippets(source_path: &Path, app: &str) -> Vec<String> {
+    scan_snippets(source_path, app)
+}
+
 /// The `west build` argv for a resolved target: `west build -b
-/// <qualifier> -d <build_dir> <app_path>`.
+/// <qualifier> -S <snippet> [-S <snippet> ...] -d <build_dir> <app_path>`.
+/// One repeated `-S` per snippet — confirmed against the real `west build`
+/// argument parser (`-S`/`--snippet`, `action='append'`), not a single
+/// comma-joined value.
 pub fn build_command(
     west_binary: &Path,
     target: &Target,
+    snippets: &[String],
     build_dir: &Path,
     app_path: &Path,
 ) -> Vec<String> {
-    vec![
+    let mut cmd = vec![
         west_binary.display().to_string(),
         "build".to_string(),
         "-b".to_string(),
         target.board_qualifier(),
-        "-d".to_string(),
-        build_dir.display().to_string(),
-        app_path.display().to_string(),
-    ]
+    ];
+    for snippet in snippets {
+        cmd.push("-S".to_string());
+        cmd.push(snippet.clone());
+    }
+    cmd.push("-d".to_string());
+    cmd.push(build_dir.display().to_string());
+    cmd.push(app_path.display().to_string());
+    cmd
 }
 
 fn context_result<T>(r: Result<T, NotZephyrWest>, source_path: &Path) -> Result<T> {
@@ -698,9 +781,66 @@ board:
             cpucluster: Some("cpuapp".into()),
             variant: Some("os_5led".into()),
             revision: Some("evt1".into()),
-            app: "reference-dut".into(),
+            app: "widget".into(),
         };
-        assert_eq!(a.build_dir_name(), "roadrunner-os_5led-evt1-reference-dut");
+        assert_eq!(a.build_dir_name(&[]), "roadrunner-os_5led-evt1-widget");
+    }
+
+    #[test]
+    fn build_dir_name_folds_in_snippets_so_they_dont_share_a_build_dir() {
+        let a = Target {
+            board: "roadrunner".into(),
+            soc: "nrf54l15".into(),
+            cpucluster: Some("cpuapp".into()),
+            variant: Some("os_5led".into()),
+            revision: Some("evt1".into()),
+            app: "widget".into(),
+        };
+        let snippets = vec!["ble-shell".to_string(), "wdt31".to_string()];
+        assert_eq!(
+            a.build_dir_name(&snippets),
+            "roadrunner-os_5led-evt1-widget-ble-shell_wdt31"
+        );
+        assert_ne!(a.build_dir_name(&snippets), a.build_dir_name(&[]));
+    }
+
+    #[test]
+    fn scan_snippets_finds_every_real_snippet_regardless_of_nesting() {
+        let dir = tempfile_dir();
+        let app_dir = dir.path().join("app/widget");
+        fs::create_dir_all(&app_dir).unwrap();
+        fs::write(app_dir.join("CMakeLists.txt"), "").unwrap();
+
+        // One level deep, matching the real repo's layout.
+        let ble_dir = dir.path().join("app/widget/snippets/ble-shell");
+        fs::create_dir_all(&ble_dir).unwrap();
+        fs::write(ble_dir.join("snippet.yml"), "name: ble-shell\n").unwrap();
+
+        // Nested two levels deep — must still be found, since Zephyr's own
+        // scanner (`os.walk`) doesn't assume a fixed depth either.
+        let nested_dir = dir.path().join("app/widget/snippets/datalogging_cli/boards");
+        fs::create_dir_all(&nested_dir).unwrap();
+        fs::write(
+            dir.path()
+                .join("app/widget/snippets/datalogging_cli/snippet.yml"),
+            "name: datalogging_cli\n",
+        )
+        .unwrap();
+
+        let boards_dir = dir.path().join("boards/acme/single");
+        fs::create_dir_all(&boards_dir).unwrap();
+        fs::write(
+            boards_dir.join("single.yml"),
+            "board:\n  name: single\n  socs:\n    - name: nrf54l15\n",
+        )
+        .unwrap();
+
+        let found = available_snippets(dir.path(), "widget");
+        assert_eq!(found, vec!["ble-shell".to_string(), "datalogging_cli".to_string()]
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>());
     }
 
     // Minimal tempdir helper — avoids pulling in the `tempfile` crate for a
