@@ -102,3 +102,9 @@ build_timeout_secs = 900
 # app/<app>/snippets/*/snippet.yml the same way board/variant/revision are
 # validated against boards/*/*.yml — see list_targets' snippets_by_app.
 # default_snippets = ["ble-shell"]
+# Optional: extra west build flags applied whenever a call omits `extra_args`
+# entirely — e.g. a repo that always wants a pristine rebuild. Same
+# override-not-additive semantics as default_snippets, but opaque: unlike
+# snippets, there's no real-file list to validate arbitrary flags against, so
+# these are passed straight through to west build unchanged.
+# default_extra_args = ["-p", "always"]

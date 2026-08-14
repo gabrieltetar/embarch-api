@@ -35,6 +35,10 @@ pub struct Selection<'a> {
     /// with genuinely no snippets despite a configured default, there is
     /// currently no override; add one if that need actually arises.
     pub snippets: &'a [String],
+    /// Extra `west build` flags (e.g. `-p always`), opaque passthrough — see
+    /// `zephyr::build_command`. Same "empty means use the configured
+    /// default" semantics as `snippets`, via `default_extra_args`.
+    pub extra_args: &'a [String],
 }
 
 /// A fully resolved project + target, ready to build/flash. `descriptor` is
@@ -142,9 +146,19 @@ async fn resolve_zephyr(project: &ProjectConfig, selection: Selection<'_>, core:
         );
     }
 
-    let build_dir = build_dir_root.join(target.build_dir_name(&snippets));
+    // Same "empty means use the configured default" fallback as snippets,
+    // but no validation — see `Selection::extra_args`. Caller-given order is
+    // preserved (not sorted): unlike a snippet list, west build flag order
+    // can be meaningful.
+    let extra_args: Vec<String> = if selection.extra_args.is_empty() {
+        project.default_extra_args.clone()
+    } else {
+        selection.extra_args.to_vec()
+    };
+
+    let build_dir = build_dir_root.join(target.build_dir_name(&snippets, &extra_args));
     let app_path = project.source_path.join("app").join(&target.app);
-    let command = zephyr::build_command(&west_binary, &target, &snippets, &build_dir, &app_path);
+    let command = zephyr::build_command(&west_binary, &target, &snippets, &extra_args, &build_dir, &app_path);
     let artifact_path = zephyr::artifact_path(&build_dir, &project.flash_format);
 
     let chip = core
@@ -160,7 +174,7 @@ async fn resolve_zephyr(project: &ProjectConfig, selection: Selection<'_>, core:
 
     Ok(Resolved {
         plan: BuildPlan {
-            lock_key: format!("{}::{}", project.name, target.build_dir_name(&snippets)),
+            lock_key: format!("{}::{}", project.name, target.build_dir_name(&snippets, &extra_args)),
             // west build's -d/app-path args are absolute, so the actual cwd
             // doesn't affect what gets built — source_path just needs to
             // exist, which config validation already guarantees.
@@ -182,6 +196,7 @@ async fn resolve_zephyr(project: &ProjectConfig, selection: Selection<'_>, core:
             "revision": target.revision,
             "app": target.app,
             "snippets": snippets,
+            "extra_args": extra_args,
         }),
     })
 }
@@ -215,6 +230,7 @@ pub fn list_targets(project: &ProjectConfig) -> Result<serde_json::Value> {
                 "targets": targets,
                 "snippets_by_app": snippets_by_app,
                 "default_snippets": project.default_snippets,
+                "default_extra_args": project.default_extra_args,
             }))
         }
         Discovery::Static => {
