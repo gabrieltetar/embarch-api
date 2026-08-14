@@ -8,10 +8,24 @@
 //!
 //! This module owns two things a static, hand-maintained `[[projects]]`
 //! entry used to leave to a human: enumerating what's actually buildable
-//! (`scan`), and refusing to propose a (variant, revision) combination that
-//! Zephyr's own board-revision mechanism would silently build with the
-//! wrong shape (`revision_is_backed`) — see the module-level rationale in
-//! `embarch-api/design.md` §3 decision 12 for why that check exists at all.
+//! (`scan`), and refusing to propose a (soc, cpucluster, variant, revision)
+//! combination that isn't real — two distinct failure modes, both found by
+//! checking against a real target repo rather than a synthetic fixture
+//! alone:
+//! - **No devicetree source at all** (`dts_exists`): `board.yml` can declare
+//!   a SoC/variant that was never given real `.dts` files (confirmed real
+//!   example: `ref_nrf54dk` declares `nrf54l05`/`nrf54l10`/an `nrf54l15`
+//!   `xip`/`ns` split that board.yml lists but only one of those five
+//!   combinations — bare `nrf54l15`/`cpuapp` — has a `.dts` file backing
+//!   it). Proposing the other four fails loud, at CMake configure time —
+//!   not silent, but still wrong information for `list_targets` to hand out.
+//! - **Wrong revision-overlay shape applied** (`revision_is_backed`):
+//!   Zephyr's board-revision mechanism auto-applies a revision-suffixed
+//!   overlay/defconfig file *if one exists*, and silently falls back to the
+//!   board's un-revisioned base files if it doesn't — so a (variant,
+//!   revision) combination is only real if a matching file exists, never
+//!   just because `board.yml` lists the revision's name. This one *is*
+//!   silent, which is why decision 12 exists at all.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -215,27 +229,65 @@ pub fn scan(source_path: &Path) -> Result<Vec<Target>, NotZephyrWest> {
 /// wrong (e.g. looking for a `_default_7.overlay` that doesn't exist, or
 /// building `dut_dev/nrf54l15/cpuapp/default` instead of the real
 /// `dut_dev/nrf54l15/cpuapp`).
+///
+/// A SoC that *does* declare named product variants can still have a real,
+/// separately-buildable variant-less build for the same cpucluster —
+/// confirmed against `roadrunner`: `board.yml` declares three named variants
+/// (`os`, `max_3led`, `max_5led`) under `nrf54l15`/`cpuapp`, but
+/// `roadrunner_nrf54l15_cpuapp.dts` (no variant suffix) also exists, and is
+/// exactly what the real day-to-day static config builds
+/// (`roadrunner@2/nrf54l15/cpuapp`, no variant at all) — Zephyr's
+/// board-qualifier variant component is always optional, declaring named
+/// variants doesn't make selecting one mandatory. Without offering this
+/// candidate too, `list_targets` would never surface the one target this
+/// project's real config actually uses. One candidate is added per distinct
+/// cpucluster already present among the named variants (skipping any
+/// cpucluster a `default`-named variant already maps to `None` for, to avoid
+/// a duplicate) — then every candidate, named or synthesized, still has to
+/// pass `dts_exists` below to survive at all.
 fn push_targets_for_soc(out: &mut Vec<Target>, board: &BoardDef, soc: &SocSection, apps: &[String]) {
     struct Selected<'a> {
         name: Option<&'a str>,
         cpucluster: Option<&'a str>,
     }
-    let variants: Vec<Selected> = if soc.variants.is_empty() {
+    let mut candidates: Vec<Selected> = if soc.variants.is_empty() {
         vec![Selected { name: None, cpucluster: None }]
     } else {
-        soc.variants
+        let named: Vec<Selected> = soc
+            .variants
             .iter()
             .map(|v| Selected {
                 name: (v.name != "default").then_some(v.name.as_str()),
                 cpucluster: v.cpucluster.as_deref(),
             })
-            .collect()
+            .collect();
+
+        let already_bare: std::collections::HashSet<Option<&str>> =
+            named.iter().filter(|s| s.name.is_none()).map(|s| s.cpucluster).collect();
+        let mut clusters: Vec<&str> = named.iter().filter_map(|s| s.cpucluster).collect();
+        clusters.sort_unstable();
+        clusters.dedup();
+
+        let mut all = named;
+        for cluster in clusters {
+            if !already_bare.contains(&Some(cluster)) {
+                all.push(Selected { name: None, cpucluster: Some(cluster) });
+            }
+        }
+        all
     };
+
+    // Every candidate — named, implicit, or synthesized bare — needs real
+    // devicetree source behind it, independent of the revision axis. This
+    // is the check that excludes `ref_nrf54dk`'s `nrf54l05`/`nrf54l10`/
+    // `nrf54l15`-`xip`/`nrf54l15`-`ns`: board.yml declares all four, but none
+    // has a `.dts` file, only bare `nrf54l15`/`cpuapp` does.
+    candidates.retain(|c| dts_exists(&board.dir, &board.yml.board.name, &soc.name, c.cpucluster, c.name));
 
     let revisions = candidate_revisions(&board.yml.board.revision);
     let default_revision = board.yml.board.revision.as_ref().and_then(|r| r.default.as_deref());
 
-    for variant in &variants {
+    for variant in &candidates {
         for revision in &revisions {
             let backed = revision_is_backed(
                 &board.dir,
@@ -261,6 +313,26 @@ fn push_targets_for_soc(out: &mut Vec<Target>, board: &BoardDef, soc: &SocSectio
             }
         }
     }
+}
+
+/// Whether `<board>_<soc>[_<cpucluster>][_<variant>].dts` exists in
+/// `board_dir` — the real gate on whether a (soc, cpucluster, variant)
+/// combination has devicetree source to build at all, independent of the
+/// revision axis `revision_is_backed` covers. See the module doc for the
+/// real `ref_nrf54dk` finding this exists to catch.
+fn dts_exists(board_dir: &Path, board: &str, soc: &str, cpucluster: Option<&str>, variant: Option<&str>) -> bool {
+    let mut stem = board.to_string();
+    stem.push('_');
+    stem.push_str(soc);
+    if let Some(c) = cpucluster {
+        stem.push('_');
+        stem.push_str(c);
+    }
+    if let Some(v) = variant {
+        stem.push('_');
+        stem.push_str(v);
+    }
+    board_dir.join(format!("{stem}.dts")).exists()
 }
 
 /// Every revision worth considering: the declared default (even if
@@ -293,6 +365,26 @@ fn candidate_revisions(revision: &Option<RevisionSection>) -> Vec<Option<String>
 /// combination is only real if the default revision applies (implicitly
 /// backed by the base files) or a matching revision-suffixed file exists —
 /// never just because `board.yml` lists the revision's name.
+///
+/// **The "default revision is automatically backed" shortcut only applies
+/// when `variant` is `None`.** Confirmed necessary against `roadrunner`'s
+/// real `revision.cmake`: it declares default revision `"1"`, but its own
+/// custom logic hard-errors if a named product variant (`os`, `max_3led`,
+/// `max_5led`) is built at any revision *other than* `evt1` — variants there
+/// aren't just cosmetically tied to hardware revision, they're revision-
+/// gated by name, deliberately, in code this module can't (and per decision
+/// 12's own "pure filesystem + YAML reads" scope, shouldn't try to)
+/// interpret. A board using `format: custom` opts out of Zephyr's default
+/// per-revision-file convention entirely, so treating "this is the declared
+/// default revision" as sufficient for *every* variant is an assumption
+/// that only holds for the variant-less axis: the default revision's whole
+/// point (per that repo's own comment) is being the one "no-override"
+/// revision — safe because it carries no per-variant coupling — while
+/// naming a product variant re-introduces exactly the coupling that default
+/// was safe from. Requiring an explicit revision-suffixed file for any
+/// named variant, even at the default revision, is the conservative
+/// posture consistent with decision 12's original purpose: erring toward
+/// fewer, correct proposals rather than more, unverifiable ones.
 fn revision_is_backed(
     board_dir: &Path,
     board: &str,
@@ -307,7 +399,7 @@ fn revision_is_backed(
         // plain base files.
         return true;
     };
-    if Some(revision) == default_revision {
+    if variant.is_none() && Some(revision) == default_revision {
         return true;
     }
 
@@ -528,21 +620,33 @@ mod tests {
     use super::*;
     use std::fs;
 
-    /// Builds a synthetic repo tree modeling the real reference-dut repo's
-    /// structure described in `embarch-umbrella/milestone-6.md`'s 2026-08-13
-    /// entry: one board (`roadrunner`) with a single SoC/cpucluster and four
-    /// LED variants, real hardware-revision overlays only at `evt1` — not at
-    /// every revision `board.yml` declares (`1`, `2`, `evt1`). This is the
-    /// exact shape the file-backing check exists to get right: naively
-    /// trusting `board.yml`'s declared revision list would let `os_5led`
-    /// resolve at revision `1`, which Zephyr would silently build with no
-    /// revision overlay applied at all.
-    /// This is the real `boards/nordic/roadrunner/board.yml` shape, verified
-    /// against the actual reference-dut repo — `revision:` nested under
-    /// `board:`, each variant carrying its own `cpucluster:` — not a guess.
-    /// An earlier version of this fixture (and of `zephyr.rs` itself)
-    /// assumed a different, wrong shape; both were corrected together after
-    /// checking the real files.
+    /// Builds a synthetic repo tree modeling `roadrunner`'s real current
+    /// shape (checked directly against `boards/nordic/roadrunner/board.yml`
+    /// and its sibling files, not reconstructed from memory — an earlier
+    /// version of this fixture modeled a since-stale shape with four
+    /// variants and default revision `"2"`; both this fixture and the
+    /// behavior it tests were corrected together after re-checking the real
+    /// files): one SoC/cpucluster, three named product variants (`os`,
+    /// `max_3led`, `max_5led`), default revision `"1"`, and a real,
+    /// separately-buildable variant-less ("bare") build for the same
+    /// cpucluster — `roadrunner_nrf54l15_cpuapp.dts` exists alongside each
+    /// variant's own `.dts`, and the real day-to-day static config builds
+    /// exactly this bare target (`roadrunner@2/nrf54l15/cpuapp`, no
+    /// variant).
+    ///
+    /// The revision-backing shape mirrors a real, verified finding
+    /// (`roadrunner`'s own `revision.cmake`): the bare target is backed at
+    /// its default revision `"1"` (no override needed) and explicitly at
+    /// `"2"` (`roadrunner_nrf54l15_cpuapp_2.overlay`), but *not* at `"evt1"`
+    /// — that revision has no board behind it without a product variant
+    /// selected. Named variants are the opposite: `revision.cmake` hard-
+    /// errors unless a named variant is built at exactly `"evt1"`, so **the
+    /// default-revision shortcut must not apply to a named variant at
+    /// all** — modeled here by giving only `os` a real `_evt1.overlay` and
+    /// no `_1`/`_2` file for any variant, and giving `max_3led`/`max_5led`
+    /// no revision-suffixed file whatsoever (declared in `board.yml`, never
+    /// actually backed at any revision — the same "don't trust the
+    /// declared list" lesson the original fixture's `os_5led` taught).
     fn write_synthetic_repo(root: &Path) {
         let board_dir = root.join("boards/acme/roadrunner");
         fs::create_dir_all(&board_dir).unwrap();
@@ -554,17 +658,15 @@ board:
   socs:
     - name: nrf54l15
       variants:
-        - name: os_5led
-          cpucluster: cpuapp
-        - name: os_3led
-          cpucluster: cpuapp
-        - name: max_5led
+        - name: os
           cpucluster: cpuapp
         - name: max_3led
           cpucluster: cpuapp
+        - name: max_5led
+          cpucluster: cpuapp
   revision:
     format: custom
-    default: "2"
+    default: "1"
     revisions:
       - name: "1"
       - name: "2"
@@ -572,13 +674,27 @@ board:
 "#,
         )
         .unwrap();
-        // Only os_5led/evt1 actually has a revision-suffixed overlay —
-        // matches the real finding: variants only have real overlays at evt1.
-        fs::write(
-            board_dir.join("roadrunner_nrf54l15_cpuapp_os_5led_evt1.overlay"),
-            "",
-        )
-        .unwrap();
+
+        // Devicetree source: the bare (variant-less) build and all three
+        // named variants each have real .dts files — every one of these
+        // four combinations is buildable at all, just not at every revision.
+        for stem in [
+            "roadrunner_nrf54l15_cpuapp",
+            "roadrunner_nrf54l15_cpuapp_os",
+            "roadrunner_nrf54l15_cpuapp_max_3led",
+            "roadrunner_nrf54l15_cpuapp_max_5led",
+        ] {
+            fs::write(board_dir.join(format!("{stem}.dts")), "").unwrap();
+        }
+
+        // Bare + revision "2" is explicitly backed (matches the real static
+        // config's actual day-to-day build). Bare has no "evt1" overlay —
+        // that revision only exists as a product-tier variant.
+        fs::write(board_dir.join("roadrunner_nrf54l15_cpuapp_2.overlay"), "").unwrap();
+        // Only "os" actually has a real evt1 overlay — matches the real
+        // finding: not every variant board.yml declares is really backed at
+        // any revision. "max_3led"/"max_5led" get none at all, deliberately.
+        fs::write(board_dir.join("roadrunner_nrf54l15_cpuapp_os_evt1.overlay"), "").unwrap();
 
         let app_dir = root.join("app/reference-dut");
         fs::create_dir_all(&app_dir).unwrap();
@@ -586,31 +702,39 @@ board:
     }
 
     #[test]
-    fn scans_default_revision_for_every_variant() {
+    fn bare_target_is_backed_at_default_and_explicit_revision_but_not_evt1() {
         let dir = tempfile_dir();
         write_synthetic_repo(dir.path());
         let targets = scan(dir.path()).unwrap();
 
-        // Every one of the 4 variants is valid at the default revision "2".
-        let at_default: Vec<_> = targets
+        let bare_revisions: std::collections::BTreeSet<_> = targets
             .iter()
-            .filter(|t| t.revision.as_deref() == Some("2"))
+            .filter(|t| t.variant.is_none())
+            .map(|t| t.revision.clone().unwrap())
             .collect();
-        assert_eq!(at_default.len(), 4, "{targets:#?}");
+        assert_eq!(
+            bare_revisions,
+            ["1", "2"].into_iter().map(String::from).collect(),
+            "{targets:#?}"
+        );
     }
 
     #[test]
-    fn only_backed_variant_revision_combo_resolves_at_non_default_revision() {
+    fn named_variant_is_never_backed_by_the_default_revision_shortcut() {
         let dir = tempfile_dir();
         write_synthetic_repo(dir.path());
         let targets = scan(dir.path()).unwrap();
 
-        let at_evt1: Vec<_> = targets
+        // "os" is declared at "1"/"2"/"evt1" but only really backed at
+        // "evt1" — the default-revision shortcut ("1" is the default) must
+        // not apply just because board.yml lists it, since a named variant
+        // has no base-file fallback the way a bare build does.
+        let os_revisions: std::collections::BTreeSet<_> = targets
             .iter()
-            .filter(|t| t.revision.as_deref() == Some("evt1"))
+            .filter(|t| t.variant.as_deref() == Some("os"))
+            .map(|t| t.revision.clone().unwrap())
             .collect();
-        assert_eq!(at_evt1.len(), 1, "{targets:#?}");
-        assert_eq!(at_evt1[0].variant.as_deref(), Some("os_5led"));
+        assert_eq!(os_revisions, ["evt1"].into_iter().map(String::from).collect(), "{targets:#?}");
     }
 
     #[test]
@@ -619,11 +743,13 @@ board:
         write_synthetic_repo(dir.path());
         let targets = scan(dir.path()).unwrap();
 
-        // os_5led at revision "1" has no overlay — must not appear, unlike
-        // naively trusting board.yml's declared revision list.
-        let bogus = targets.iter().any(|t| {
-            t.variant.as_deref() == Some("os_5led") && t.revision.as_deref() == Some("1")
-        });
+        // "max_3led"/"max_5led" are declared in board.yml with real .dts
+        // files (so they're buildable in principle) but have no
+        // revision-suffixed overlay/defconfig at any revision — must never
+        // appear, unlike naively trusting board.yml's declared revision list.
+        let bogus = targets
+            .iter()
+            .any(|t| matches!(t.variant.as_deref(), Some("max_3led") | Some("max_5led")));
         assert!(!bogus, "{targets:#?}");
     }
 
@@ -672,6 +798,7 @@ board:
 "#,
         )
         .unwrap();
+        fs::write(board_dir.join("dut_dev_nrf54l15_cpuapp.dts"), "").unwrap();
         for rev in ["6", "7"] {
             fs::write(board_dir.join(format!("dut_dev_nrf54l15_cpuapp_{rev}.overlay")), "").unwrap();
         }
@@ -699,8 +826,8 @@ board:
         write_synthetic_repo(dir.path());
         let targets = scan(dir.path()).unwrap();
 
-        let picked = select(&targets, None, Some("os_5led"), Some("evt1"), None).unwrap();
-        assert_eq!(picked.variant.as_deref(), Some("os_5led"));
+        let picked = select(&targets, None, Some("os"), Some("evt1"), None).unwrap();
+        assert_eq!(picked.variant.as_deref(), Some("os"));
         assert_eq!(picked.revision.as_deref(), Some("evt1"));
     }
 
@@ -735,6 +862,7 @@ board:
 "#,
         )
         .unwrap();
+        fs::write(board_dir.join("single_nrf54l15.dts"), "").unwrap();
         let app_dir = dir.path().join("app/dev");
         fs::create_dir_all(&app_dir).unwrap();
         fs::write(app_dir.join("CMakeLists.txt"), "").unwrap();
@@ -745,6 +873,72 @@ board:
         assert_eq!(picked.board, "single");
         assert_eq!(picked.variant, None);
         assert_eq!(picked.revision, None);
+    }
+
+    #[test]
+    fn soc_with_no_dts_backing_at_all_yields_no_targets() {
+        // Real example this guards: ref_nrf54dk's board.yml declares
+        // nrf54l05 with no variants at all, but the real repo has no
+        // ref_nrf54dk_nrf54l05.dts file — must yield zero targets for that
+        // SoC, not one bogus implicit-variant target that would fail at
+        // CMake configure time.
+        let dir = tempfile_dir();
+        let board_dir = dir.path().join("boards/acme/nodts");
+        fs::create_dir_all(&board_dir).unwrap();
+        fs::write(
+            board_dir.join("nodts.yml"),
+            r#"
+board:
+  name: nodts
+  socs:
+    - name: nrf54l05
+"#,
+        )
+        .unwrap();
+        let app_dir = dir.path().join("app/dev");
+        fs::create_dir_all(&app_dir).unwrap();
+        fs::write(app_dir.join("CMakeLists.txt"), "").unwrap();
+
+        let targets = scan(dir.path()).unwrap();
+        assert_eq!(targets, vec![], "{targets:#?}");
+    }
+
+    #[test]
+    fn named_variant_with_no_dts_is_excluded_but_sibling_with_dts_survives() {
+        // Real example this guards: ref_nrf54dk's nrf54l15 SoC declares two
+        // variants (xip/cpuflpr, ns/cpuapp) that board.yml lists but that
+        // have no .dts file at all — only a *bare* (no-variant) cpuapp .dts
+        // exists. list_targets must offer exactly that bare target, not the
+        // two declared-but-unbacked variants.
+        let dir = tempfile_dir();
+        let board_dir = dir.path().join("boards/acme/mixed");
+        fs::create_dir_all(&board_dir).unwrap();
+        fs::write(
+            board_dir.join("mixed.yml"),
+            r#"
+board:
+  name: mixed
+  socs:
+    - name: nrf54l15
+      variants:
+        - name: xip
+          cpucluster: cpuflpr
+        - name: ns
+          cpucluster: cpuapp
+"#,
+        )
+        .unwrap();
+        // Only the bare cpuapp .dts is real — neither "xip"/cpuflpr nor
+        // "ns"/cpuapp variant has its own .dts.
+        fs::write(board_dir.join("mixed_nrf54l15_cpuapp.dts"), "").unwrap();
+        let app_dir = dir.path().join("app/dev");
+        fs::create_dir_all(&app_dir).unwrap();
+        fs::write(app_dir.join("CMakeLists.txt"), "").unwrap();
+
+        let targets = scan(dir.path()).unwrap();
+        assert_eq!(targets.len(), 1, "{targets:#?}");
+        assert_eq!(targets[0].cpucluster.as_deref(), Some("cpuapp"));
+        assert_eq!(targets[0].variant, None);
     }
 
     #[test]
