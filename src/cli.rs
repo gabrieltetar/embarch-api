@@ -41,6 +41,7 @@ impl TargetSelection {
             variant: self.variant.as_deref(),
             revision: self.revision.as_deref(),
             app: self.app.as_deref(),
+            snippets: &self.snippet,
         }
     }
 }
