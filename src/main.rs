@@ -13,7 +13,7 @@ mod zephyr;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use rmcp::ServiceExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use config::Config;
@@ -130,6 +130,36 @@ pub enum Commands {
     },
 }
 
+/// Walks up from `start` looking for `embarch/embarch.toml` at each level —
+/// the conventional location `embarch init` scaffolds
+/// (`embarch-umbrella/design.md` §3 decision 10), same discovery pattern
+/// `git`/`west` themselves use for their own config/workspace root.
+///
+/// Only ever consulted as a third fallback, after `--config` and
+/// `EMBARCH_API_CONFIG` — never the sole mechanism. `embarch-api/design.md`
+/// §4 already rejected cwd-inference *as the only source*, for a real
+/// reason: an MCP client controls the spawn cwd, so silently trusting it
+/// unconditionally would be a hidden assumption the config's origin
+/// couldn't be audited against. A last-resort fallback behind two explicit
+/// ones doesn't have that problem — an explicit `--config`/env var always
+/// wins outright, this only fires when neither was given at all, and it
+/// solves a real gap those two miss: an engineer working across several
+/// firmware repos has no single `EMBARCH_API_CONFIG` value that's ever
+/// right, and a fresh `claude mcp add` per repo isn't "no --config needed,"
+/// it's "typed once instead of every time."
+fn find_config_upward(start: &Path) -> Option<PathBuf> {
+    let mut dir = start.to_path_buf();
+    loop {
+        let candidate = dir.join("embarch").join("embarch.toml");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // stdout is the MCP JSON-RPC transport — logging must go to stderr, or
@@ -140,7 +170,11 @@ async fn main() -> Result<()> {
     let config_path = cli
         .config
         .or_else(|| std::env::var_os("EMBARCH_API_CONFIG").map(PathBuf::from))
-        .context("no config path given: pass --config <path> or set EMBARCH_API_CONFIG")?;
+        .or_else(|| std::env::current_dir().ok().and_then(|cwd| find_config_upward(&cwd)))
+        .context(
+            "no config path given: pass --config <path>, set EMBARCH_API_CONFIG, \
+             or run from within (or under) a firmware repo containing embarch/embarch.toml",
+        )?;
 
     let config = Config::load_from_path(&config_path)
         .with_context(|| format!("failed to load config from {}", config_path.display()))?;
@@ -170,4 +204,89 @@ async fn main() -> Result<()> {
     running.waiting().await.context("MCP server exited with an error")?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    // Minimal tempdir helper — same pattern used throughout this crate's
+    // other test modules (config.rs, zephyr.rs).
+    struct TempDir(PathBuf);
+    impl TempDir {
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    fn tempdir() -> TempDir {
+        let mut base = std::env::temp_dir();
+        base.push(format!(
+            "embarch-api-main-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&base).unwrap();
+        TempDir(base)
+    }
+
+    #[test]
+    fn finds_embarch_toml_in_the_starting_directory_itself() {
+        let dir = tempdir();
+        fs::create_dir_all(dir.path().join("embarch")).unwrap();
+        fs::write(dir.path().join("embarch/embarch.toml"), "").unwrap();
+
+        assert_eq!(
+            find_config_upward(dir.path()),
+            Some(dir.path().join("embarch/embarch.toml"))
+        );
+    }
+
+    #[test]
+    fn finds_embarch_toml_several_levels_up() {
+        let dir = tempdir();
+        fs::create_dir_all(dir.path().join("embarch")).unwrap();
+        fs::write(dir.path().join("embarch/embarch.toml"), "").unwrap();
+        let deep = dir.path().join("app/widget/src");
+        fs::create_dir_all(&deep).unwrap();
+
+        assert_eq!(find_config_upward(&deep), Some(dir.path().join("embarch/embarch.toml")));
+    }
+
+    #[test]
+    fn does_not_find_a_sibling_repos_embarch_toml() {
+        // A firmware repo with no embarch/embarch.toml of its own must not
+        // pick up a *different* repo's config just because it happens to
+        // share a parent directory — walking stops correctly short of a
+        // sibling, not just short of the filesystem root.
+        let dir = tempdir();
+        let other_repo = dir.path().join("other-repo");
+        fs::create_dir_all(other_repo.join("embarch")).unwrap();
+        fs::write(other_repo.join("embarch/embarch.toml"), "").unwrap();
+
+        let this_repo = dir.path().join("this-repo/src");
+        fs::create_dir_all(&this_repo).unwrap();
+
+        // Walking up from this-repo/src reaches dir.path() (their common
+        // parent) without ever finding an embarch/ under this-repo or
+        // dir.path() itself — other-repo's is a sibling, not an ancestor.
+        assert_eq!(find_config_upward(&this_repo), None);
+    }
+
+    #[test]
+    fn returns_none_when_no_embarch_toml_exists_anywhere_up_to_root() {
+        let dir = tempdir();
+        let deep = dir.path().join("a/b/c");
+        fs::create_dir_all(&deep).unwrap();
+
+        assert_eq!(find_config_upward(&deep), None);
+    }
 }
