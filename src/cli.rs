@@ -148,9 +148,19 @@ fn list_targets(config: &Config, project_name: &str, json: bool) -> i32 {
     };
 
     match resolve::list_targets(project) {
-        Ok(value) => {
+        Ok(mut value) => {
             let human = serde_json::to_string_pretty(&value).unwrap_or_default();
-            finish(json, true, serde_json::json!({ "success": true, "targets": value["targets"] }), human)
+            // Merge "success" into the full value rather than rebuilding a
+            // "targets"-only object — for a zephyr-west project, value also
+            // carries snippets_by_app/default_snippets/default_extra_args
+            // (resolve::list_targets), which an earlier version of this
+            // rebuild silently dropped from --json output (the human-text
+            // form above was unaffected, since it's built from the full
+            // value already).
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert("success".to_string(), serde_json::Value::Bool(true));
+            }
+            finish(json, true, value, human)
         }
         Err(e) => error_result(json, format!("{e:#}")),
     }
