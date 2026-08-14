@@ -26,8 +26,6 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Deserialize)]
 struct BoardYml {
     board: BoardSection,
-    #[serde(default)]
-    revision: Option<RevisionSection>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -35,27 +33,35 @@ struct BoardSection {
     name: String,
     #[serde(default)]
     socs: Vec<SocSection>,
+    /// Nested under `board:`, not a sibling top-level key — confirmed
+    /// against the real reference-dut repo's `board.yml` files (`roadrunner`,
+    /// `dut_dev`, `ref_nrf54dk`, `dut_demo`), all four of which nest it here.
+    /// An earlier version of this module assumed a top-level `revision:`
+    /// key instead, which silently discarded every real board's revision
+    /// data instead of erroring — the exact kind of "succeeds while quietly
+    /// wrong" failure this decision otherwise exists to prevent.
+    #[serde(default)]
+    revision: Option<RevisionSection>,
 }
 
 #[derive(Debug, Deserialize)]
 struct SocSection {
     name: String,
     #[serde(default)]
-    cpuclusters: Vec<CpuClusterSection>,
-    #[serde(default)]
     variants: Vec<VariantSection>,
 }
 
-#[derive(Debug, Deserialize)]
-struct CpuClusterSection {
-    name: String,
-    #[serde(default)]
-    variants: Vec<VariantSection>,
-}
-
+/// A board variant. `cpucluster` lives *on the variant*, not on a separate
+/// nesting level above it — confirmed against the real repo: `ref_nrf54dk`'s
+/// `nrf54l15` SoC declares two variants (`xip`/`cpuflpr`, `ns`/`cpuapp`) each
+/// with its own `cpucluster`, and a SoC can have zero variants at all
+/// (`ref_nrf54dk`'s `nrf54l05`) — handled the same way an empty `variants`
+/// list always was, as "one implicit unnamed variant, no cpucluster."
 #[derive(Debug, Deserialize)]
 struct VariantSection {
     name: String,
+    #[serde(default)]
+    cpucluster: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -166,52 +172,59 @@ pub fn scan(source_path: &Path) -> Result<Vec<Target>, NotZephyrWest> {
     let mut targets = Vec::new();
     for board in &boards {
         for soc in &board.yml.board.socs {
-            if soc.cpuclusters.is_empty() {
-                push_targets_for_variants(&mut targets, board, soc, None, &soc.variants, &apps);
-            } else {
-                for cluster in &soc.cpuclusters {
-                    push_targets_for_variants(
-                        &mut targets,
-                        board,
-                        soc,
-                        Some(cluster.name.as_str()),
-                        &cluster.variants,
-                        &apps,
-                    );
-                }
-            }
+            push_targets_for_soc(&mut targets, board, soc, &apps);
         }
     }
     Ok(targets)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn push_targets_for_variants(
-    out: &mut Vec<Target>,
-    board: &BoardDef,
-    soc: &SocSection,
-    cpucluster: Option<&str>,
-    variants: &[VariantSection],
-    apps: &[String],
-) {
-    let variant_names: Vec<Option<&str>> = if variants.is_empty() {
-        vec![None]
+/// A SoC with no declared `variants` (e.g. `ref_nrf54dk`'s `nrf54l05`) gets
+/// exactly one implicit variant — no name, no cpucluster — same posture an
+/// empty list always had, just no longer requiring a separate nesting level
+/// to express "this SoC has no cpucluster/variant split."
+///
+/// A variant literally named `default` (e.g. `dut_dev`, `dut_demo`) is
+/// treated the same way — confirmed against the real repo, not assumed: its
+/// name never appears in any board filename (`dut_dev_nrf54l15_cpuapp.dts`,
+/// `_6.overlay`, `_7.overlay` — never `_default_...`), and the real board
+/// qualifier `west` actually built with (`build/build_info.yml`'s
+/// `qualifiers: 'nrf54l15/cpuapp'`) has no variant component at all. It's a
+/// schema placeholder for "this SoC's cpucluster, no real variant split,"
+/// not a selectable value — carrying it through as `Some("default")` would
+/// make both file-backing lookups and the assembled `west build -b` qualifier
+/// wrong (e.g. looking for a `_default_7.overlay` that doesn't exist, or
+/// building `dut_dev/nrf54l15/cpuapp/default` instead of the real
+/// `dut_dev/nrf54l15/cpuapp`).
+fn push_targets_for_soc(out: &mut Vec<Target>, board: &BoardDef, soc: &SocSection, apps: &[String]) {
+    struct Selected<'a> {
+        name: Option<&'a str>,
+        cpucluster: Option<&'a str>,
+    }
+    let variants: Vec<Selected> = if soc.variants.is_empty() {
+        vec![Selected { name: None, cpucluster: None }]
     } else {
-        variants.iter().map(|v| Some(v.name.as_str())).collect()
+        soc.variants
+            .iter()
+            .map(|v| Selected {
+                name: (v.name != "default").then_some(v.name.as_str()),
+                cpucluster: v.cpucluster.as_deref(),
+            })
+            .collect()
     };
 
-    let revisions = candidate_revisions(&board.yml.revision);
+    let revisions = candidate_revisions(&board.yml.board.revision);
+    let default_revision = board.yml.board.revision.as_ref().and_then(|r| r.default.as_deref());
 
-    for variant in &variant_names {
+    for variant in &variants {
         for revision in &revisions {
             let backed = revision_is_backed(
                 &board.dir,
                 &board.yml.board.name,
                 &soc.name,
-                cpucluster,
-                *variant,
+                variant.cpucluster,
+                variant.name,
                 revision.as_deref(),
-                board.yml.revision.as_ref().and_then(|r| r.default.as_deref()),
+                default_revision,
             );
             if !backed {
                 continue;
@@ -220,8 +233,8 @@ fn push_targets_for_variants(
                 out.push(Target {
                     board: board.yml.board.name.clone(),
                     soc: soc.name.clone(),
-                    cpucluster: cpucluster.map(str::to_string),
-                    variant: variant.map(str::to_string),
+                    cpucluster: variant.cpucluster.map(str::to_string),
+                    variant: variant.name.map(str::to_string),
                     revision: revision.clone(),
                     app: app.clone(),
                 });
@@ -441,6 +454,12 @@ mod tests {
     /// trusting `board.yml`'s declared revision list would let `os_5led`
     /// resolve at revision `1`, which Zephyr would silently build with no
     /// revision overlay applied at all.
+    /// This is the real `boards/nordic/roadrunner/board.yml` shape, verified
+    /// against the actual reference-dut repo — `revision:` nested under
+    /// `board:`, each variant carrying its own `cpucluster:` — not a guess.
+    /// An earlier version of this fixture (and of `zephyr.rs` itself)
+    /// assumed a different, wrong shape; both were corrected together after
+    /// checking the real files.
     fn write_synthetic_repo(root: &Path) {
         let board_dir = root.join("boards/acme/roadrunner");
         fs::create_dir_all(&board_dir).unwrap();
@@ -451,20 +470,22 @@ board:
   name: roadrunner
   socs:
     - name: nrf54l15
-      cpuclusters:
-        - name: cpuapp
-          variants:
-            - name: os_5led
-            - name: os_3led
-            - name: max_5led
-            - name: max_3led
-revision:
-  format: custom
-  default: "2"
-  revisions:
-    - name: "1"
-    - name: "2"
-    - name: "evt1"
+      variants:
+        - name: os_5led
+          cpucluster: cpuapp
+        - name: os_3led
+          cpucluster: cpuapp
+        - name: max_5led
+          cpucluster: cpuapp
+        - name: max_3led
+          cpucluster: cpuapp
+  revision:
+    format: custom
+    default: "2"
+    revisions:
+      - name: "1"
+      - name: "2"
+      - name: "evt1"
 "#,
         )
         .unwrap();
@@ -530,6 +551,65 @@ revision:
         assert!(scan(dir.path()).is_err());
     }
 
+    /// Regression test using the real reference-dut repo's actual
+    /// `boards/nordic/dut_dev/board.yml` content verbatim (checked directly
+    /// against the repo, not reconstructed from memory) plus its real
+    /// per-revision overlay files, no synthetic simplification. Guards two
+    /// real bugs an earlier version of this module had, both found only by
+    /// checking against the real repo: a variant literally named `default`
+    /// must not appear in the assembled filename stem or board qualifier
+    /// (it's a schema placeholder here, not a real product variant — its
+    /// name never appears in any real board filename), and `revision` lives
+    /// under `board:`, not as a top-level sibling key.
+    #[test]
+    fn real_dut_dev_board_yml_resolves_every_real_revision() {
+        let dir = tempfile_dir();
+        let board_dir = dir.path().join("boards/nordic/dut_dev");
+        fs::create_dir_all(&board_dir).unwrap();
+        fs::write(
+            board_dir.join("board.yml"),
+            r#"
+board:
+  name: dut_dev
+  full_name: Reference DUT Development Board
+  vendor: nordic
+  socs:
+    - name: nrf54l15
+      variants:
+        - name: default
+          cpucluster: cpuapp
+  revision:
+    format: number
+    default: "3"
+    exact: true
+    revisions:
+      - name: "3"
+      - name: "6"
+      - name: "7"
+"#,
+        )
+        .unwrap();
+        for rev in ["6", "7"] {
+            fs::write(board_dir.join(format!("dut_dev_nrf54l15_cpuapp_{rev}.overlay")), "").unwrap();
+        }
+        let app_dir = dir.path().join("app/reference-dut");
+        fs::create_dir_all(&app_dir).unwrap();
+        fs::write(app_dir.join("CMakeLists.txt"), "").unwrap();
+
+        let targets = scan(dir.path()).unwrap();
+        let revisions: std::collections::BTreeSet<_> =
+            targets.iter().map(|t| t.revision.clone().unwrap()).collect();
+        assert_eq!(
+            revisions,
+            ["3", "6", "7"].into_iter().map(String::from).collect(),
+            "{targets:#?}"
+        );
+        assert!(targets.iter().all(|t| t.variant.is_none()), "{targets:#?}");
+
+        let picked = select(&targets, None, None, Some("7"), None).unwrap();
+        assert_eq!(picked.board_qualifier(), "dut_dev@7/nrf54l15/cpuapp");
+    }
+
     #[test]
     fn select_narrows_to_singleton() {
         let dir = tempfile_dir();
@@ -555,9 +635,10 @@ revision:
 
     #[test]
     fn select_narrows_a_singleton_variant_without_it_being_typed() {
-        // A board with exactly one real variant (no cpucluster-level
-        // variants declared at all) never requires `variant` to disambiguate
-        // — mirrors dut_dev's single "default" variant in the real repo.
+        // A SoC with no variants declared at all (real example: ref_nrf54dk's
+        // nrf54l05) gets exactly one implicit variant — no name, no
+        // cpucluster — so board/variant/revision/app never has to be typed
+        // to disambiguate it.
         let dir = tempfile_dir();
         let board_dir = dir.path().join("boards/acme/single");
         fs::create_dir_all(&board_dir).unwrap();
@@ -568,8 +649,6 @@ board:
   name: single
   socs:
     - name: nrf54l15
-      cpuclusters:
-        - name: cpuapp
 "#,
         )
         .unwrap();
