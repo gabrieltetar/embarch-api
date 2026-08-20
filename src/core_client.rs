@@ -1,11 +1,14 @@
 use anyhow::{anyhow, Context, Result};
+use bytes::Bytes;
+use embarch_study_designer::{Study, StudyResult};
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::OnceCell;
 
 use crate::config::CoreConfig;
-use crate::topology::{self, ProbeOutcome};
+use crate::topology::{self, ProbeOutcome, TopologyClass};
 
 /// Where Core's address comes from.
 enum Address {
@@ -26,14 +29,19 @@ pub struct CoreClient {
     address: Arc<Address>,
     /// Resolution happens at most once per process. Not persisted anywhere:
     /// the next invocation re-resolves, which is exactly what makes a changed
-    /// WSL2 gateway IP a non-event.
-    resolved: Arc<OnceCell<String>>,
+    /// WSL2 gateway IP a non-event. Carries the winning `TopologyClass`
+    /// alongside the address — `flash`'s only consumer (§9 of the design
+    /// doc, the 2026-08-18 Session-0/UNC finding): a `WslHost`/`Remote` Core
+    /// can't be assumed to share a filesystem with this process, so `flash`
+    /// uploads bytes instead of sending a path for those classes.
+    resolved: Arc<OnceCell<(String, TopologyClass)>>,
     token: String,
     client: reqwest::Client,
     status_timeout: Duration,
     reset_timeout: Duration,
     flash_timeout: Duration,
     serial_timeout: Duration,
+    study_timeout: Duration,
 }
 
 #[derive(Debug, Deserialize)]
@@ -89,6 +97,71 @@ struct ResolveChipResponse {
     chip: String,
 }
 
+/// `POST /study`'s success (200) body — `embarch-doc`'s `embarch-api/design.md`
+/// §5: `{ "study_id": "<uuid-string>", "status": "accepted" }`. Only
+/// `study_id` is modeled — `run_study`/`run-study` return `{ study_id }`
+/// verbatim (per spec) and have no use for `status`, which is always
+/// `"accepted"` on a 200 anyway; serde ignores the extra field on
+/// deserialize.
+#[derive(Debug, Deserialize)]
+pub struct PostStudyResponse {
+    pub study_id: String,
+}
+
+/// `POST /study`'s `409 Conflict` body: `{"study_id": "<uuid-string>"}`
+/// naming the study already in-flight.
+#[derive(Debug, Deserialize)]
+struct StudyConflictBody {
+    study_id: String,
+}
+
+/// Distinct error for `POST /study`'s `409 Conflict` — Core already has a
+/// study in flight. Kept as its own type (rather than folded into a
+/// generic `anyhow!(...)` string) so a caller that wants to branch on "a
+/// study is already running" specifically (as opposed to any other error)
+/// can `e.downcast_ref::<StudyConflictError>()` for it.
+#[derive(Debug)]
+pub struct StudyConflictError {
+    pub study_id: String,
+}
+
+impl std::fmt::Display for StudyConflictError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "embarch-core already has a study in-flight (study_id: {})",
+            self.study_id
+        )
+    }
+}
+
+impl std::error::Error for StudyConflictError {}
+
+/// `GET /study/{study_id}`'s body — `embarch-api/design.md` §5. `status` is
+/// left as a plain `String` (matching how `StatusResponse.status` above is
+/// already handled) rather than a closed enum, since this is a
+/// loosely-typed pass-through of whatever Core reports.
+#[derive(Debug, Deserialize)]
+pub struct StudyStatusResponse {
+    pub status: String,
+    pub current_step: Option<u32>,
+    pub total_steps: Option<u32>,
+    pub result: Option<StudyResult>,
+    pub reason: Option<String>,
+}
+
+/// Core's structured non-2xx error body (`embarch-core/design.md` §3
+/// decision 12): `{"code": "...", "message": "...", "cause": "..."}`. Not
+/// every Core error response uses this shape yet (existing endpoints still
+/// return plain text, per `send`'s doc comment above) — so parsing this is
+/// attempted, with a plain-text fallback, rather than assumed.
+#[derive(Debug, Deserialize)]
+struct CoreErrorBody {
+    code: Option<String>,
+    message: Option<String>,
+    cause: Option<String>,
+}
+
 impl CoreClient {
     pub fn new(config: &CoreConfig) -> Result<CoreClient> {
         let token = config.resolve_token()?;
@@ -114,6 +187,7 @@ impl CoreClient {
             reset_timeout: Duration::from_secs(config.reset_timeout_secs),
             flash_timeout: Duration::from_secs(config.flash_timeout_secs),
             serial_timeout: Duration::from_secs(config.serial_timeout_secs),
+            study_timeout: Duration::from_secs(config.study_timeout_secs),
         })
     }
 
@@ -123,12 +197,21 @@ impl CoreClient {
     /// said, because "couldn't find Core" is useless on its own — the useful
     /// information is whether nothing was listening, or something answered
     /// and wasn't Core.
-    async fn base_url(&self) -> Result<&str> {
-        let url = self
-            .resolved
+    async fn resolved_address(&self) -> Result<&(String, TopologyClass)> {
+        self.resolved
             .get_or_try_init(|| async {
                 let (host, port) = match self.address.as_ref() {
-                    Address::Declared(url) => return Ok::<String, anyhow::Error>(url.clone()),
+                    // A declared address is exactly the same-machine dev
+                    // workflow (`embarch-dev-workflow.md` §2) `flash` has
+                    // always assumed for it: no probing, and treated as
+                    // `Local` so a path sent to Core stays a plain path,
+                    // unchanged from before this decision existed.
+                    Address::Declared(url) => {
+                        return Ok::<(String, TopologyClass), anyhow::Error>((
+                            url.clone(),
+                            TopologyClass::Local,
+                        ))
+                    }
                     Address::Auto { host, port } => (host.as_deref(), *port),
                 };
 
@@ -154,7 +237,7 @@ impl CoreClient {
                             found.candidate.base_url,
                             found.candidate.class.as_str()
                         );
-                        Ok(found.candidate.base_url.clone())
+                        Ok((found.candidate.base_url.clone(), found.candidate.class))
                     }
                     None => {
                         let tried = attempts
@@ -178,8 +261,22 @@ impl CoreClient {
                     }
                 }
             })
-            .await?;
-        Ok(url.as_str())
+            .await
+    }
+
+    async fn base_url(&self) -> Result<&str> {
+        Ok(&self.resolved_address().await?.0)
+    }
+
+    /// The winning topology class — `Local` for a declared address (no
+    /// probing done), otherwise whichever candidate actually answered.
+    /// `flash`'s only consumer: a `WslHost`/`Remote` Core can't be assumed
+    /// to share a filesystem with this process (`design.md` §9's 2026-08-18
+    /// finding — a Session-0-service Core can't reach a `WslHost`'s
+    /// `\\wsl.localhost` UNC path at all), so those classes get the
+    /// artifact's bytes instead of a path.
+    async fn topology_class(&self) -> Result<TopologyClass> {
+        Ok(self.resolved_address().await?.1)
     }
 
     /// Core's error responses are plain-text bodies (axum's IntoResponse for
@@ -212,20 +309,79 @@ impl CoreClient {
             .context("failed to parse embarch-core's response as JSON")
     }
 
+    /// Formats a non-2xx `/study/*` error body: Core's new `{code, message,
+    /// cause}` shape (`embarch-core/design.md` §3 decision 12) if the body
+    /// parses as one, else the raw text — same fallback posture as `send`'s
+    /// doc comment above, since not every endpoint has moved to the
+    /// structured shape yet.
+    fn format_study_error(status: reqwest::StatusCode, body: &str) -> String {
+        match serde_json::from_str::<CoreErrorBody>(body) {
+            Ok(CoreErrorBody { code, message: Some(message), cause }) => {
+                let code = code.as_deref().unwrap_or("error");
+                match cause {
+                    Some(cause) => format!("embarch-core returned {status} [{code}]: {message}\ncause: {cause}"),
+                    None => format!("embarch-core returned {status} [{code}]: {message}"),
+                }
+            }
+            _ => format!("embarch-core returned {status}: {body}"),
+        }
+    }
+
     pub async fn status(&self) -> Result<StatusResponse> {
         let url = format!("{}/status", self.base_url().await?);
         self.send(self.client.get(url), self.status_timeout).await
     }
 
+    /// `firmware_path` is always a path *this process* can read — the
+    /// WSL2-local artifact path, or a CLI `--firmware-path` override, never
+    /// a UNC form the caller computed for Core. What gets sent to Core
+    /// depends on the resolved topology (`design.md` §9's 2026-08-18
+    /// finding): `Local` (same machine, or a declared dev-workflow address)
+    /// sends the path as JSON, unchanged from before this decision — Core
+    /// can just open it. `WslHost`/`Remote` — Core running natively on the
+    /// Windows host of this WSL2 guest, or on a genuinely separate machine
+    /// — reads the file here and uploads its bytes as `multipart/form-data`
+    /// instead, since a Core running as an installed Windows service (as
+    /// opposed to a foreground `run`) has no access to this process's
+    /// `\\wsl.localhost` share at all — confirmed by direct A/B test, not
+    /// assumed. This is strictly more general than the UNC-path mechanism it
+    /// replaces for these classes: it works identically whether Core is
+    /// foreground or an installed service, so callers no longer need to
+    /// compute or send a `firmware_path_for_core`-style UNC form at all.
     pub async fn flash(&self, chip: &str, firmware_path: &str, format: &str) -> Result<FlashResponse> {
         let url = format!("{}/flash", self.base_url().await?);
-        let body = FlashRequest {
-            chip,
-            firmware_path,
-            format,
-        };
-        self.send(self.client.post(url).json(&body), self.flash_timeout)
-            .await
+
+        match self.topology_class().await? {
+            TopologyClass::Local => {
+                let body = FlashRequest {
+                    chip,
+                    firmware_path,
+                    format,
+                };
+                self.send(self.client.post(url).json(&body), self.flash_timeout)
+                    .await
+            }
+            TopologyClass::WslHost | TopologyClass::Remote => {
+                let path = Path::new(firmware_path);
+                let bytes = tokio::fs::read(path).await.with_context(|| {
+                    format!("failed to read firmware artifact at {}", path.display())
+                })?;
+                let file_name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("firmware.bin")
+                    .to_string();
+                let form = reqwest::multipart::Form::new()
+                    .text("chip", chip.to_string())
+                    .text("format", format.to_string())
+                    .part(
+                        "firmware",
+                        reqwest::multipart::Part::bytes(bytes).file_name(file_name),
+                    );
+                self.send(self.client.post(url).multipart(form), self.flash_timeout)
+                    .await
+            }
+        }
     }
 
     pub async fn reset(&self, chip: &str) -> Result<ResetResponse> {
@@ -262,5 +418,149 @@ impl CoreClient {
             .send(self.client.post(url).json(&body), self.status_timeout)
             .await?;
         Ok(resp.chip)
+    }
+
+    /// Submit a `Study` for Core to run against whatever DUT is connected
+    /// through its one dev-bench serial link (`embarch-api/design.md` §5 —
+    /// no `project` param, unlike `build`/`flash`, since a study isn't
+    /// tied to one of this file's configured projects). Async: a `200`
+    /// means Core accepted the study and started it, not that it finished
+    /// — poll `get_study_status` for progress.
+    ///
+    /// Callers must have already recomputed `study.steps_crc` via
+    /// `embarch_study_designer::steps_crc` before calling this — this
+    /// method sends `study` exactly as given, it does not recompute
+    /// anything itself.
+    pub async fn post_study(&self, study: &Study) -> Result<PostStudyResponse> {
+        let url = format!("{}/study", self.base_url().await?);
+        let response = self
+            .client
+            .post(url)
+            .bearer_auth(&self.token)
+            .timeout(self.study_timeout)
+            .json(study)
+            .send()
+            .await
+            .context("request to embarch-core failed")?;
+
+        let status = response.status();
+        if status.is_success() {
+            return response
+                .json::<PostStudyResponse>()
+                .await
+                .context("failed to parse embarch-core's response as JSON");
+        }
+
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "<no response body>".to_string());
+
+        if status == reqwest::StatusCode::CONFLICT {
+            return match serde_json::from_str::<StudyConflictBody>(&body) {
+                Ok(conflict) => Err(anyhow::Error::new(StudyConflictError {
+                    study_id: conflict.study_id,
+                })),
+                Err(_) => Err(anyhow!(
+                    "embarch-core returned 409 Conflict (a study is already in-flight), \
+                     but its response body didn't name a study_id: {body}"
+                )),
+            };
+        }
+
+        Err(anyhow!(Self::format_study_error(status, &body)))
+    }
+
+    /// Poll a submitted study's status via `GET /study/{study_id}`.
+    pub async fn get_study_status(&self, study_id: &str) -> Result<StudyStatusResponse> {
+        let url = format!("{}/study/{study_id}", self.base_url().await?);
+        let response = self
+            .client
+            .get(url)
+            .bearer_auth(&self.token)
+            .timeout(self.study_timeout)
+            .send()
+            .await
+            .context("request to embarch-core failed")?;
+
+        let status = response.status();
+        if status.is_success() {
+            return response
+                .json::<StudyStatusResponse>()
+                .await
+                .context("failed to parse embarch-core's response as JSON");
+        }
+
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "<no response body>".to_string());
+
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(anyhow!(
+                "unknown study_id '{study_id}': embarch-core has no record of it"
+            ));
+        }
+
+        Err(anyhow!(Self::format_study_error(status, &body)))
+    }
+
+    /// Shared by `get_study_power_data`/`get_study_waveform_data`: both are
+    /// `GET /study/{study_id}/<endpoint>` returning a raw `text/csv` body,
+    /// differing only in the endpoint name and what a `404` means for that
+    /// particular data channel.
+    async fn get_study_csv(&self, endpoint: &str, study_id: &str, not_found: &str) -> Result<Bytes> {
+        let url = format!("{}/study/{study_id}/{endpoint}", self.base_url().await?);
+        let response = self
+            .client
+            .get(url)
+            .bearer_auth(&self.token)
+            .timeout(self.study_timeout)
+            .send()
+            .await
+            .context("request to embarch-core failed")?;
+
+        let status = response.status();
+        if status.is_success() {
+            return response
+                .bytes()
+                .await
+                .context("failed to read embarch-core's response body");
+        }
+
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(anyhow!("{not_found} (study_id: {study_id})"));
+        }
+
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "<no response body>".to_string());
+        Err(anyhow!(Self::format_study_error(status, &body)))
+    }
+
+    /// `GET /study/{study_id}/power-data` — raw CSV bytes. A `404` is an
+    /// expected outcome for many studies (no step declared a
+    /// `power_sample`), not an exceptional one, so it's worded as such
+    /// rather than as a generic request failure.
+    pub async fn get_study_power_data(&self, study_id: &str) -> Result<Bytes> {
+        self.get_study_csv(
+            "power-data",
+            study_id,
+            "no power data captured for this study",
+        )
+        .await
+    }
+
+    /// `GET /study/{study_id}/waveform-data` — raw CSV bytes. Same "expected,
+    /// not exceptional" `404` posture as `get_study_power_data`: many studies
+    /// have no `GattOperation::StreamCapture` step at all.
+    pub async fn get_study_waveform_data(&self, study_id: &str) -> Result<Bytes> {
+        self.get_study_csv(
+            "waveform-data",
+            study_id,
+            "no waveform data captured for this study",
+        )
+        .await
     }
 }

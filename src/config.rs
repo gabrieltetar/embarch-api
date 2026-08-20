@@ -15,6 +15,9 @@ fn default_flash_timeout_secs() -> u64 {
 fn default_serial_timeout_secs() -> u64 {
     15
 }
+fn default_study_timeout_secs() -> u64 {
+    30
+}
 fn default_build_timeout_secs() -> u64 {
     300
 }
@@ -49,6 +52,15 @@ pub struct CoreConfig {
     pub flash_timeout_secs: u64,
     #[serde(default = "default_serial_timeout_secs")]
     pub serial_timeout_secs: u64,
+    /// Shared by all four `/study` endpoints (`post_study`, `get_study_status`,
+    /// `get_study_power_data`, `get_study_waveform_data`) — unlike
+    /// build/flash/reset/serial-log, these don't warrant separate knobs:
+    /// `POST /study` returns immediately (async, `embarch-study-designer`
+    /// design.md §3 decision 9), status polling is a cheap read, and the
+    /// power/waveform CSV downloads are bounded by the same
+    /// `limits::MAX_STEPS_PER_STUDY`-sized study that produced them.
+    #[serde(default = "default_study_timeout_secs")]
+    pub study_timeout_secs: u64,
 }
 
 impl CoreConfig {
@@ -128,8 +140,6 @@ pub struct ProjectConfig {
     pub serial_port: Option<String>,
     #[serde(default)]
     pub serial_baud: Option<u32>,
-    #[serde(default)]
-    pub artifact_path_for_core: Option<String>,
     /// Only meaningful for `discovery = "zephyr-west"`: the `west` binary to
     /// invoke (often not on bare `PATH` — see `config.example.toml`).
     #[serde(default)]
