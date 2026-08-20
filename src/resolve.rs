@@ -49,7 +49,6 @@ pub struct Resolved {
     pub plan: BuildPlan,
     pub chip: String,
     pub flash_format: String,
-    pub artifact_path_for_core: Option<String>,
     pub descriptor: serde_json::Value,
 }
 
@@ -78,7 +77,6 @@ fn resolve_static(project: &ProjectConfig) -> Result<Resolved> {
             .clone()
             .expect("validate() enforces chip for a static project"),
         flash_format: project.flash_format.clone(),
-        artifact_path_for_core: project.artifact_path_for_core.clone(),
         descriptor: serde_json::json!({ "project": project.name }),
     })
 }
@@ -166,12 +164,6 @@ async fn resolve_zephyr(project: &ProjectConfig, selection: Selection<'_>, core:
         .await
         .with_context(|| format!("failed to resolve a probe-rs chip for SoC '{}'", target.soc))?;
 
-    let artifact_path_for_core = if crate::env::under_wsl2() {
-        crate::env::wsl_distro_name().map(|distro| crate::env::wsl_unc_path(&distro, &artifact_path))
-    } else {
-        None
-    };
-
     Ok(Resolved {
         plan: BuildPlan {
             lock_key: format!("{}::{}", project.name, target.build_dir_name(&snippets, &extra_args)),
@@ -186,7 +178,6 @@ async fn resolve_zephyr(project: &ProjectConfig, selection: Selection<'_>, core:
         },
         chip,
         flash_format: project.flash_format.clone(),
-        artifact_path_for_core,
         descriptor: serde_json::json!({
             "project": project.name,
             "board": target.board,

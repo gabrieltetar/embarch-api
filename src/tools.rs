@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::build::{BuildLocks, BuildOutcome};
 use crate::config::{Config, ProjectConfig};
-use crate::core_client::CoreClient;
+use crate::core_client::{CoreClient, StudyConflictError};
 use crate::resolve::{self, Selection};
 
 #[derive(Clone)]
@@ -167,6 +167,63 @@ pub struct SerialLogParams {
     pub duration_ms: Option<u64>,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RunStudyParams {
+    /// The full Study to submit — embarch-study-designer's schema (name,
+    /// steps, validations, steps_crc). Untyped here (rather than a typed
+    /// Study field) since embarch-study-designer is a #![no_std] crate that
+    /// doesn't depend on schemars; the object is validated by deserializing
+    /// it into Study server-side, immediately on receipt. steps_crc is
+    /// recomputed from steps and overwritten regardless of what's given.
+    ///
+    /// Real MCP-path gap found running `embarch-doc/embarch-api/milestone-8.md`
+    /// §3.8 against a live MCP client: `serde_json::Value`'s own `JsonSchema`
+    /// impl generates the JSON Schema literal `true` ("matches anything"),
+    /// with no `"type": "object"` for a client to key off — at least one real
+    /// client (Claude Code) read that as "no declared shape" and serialized
+    /// whatever was passed as a JSON *string* rather than an inline object,
+    /// which then failed server-side deserialization into `Study` with a
+    /// confusing "expected struct Study, got a string" error. The CLI path
+    /// never hits this (no JSON Schema involved — `--study-file` reads and
+    /// parses the file directly). `schema_with` below overrides only the
+    /// generated *schema* advertised to a client; deserialization here is
+    /// unchanged, still a plain `serde_json::Value`.
+    #[schemars(schema_with = "study_value_schema")]
+    pub study: serde_json::Value,
+}
+
+/// `schemars(schema_with)` override for [`RunStudyParams::study`] — see that
+/// field's doc comment for why `serde_json::Value`'s own default schema
+/// (the literal `true`) isn't enough for at least one real MCP client to
+/// send a structured object rather than a stringified one.
+fn study_value_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "object",
+        "additionalProperties": true
+    })
+}
+
+/// A defensive fallback for exactly the client behavior `study_value_schema`
+/// documents: if `v` arrived as a JSON-encoded string rather than an inline
+/// object, parse it and use the result; anything else (already an object,
+/// or some other JSON type entirely — `Study`'s own deserialization is what
+/// rejects that case) passes through untouched. Pure and split out from
+/// [`EmbarchApi::run_study`] so it's unit-testable with no MCP/Core
+/// plumbing involved, same posture as `study.rs`'s `recompute_steps_crc`.
+fn unwrap_stringified_json(v: serde_json::Value) -> Result<serde_json::Value, serde_json::Error> {
+    match v {
+        serde_json::Value::String(s) => serde_json::from_str(&s),
+        v => Ok(v),
+    }
+}
+
+/// Shared by every tool that operates on an already-submitted study by id.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct StudyIdParams {
+    /// The study_id returned by run_study.
+    pub study_id: String,
+}
+
 #[tool_router]
 impl EmbarchApi {
     #[tool(description = "List every project configured in embarch-api's config file, with its chip, flash format, and source path. chip is omitted for a discovery = \"zephyr-west\" project, since it's resolved per call via list_targets/build/flash instead of stored.")]
@@ -292,10 +349,10 @@ impl EmbarchApi {
             Ok(r) => r,
             Err(e) => return Self::err_text(format!("{e:#}")),
         };
-        let path = resolved
-            .artifact_path_for_core
-            .clone()
-            .unwrap_or_else(|| resolved.plan.artifact_path.display().to_string());
+        // Always the WSL2-local path — `core.flash` itself decides whether
+        // that can go straight to Core as-is or needs uploading, based on
+        // topology (`core_client.rs`'s own doc comment, `design.md` §9).
+        let path = resolved.plan.artifact_path.display().to_string();
 
         match self.core.flash(&resolved.chip, &path, &project.flash_format).await {
             Ok(resp) => Self::ok_json(serde_json::json!({
@@ -349,11 +406,8 @@ impl EmbarchApi {
             return Self::err_text(serde_json::to_string_pretty(&value).unwrap_or_default());
         }
 
-        let artifact_path = outcome.artifact_path.display().to_string();
-        let core_firmware_path = resolved
-            .artifact_path_for_core
-            .clone()
-            .unwrap_or_else(|| artifact_path.clone());
+        // Always the WSL2-local path — see the sibling `flash` fn above.
+        let core_firmware_path = outcome.artifact_path.display().to_string();
         match self
             .core
             .flash(&resolved.chip, &core_firmware_path, &project.flash_format)
@@ -429,6 +483,94 @@ impl EmbarchApi {
             Err(e) => Self::err_text(format!("serial-log failed for '{}': {e:#}", project.name)),
         }
     }
+
+    #[tool(description = "Submit a Study (embarch-study-designer's schema: name, steps, validations, steps_crc) for embarch-core to run against whatever DUT is connected through its dev-bench serial link. No project param — a study isn't tied to a configured project, unlike build/flash. steps_crc is recomputed from steps and overwritten regardless of what's submitted. Returns { study_id } immediately (async) — call study_status to poll progress. Errors if a study is already in-flight on Core.")]
+    async fn run_study(
+        &self,
+        Parameters(RunStudyParams { study }): Parameters<RunStudyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let study = match unwrap_stringified_json(study) {
+            Ok(v) => v,
+            Err(e) => {
+                return Self::err_text(format!(
+                    "study was sent as a JSON-encoded string but didn't parse as JSON: {e}"
+                ))
+            }
+        };
+        let mut study: embarch_study_designer::Study = match serde_json::from_value(study) {
+            Ok(s) => s,
+            Err(e) => {
+                return Self::err_text(format!("study did not match the expected Study schema: {e}"))
+            }
+        };
+
+        // design.md §3 decision 26: recompute and overwrite steps_crc
+        // unconditionally, regardless of whatever value (including a
+        // missing/zero one) was in the submitted JSON.
+        if crate::study::recompute_steps_crc(&mut study).is_err() {
+            return Self::err_text(
+                "one step's postcard encoding was too large to compute steps_crc over \
+                 (StepTooLargeError) — should be unreachable given embarch-study-designer's \
+                 configured limits",
+            );
+        }
+
+        match self.core.post_study(&study).await {
+            Ok(resp) => Self::ok_json(serde_json::json!({ "study_id": resp.study_id })),
+            Err(e) => match e.downcast_ref::<StudyConflictError>() {
+                Some(conflict) => Self::err_text(format!(
+                    "a study is already in-flight on embarch-core (study_id: {})",
+                    conflict.study_id
+                )),
+                None => Self::err_text(format!("run_study failed: {e:#}")),
+            },
+        }
+    }
+
+    #[tool(description = "Get a submitted study's status via embarch-core: status (\"pending\"|\"running\"|\"completed\"|\"failed\"), current_step, total_steps, result (once completed), and reason (once failed) — returned verbatim.")]
+    async fn study_status(
+        &self,
+        Parameters(StudyIdParams { study_id }): Parameters<StudyIdParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match self.core.get_study_status(&study_id).await {
+            Ok(resp) => Self::ok_json(serde_json::json!({
+                "status": resp.status,
+                "current_step": resp.current_step,
+                "total_steps": resp.total_steps,
+                "result": resp.result,
+                "reason": resp.reason,
+            })),
+            Err(e) => Self::err_text(format!("study_status failed for '{study_id}': {e:#}")),
+        }
+    }
+
+    #[tool(description = "Fetch a study's power-measurement CSV data via embarch-core, returned as text content. A study with no power_sample steps has no power data — that's a clear error naming study_id, not empty output.")]
+    async fn study_power_data(
+        &self,
+        Parameters(StudyIdParams { study_id }): Parameters<StudyIdParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match self.core.get_study_power_data(&study_id).await {
+            Ok(bytes) => match String::from_utf8(bytes.to_vec()) {
+                Ok(csv) => Ok(CallToolResult::success(vec![ContentBlock::text(csv)])),
+                Err(e) => Self::err_text(format!("power-data response wasn't valid UTF-8: {e}")),
+            },
+            Err(e) => Self::err_text(format!("study_power_data failed for '{study_id}': {e:#}")),
+        }
+    }
+
+    #[tool(description = "Fetch a study's waveform CSV data via embarch-core, returned as text content. A study with no StreamCapture steps has no waveform data — that's a clear error naming study_id, not empty output.")]
+    async fn study_waveform_data(
+        &self,
+        Parameters(StudyIdParams { study_id }): Parameters<StudyIdParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match self.core.get_study_waveform_data(&study_id).await {
+            Ok(bytes) => match String::from_utf8(bytes.to_vec()) {
+                Ok(csv) => Ok(CallToolResult::success(vec![ContentBlock::text(csv)])),
+                Err(e) => Self::err_text(format!("waveform-data response wasn't valid UTF-8: {e}")),
+            },
+            Err(e) => Self::err_text(format!("study_waveform_data failed for '{study_id}': {e:#}")),
+        }
+    }
 }
 
 #[tool_handler]
@@ -440,5 +582,37 @@ impl ServerHandler for EmbarchApi {
              'get this working on hardware' case; use build/flash separately when iterating on \
              compiler errors or re-flashing without rebuilding.",
         )
+    }
+}
+
+#[cfg(test)]
+mod run_study_tests {
+    use super::unwrap_stringified_json;
+
+    #[test]
+    fn a_json_encoded_string_is_parsed_into_the_object_it_names() {
+        let wrapped = serde_json::Value::String(r#"{"name":"x","steps":[]}"#.to_string());
+        let unwrapped = unwrap_stringified_json(wrapped).unwrap();
+        assert_eq!(unwrapped, serde_json::json!({"name": "x", "steps": []}));
+    }
+
+    #[test]
+    fn an_inline_object_passes_through_untouched() {
+        let obj = serde_json::json!({"name": "x", "steps": []});
+        assert_eq!(unwrap_stringified_json(obj.clone()).unwrap(), obj);
+    }
+
+    #[test]
+    fn a_string_that_is_not_valid_json_is_a_clear_error_not_a_panic() {
+        let wrapped = serde_json::Value::String("not json at all".to_string());
+        assert!(unwrap_stringified_json(wrapped).is_err());
+    }
+
+    #[test]
+    fn a_non_string_non_object_value_also_passes_through() {
+        // Not a valid Study either way -- Study's own deserialization is
+        // what should reject this, not this unwrap step.
+        let n = serde_json::json!(42);
+        assert_eq!(unwrap_stringified_json(n.clone()).unwrap(), n);
     }
 }

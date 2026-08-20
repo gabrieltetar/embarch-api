@@ -1,8 +1,9 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::build::BuildOutcome;
 use crate::config::{Config, ProjectConfig};
-use crate::core_client::CoreClient;
+use crate::core_client::{CoreClient, StudyConflictError};
 use crate::resolve::{self, Resolved, Selection};
 use crate::{Commands, TargetSelection};
 
@@ -27,6 +28,14 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
             baud,
             duration_ms,
         } => serial_log(&config, &core, &project, port, baud, duration_ms, json).await,
+        Commands::RunStudy { study_file } => run_study(&core, &study_file, json).await,
+        Commands::StudyStatus { study_id } => study_status(&core, &study_id, json).await,
+        Commands::StudyPowerData { study_id, out } => {
+            study_power_data(&core, &study_id, out.as_deref(), json).await
+        }
+        Commands::StudyWaveformData { study_id, out } => {
+            study_waveform_data(&core, &study_id, out.as_deref(), json).await
+        }
     }
 }
 
@@ -286,9 +295,10 @@ async fn flash(
         Err(code) => return code,
     };
 
-    let path = firmware_path
-        .or(resolved.artifact_path_for_core.clone())
-        .unwrap_or_else(|| resolved.plan.artifact_path.display().to_string());
+    // Always the WSL2-local path — `core.flash` itself decides whether that
+    // can go straight to Core as-is or needs uploading, based on topology
+    // (`core_client.rs`'s own doc comment, `design.md` §9).
+    let path = firmware_path.unwrap_or_else(|| resolved.plan.artifact_path.display().to_string());
 
     match core.flash(&resolved.chip, &path, &resolved.flash_format).await {
         Ok(resp) => finish(
@@ -343,11 +353,8 @@ async fn build_and_flash(
         return finish(json, false, value, human);
     }
 
-    let artifact_path = outcome.artifact_path.display().to_string();
-    let core_firmware_path = resolved
-        .artifact_path_for_core
-        .clone()
-        .unwrap_or_else(|| artifact_path.clone());
+    // Always the WSL2-local path — see the sibling `flash` fn above.
+    let core_firmware_path = outcome.artifact_path.display().to_string();
 
     match core.flash(&resolved.chip, &core_firmware_path, &resolved.flash_format).await {
         Ok(resp) => finish(
@@ -440,5 +447,137 @@ async fn serial_log(
             )
         }
         Err(e) => error_result(json, format!("serial-log failed for '{}': {e:#}", project.name)),
+    }
+}
+
+async fn run_study(core: &CoreClient, study_file: &Path, json: bool) -> i32 {
+    let raw = match std::fs::read_to_string(study_file) {
+        Ok(raw) => raw,
+        Err(e) => {
+            return error_result(
+                json,
+                format!("failed to read study file {}: {e}", study_file.display()),
+            )
+        }
+    };
+
+    let mut study: embarch_study_designer::Study = match serde_json::from_str(&raw) {
+        Ok(s) => s,
+        Err(e) => {
+            return error_result(
+                json,
+                format!(
+                    "study file {} did not match the expected Study schema: {e}",
+                    study_file.display()
+                ),
+            )
+        }
+    };
+
+    // design.md §3 decision 26: recompute and overwrite steps_crc
+    // unconditionally, regardless of whatever value (including a
+    // missing/zero one) was in the submitted JSON.
+    if crate::study::recompute_steps_crc(&mut study).is_err() {
+        return error_result(
+            json,
+            "one step's postcard encoding was too large to compute steps_crc over \
+             (StepTooLargeError) — should be unreachable given embarch-study-designer's \
+             configured limits"
+                .to_string(),
+        );
+    }
+
+    match core.post_study(&study).await {
+        Ok(resp) => finish(
+            json,
+            true,
+            serde_json::json!({ "success": true, "study_id": resp.study_id }),
+            format!("study submitted: study_id={}", resp.study_id),
+        ),
+        Err(e) => match e.downcast_ref::<StudyConflictError>() {
+            Some(conflict) => error_result(
+                json,
+                format!(
+                    "a study is already in-flight on embarch-core (study_id: {})",
+                    conflict.study_id
+                ),
+            ),
+            None => error_result(json, format!("run-study failed: {e:#}")),
+        },
+    }
+}
+
+async fn study_status(core: &CoreClient, study_id: &str, json: bool) -> i32 {
+    match core.get_study_status(study_id).await {
+        Ok(resp) => {
+            let human = format!(
+                "study {study_id}: status={} current_step={:?} total_steps={:?} reason={:?}",
+                resp.status, resp.current_step, resp.total_steps, resp.reason
+            );
+            finish(
+                json,
+                true,
+                serde_json::json!({
+                    "success": true,
+                    "status": resp.status,
+                    "current_step": resp.current_step,
+                    "total_steps": resp.total_steps,
+                    "result": resp.result,
+                    "reason": resp.reason,
+                }),
+                human,
+            )
+        }
+        Err(e) => error_result(json, format!("study-status failed for '{study_id}': {e:#}")),
+    }
+}
+
+/// Shared by `study-power-data`/`study-waveform-data`: write `bytes` to
+/// `out` if given, else straight to stdout. Raw payload data, unlike every
+/// other subcommand's output — `--json` only changes how *status* is
+/// reported (below, for the `--out` case), it never wraps a CSV payload as
+/// a JSON string, and the no-`--out` stdout path stays free of any
+/// wrapper/status text so it can be piped or redirected untouched.
+fn write_study_csv(json: bool, kind: &str, study_id: &str, bytes: &[u8], out: Option<&Path>) -> i32 {
+    match out {
+        Some(path) => match std::fs::write(path, bytes) {
+            Ok(()) => finish(
+                json,
+                true,
+                serde_json::json!({
+                    "success": true,
+                    "study_id": study_id,
+                    "bytes_written": bytes.len(),
+                    "path": path.display().to_string(),
+                }),
+                format!(
+                    "wrote {} bytes of {kind} for study {study_id} to {}",
+                    bytes.len(),
+                    path.display()
+                ),
+            ),
+            Err(e) => error_result(json, format!("failed to write {kind} to {}: {e}", path.display())),
+        },
+        None => {
+            use std::io::Write;
+            match std::io::stdout().write_all(bytes) {
+                Ok(()) => 0,
+                Err(e) => error_result(json, format!("failed to write {kind} to stdout: {e}")),
+            }
+        }
+    }
+}
+
+async fn study_power_data(core: &CoreClient, study_id: &str, out: Option<&Path>, json: bool) -> i32 {
+    match core.get_study_power_data(study_id).await {
+        Ok(bytes) => write_study_csv(json, "power-data", study_id, &bytes, out),
+        Err(e) => error_result(json, format!("study-power-data failed for '{study_id}': {e:#}")),
+    }
+}
+
+async fn study_waveform_data(core: &CoreClient, study_id: &str, out: Option<&Path>, json: bool) -> i32 {
+    match core.get_study_waveform_data(study_id).await {
+        Ok(bytes) => write_study_csv(json, "waveform-data", study_id, &bytes, out),
+        Err(e) => error_result(json, format!("study-waveform-data failed for '{study_id}': {e:#}")),
     }
 }

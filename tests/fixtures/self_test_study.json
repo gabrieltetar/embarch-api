@@ -1,0 +1,21 @@
+{
+  "name": "dev-bench-self-test",
+  "steps": [
+    {
+      "name": "advertise-short",
+      "action": { "BleAdvertise": { "local_name": "embarch-selftest", "service_uuids": [], "adv_interval_ms": 100 } },
+      "timeout_ms": 3000,
+      "power_sample": null,
+      "continue_on_fail": false
+    },
+    {
+      "name": "advertise-longer",
+      "action": { "BleAdvertise": { "local_name": "embarch-selftest-2", "service_uuids": [], "adv_interval_ms": 500 } },
+      "timeout_ms": 5000,
+      "power_sample": null,
+      "continue_on_fail": true
+    }
+  ],
+  "validations": [],
+  "steps_crc": 0
+}

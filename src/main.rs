@@ -5,6 +5,7 @@ mod core_client;
 mod env;
 mod probe;
 mod resolve;
+mod study;
 mod token_discovery;
 mod tools;
 mod topology;
@@ -127,6 +128,36 @@ pub enum Commands {
         /// How long to read for, in milliseconds. Defaults to 2000.
         #[arg(long = "duration-ms")]
         duration_ms: Option<u64>,
+    },
+    /// Submit a Study (embarch-study-designer's schema) for embarch-core to
+    /// run against whatever DUT is connected through its dev-bench serial
+    /// link. No project — a study isn't tied to a configured project.
+    /// steps_crc is recomputed from steps and overwritten regardless of
+    /// what's in the file.
+    RunStudy {
+        /// Path to a JSON file matching Study's schema.
+        #[arg(long = "study-file")]
+        study_file: PathBuf,
+    },
+    /// Get a submitted study's status via embarch-core.
+    StudyStatus { study_id: String },
+    /// Fetch a study's power-measurement CSV data via embarch-core. Writes
+    /// to stdout, or to --out if given. A study with no power_sample steps
+    /// has no power data — that's reported as an error naming study_id, not
+    /// silently empty output.
+    StudyPowerData {
+        study_id: String,
+        /// Write the CSV to this file instead of stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Fetch a study's waveform CSV data via embarch-core. Same
+    /// stdout/--out behavior as study-power-data.
+    StudyWaveformData {
+        study_id: String,
+        /// Write the CSV to this file instead of stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
 }
 
