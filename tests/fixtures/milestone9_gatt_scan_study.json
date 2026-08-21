@@ -1,0 +1,28 @@
+{
+  "name": "milestone-9-dut-gatt-scan",
+  "steps": [
+    {
+      "name": "connect-dut",
+      "action": { "BleConnect": { "role": "Central", "target_address": null } },
+      "timeout_ms": 15000,
+      "power_sample": null,
+      "continue_on_fail": false
+    },
+    {
+      "name": "gatt-discover",
+      "action": { "GattDiscover": {} },
+      "timeout_ms": 10000,
+      "power_sample": null,
+      "continue_on_fail": false
+    },
+    {
+      "name": "gatt-monitor-all",
+      "action": { "GattMonitorAll": {} },
+      "timeout_ms": 20000,
+      "power_sample": null,
+      "continue_on_fail": false
+    }
+  ],
+  "validations": [],
+  "steps_crc": 0
+}
