@@ -8,7 +8,7 @@ use std::time::Duration;
 use tokio::sync::OnceCell;
 
 use crate::config::CoreConfig;
-use crate::topology::{self, ProbeOutcome, TopologyClass};
+use embarch_topology::software::{ProbeOutcome, TopologyClass};
 
 /// Where Core's address comes from.
 enum Address {
@@ -63,6 +63,10 @@ struct FlashRequest<'a> {
     chip: &'a str,
     firmware_path: &'a str,
     format: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base_address: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    probe_serial: Option<&'a str>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,11 +78,34 @@ pub struct FlashResponse {
 #[derive(Debug, Serialize)]
 struct ResetRequest<'a> {
     chip: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    probe_serial: Option<&'a str>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ResetResponse {
     pub reset: bool,
+}
+
+/// `embarch-core/design.md` §3 decision 22's `POST /probes/enroll` — the
+/// only sanctioned way to populate/update Core's local `known_boards`
+/// table. Thin request/response wrappers, matching every other Core call in
+/// this file: `embarch-api` holds no opinion on the shape of `known_boards`
+/// itself, just relays this one call (decision 34's own rationale for why
+/// this stays a two-layer wrapper rather than growing config of its own).
+#[derive(Debug, Serialize)]
+struct EnrollProbeRequest<'a> {
+    role: &'a str,
+    chip: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EnrollProbeResponse {
+    pub probe_serial: String,
+    pub role: String,
+    pub chip: String,
+    pub hardware_id: String,
+    pub confirmed_at_utc_ms: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -215,32 +242,24 @@ impl CoreClient {
                     Address::Auto { host, port } => (host.as_deref(), *port),
                 };
 
-                let under_wsl2 = crate::env::under_wsl2();
-                let gateway = if under_wsl2 {
-                    crate::env::default_gateway()
-                } else {
-                    None
-                };
-                let candidates =
-                    topology::candidates(under_wsl2, gateway.as_deref(), host, port);
+                // embarch-topology/design.md decisions 2, 3: live, in-process,
+                // every call — this crate no longer owns any of the WSL2/
+                // gateway/probe I/O itself (formerly `env.rs`/`probe.rs`/this
+                // module's own `topology.rs` mirror).
+                let resolved = embarch_topology::software::resolve_software_topology(port, host, None).await;
 
-                let client = &self.client;
-                let attempts = topology::resolve(&candidates, move |url| async move {
-                    crate::probe::probe_core(client, &url).await
-                })
-                .await;
-
-                match topology::winner(&attempts) {
-                    Some(found) => {
+                match resolved.winner {
+                    Some(candidate) => {
                         tracing::info!(
                             "embarch-core found at {} ({})",
-                            found.candidate.base_url,
-                            found.candidate.class.as_str()
+                            candidate.base_url,
+                            candidate.class.as_str()
                         );
-                        Ok((found.candidate.base_url.clone(), found.candidate.class))
+                        Ok((candidate.base_url, candidate.class))
                     }
                     None => {
-                        let tried = attempts
+                        let tried = resolved
+                            .attempts
                             .iter()
                             .map(|a| {
                                 let why = match a.outcome {
@@ -348,7 +367,29 @@ impl CoreClient {
     /// replaces for these classes: it works identically whether Core is
     /// foreground or an installed service, so callers no longer need to
     /// compute or send a `firmware_path_for_core`-style UNC form at all.
-    pub async fn flash(&self, chip: &str, firmware_path: &str, format: &str) -> Result<FlashResponse> {
+    /// `base_address` (`embarch-core/design.md` §3 decision 18) is only
+    /// meaningful for `format = "bin"` — silently ignored by Core otherwise,
+    /// same posture that decision's own text documents at Core's single call
+    /// site, so a caller that always passes the same value regardless of
+    /// format doesn't have to special-case it here either.
+    ///
+    /// `probe_serial` (`embarch-core/design.md` §3 decision 9) disambiguates
+    /// which attached debug probe to use when more than one is present —
+    /// designed there well ahead of a real second probe existing, and never
+    /// actually threaded through from this side until dev-bench's own
+    /// flashing pipeline made that real: `open_first_probe()` picking
+    /// whichever probe happens to enumerate first is a real, reproducible
+    /// failure ("interface Jtag must be selected... currently using
+    /// interface Swd") the moment a DUT's probe and dev-bench's own probe
+    /// are both plugged in and this is omitted.
+    pub async fn flash(
+        &self,
+        chip: &str,
+        firmware_path: &str,
+        format: &str,
+        base_address: Option<&str>,
+        probe_serial: Option<&str>,
+    ) -> Result<FlashResponse> {
         let url = format!("{}/flash", self.base_url().await?);
 
         match self.topology_class().await? {
@@ -357,6 +398,8 @@ impl CoreClient {
                     chip,
                     firmware_path,
                     format,
+                    base_address,
+                    probe_serial,
                 };
                 self.send(self.client.post(url).json(&body), self.flash_timeout)
                     .await
@@ -371,22 +414,40 @@ impl CoreClient {
                     .and_then(|n| n.to_str())
                     .unwrap_or("firmware.bin")
                     .to_string();
-                let form = reqwest::multipart::Form::new()
+                let mut form = reqwest::multipart::Form::new()
                     .text("chip", chip.to_string())
-                    .text("format", format.to_string())
-                    .part(
-                        "firmware",
-                        reqwest::multipart::Part::bytes(bytes).file_name(file_name),
-                    );
+                    .text("format", format.to_string());
+                if let Some(base_address) = base_address {
+                    form = form.text("base_address", base_address.to_string());
+                }
+                if let Some(probe_serial) = probe_serial {
+                    form = form.text("probe_serial", probe_serial.to_string());
+                }
+                let form = form.part(
+                    "firmware",
+                    reqwest::multipart::Part::bytes(bytes).file_name(file_name),
+                );
                 self.send(self.client.post(url).multipart(form), self.flash_timeout)
                     .await
             }
         }
     }
 
-    pub async fn reset(&self, chip: &str) -> Result<ResetResponse> {
+    pub async fn reset(&self, chip: &str, probe_serial: Option<&str>) -> Result<ResetResponse> {
         let url = format!("{}/reset", self.base_url().await?);
-        let body = ResetRequest { chip };
+        let body = ResetRequest { chip, probe_serial };
+        self.send(self.client.post(url).json(&body), self.reset_timeout)
+            .await
+    }
+
+    /// `POST /probes/enroll` (`embarch-core/design.md` §3 decision 22,
+    /// `embarch-api/design.md` §3 decision 34) — records which physical
+    /// board `role`'s probe is, refusing anything but exactly one currently
+    /// attached probe. Reuses `reset_timeout`: like `reset`, this is one
+    /// probe attach plus a couple of memory reads, not a multi-second flash.
+    pub async fn enroll_probe(&self, role: &str, chip: &str) -> Result<EnrollProbeResponse> {
+        let url = format!("{}/probes/enroll", self.base_url().await?);
+        let body = EnrollProbeRequest { role, chip };
         self.send(self.client.post(url).json(&body), self.reset_timeout)
             .await
     }

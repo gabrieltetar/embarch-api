@@ -38,6 +38,16 @@ impl EmbarchApi {
             .map_err(|e| McpError::invalid_params(e.to_string(), None))
     }
 
+    fn dev_bench_config(&self) -> Result<&crate::config::DevBenchConfig, McpError> {
+        self.config.dev_bench.as_ref().ok_or_else(|| {
+            McpError::invalid_params(
+                "no [dev_bench] configured — add a [dev_bench] table (source_path, \
+                 west_binary) to build/flash embarch-dev-bench's own firmware",
+                None,
+            )
+        })
+    }
+
     fn ok_json(value: serde_json::Value) -> Result<CallToolResult, McpError> {
         let text = serde_json::to_string_pretty(&value)
             .unwrap_or_else(|e| format!("<failed to serialize result: {e}>"));
@@ -217,11 +227,34 @@ fn unwrap_stringified_json(v: serde_json::Value) -> Result<serde_json::Value, se
     }
 }
 
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct FlashDevBenchParams {
+    /// Flash this file instead of dev-bench's own configured build artifact.
+    pub firmware_path: Option<String>,
+}
+
 /// Shared by every tool that operates on an already-submitted study by id.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct StudyIdParams {
     /// The study_id returned by run_study.
     pub study_id: String,
+}
+
+/// `embarch-core/design.md` §3 decision 22's `POST /probes/enroll`, wrapped
+/// per decision 34. No `project`/`board`/`variant`/etc. — enrollment isn't
+/// build-target selection, it's "record which physical probe I mean,"
+/// matching `run_study`'s own "no project param when the concept genuinely
+/// isn't project-shaped" precedent.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct EnrollProbeParams {
+    /// A human-chosen label for this board (e.g. "reference-dut-fw"
+    /// or "dev-bench") — recorded verbatim, not validated against anything.
+    pub role: String,
+    /// The probe-rs chip target this probe should attach as (e.g.
+    /// "nRF54L15", "esp32c5") — used both for the enrollment readback and,
+    /// once enrolled, for every later `flash`/`reset`/study gate check
+    /// against this same probe.
+    pub chip: String,
 }
 
 #[tool_router]
@@ -334,7 +367,17 @@ impl EmbarchApi {
                 Ok(r) => r,
                 Err(e) => return Self::err_text(format!("{e:#}")),
             };
-            return match self.core.flash(&resolved.chip, firmware_path, &project.flash_format).await {
+            return match self
+                .core
+                .flash(
+                    &resolved.chip,
+                    firmware_path,
+                    &project.flash_format,
+                    resolved.base_address.as_deref(),
+                    resolved.probe_serial.as_deref(),
+                )
+                .await
+            {
                 Ok(resp) => Self::ok_json(serde_json::json!({
                     "flashed": resp.flashed,
                     "chip": resp.chip,
@@ -354,7 +397,11 @@ impl EmbarchApi {
         // topology (`core_client.rs`'s own doc comment, `design.md` §9).
         let path = resolved.plan.artifact_path.display().to_string();
 
-        match self.core.flash(&resolved.chip, &path, &project.flash_format).await {
+        match self
+            .core
+            .flash(&resolved.chip, &path, &project.flash_format, resolved.base_address.as_deref(), resolved.probe_serial.as_deref())
+            .await
+        {
             Ok(resp) => Self::ok_json(serde_json::json!({
                 "flashed": resp.flashed,
                 "chip": resp.chip,
@@ -410,7 +457,13 @@ impl EmbarchApi {
         let core_firmware_path = outcome.artifact_path.display().to_string();
         match self
             .core
-            .flash(&resolved.chip, &core_firmware_path, &project.flash_format)
+            .flash(
+                &resolved.chip,
+                &core_firmware_path,
+                &project.flash_format,
+                resolved.base_address.as_deref(),
+                resolved.probe_serial.as_deref(),
+            )
             .await
         {
             Ok(resp) => Self::ok_json(serde_json::json!({
@@ -424,6 +477,138 @@ impl EmbarchApi {
                 "build succeeded but flash failed for '{}': {e:#}",
                 project.name
             )),
+        }
+    }
+
+    #[tool(description = "Build embarch-dev-bench's own firmware (the ESP32-C5 espressif workspace) by running west build. No project param — dev-bench isn't a configured project, it's EmbArch's one fixed test rig (board/chip/flash format are constants, not config). Requires [dev_bench] to be configured (source_path, west_binary). Does not touch hardware — use build_and_flash_dev_bench to build and then flash in one call.")]
+    async fn build_dev_bench(&self) -> Result<CallToolResult, McpError> {
+        let dev_bench = match self.dev_bench_config() {
+            Ok(c) => c,
+            Err(e) => return Err(e),
+        };
+        let resolved = match crate::dev_bench::resolve(dev_bench) {
+            Ok(r) => r,
+            Err(e) => return Self::err_text(format!("{e:#}")),
+        };
+
+        match self.build_locks.run_build(&resolved.plan).await {
+            Ok(outcome) => {
+                let mut value = Self::build_outcome_json(&outcome);
+                value["success"] = serde_json::Value::Bool(outcome.build_succeeded());
+                value["target"] = resolved.descriptor.clone();
+                if outcome.build_succeeded() {
+                    Self::ok_json(value)
+                } else {
+                    Self::err_text(serde_json::to_string_pretty(&value).unwrap_or_default())
+                }
+            }
+            Err(e) => Self::err_text(format!("failed to run build for dev_bench: {e:#}")),
+        }
+    }
+
+    #[tool(description = "Flash embarch-dev-bench's own firmware via embarch-core. Defaults to dev-bench's own configured build artifact, or pass firmware_path to flash a specific file without rebuilding.")]
+    async fn flash_dev_bench(
+        &self,
+        Parameters(FlashDevBenchParams { firmware_path }): Parameters<FlashDevBenchParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let dev_bench = match self.dev_bench_config() {
+            Ok(c) => c,
+            Err(e) => return Err(e),
+        };
+        let resolved = match crate::dev_bench::resolve(dev_bench) {
+            Ok(r) => r,
+            Err(e) => return Self::err_text(format!("{e:#}")),
+        };
+
+        let path = firmware_path.unwrap_or_else(|| resolved.plan.artifact_path.display().to_string());
+
+        match self
+            .core
+            .flash(&resolved.chip, &path, &resolved.flash_format, resolved.base_address.as_deref(), resolved.probe_serial.as_deref())
+            .await
+        {
+            Ok(resp) => Self::ok_json(serde_json::json!({
+                "flashed": resp.flashed,
+                "chip": resp.chip,
+                "firmware_path": path,
+                "target": resolved.descriptor,
+            })),
+            Err(e) => Self::err_text(format!("flash failed for dev_bench: {e:#}")),
+        }
+    }
+
+    #[tool(description = "Build embarch-dev-bench's own firmware and, only if the build succeeds and produces a fresh artifact, flash it via embarch-core. Refuses to flash a stale or failed build. No project param, see build_dev_bench.")]
+    async fn build_and_flash_dev_bench(&self) -> Result<CallToolResult, McpError> {
+        let dev_bench = match self.dev_bench_config() {
+            Ok(c) => c,
+            Err(e) => return Err(e),
+        };
+        let resolved = match crate::dev_bench::resolve(dev_bench) {
+            Ok(r) => r,
+            Err(e) => return Self::err_text(format!("{e:#}")),
+        };
+
+        let outcome = match self.build_locks.run_build(&resolved.plan).await {
+            Ok(outcome) => outcome,
+            Err(e) => return Self::err_text(format!("failed to run build for dev_bench: {e:#}")),
+        };
+
+        let mut build_json = Self::build_outcome_json(&outcome);
+        build_json["target"] = resolved.descriptor.clone();
+
+        if !outcome.ready_to_flash() {
+            let mut value = build_json;
+            value["success"] = serde_json::Value::Bool(false);
+            value["reason"] = serde_json::Value::String(if outcome.timed_out {
+                "build timed out".into()
+            } else if outcome.exit_code != Some(0) {
+                "build failed".into()
+            } else {
+                "build succeeded but no fresh artifact was found — refusing to flash".into()
+            });
+            return Self::err_text(serde_json::to_string_pretty(&value).unwrap_or_default());
+        }
+
+        let core_firmware_path = outcome.artifact_path.display().to_string();
+        match self
+            .core
+            .flash(
+                &resolved.chip,
+                &core_firmware_path,
+                &resolved.flash_format,
+                resolved.base_address.as_deref(),
+                resolved.probe_serial.as_deref(),
+            )
+            .await
+        {
+            Ok(resp) => Self::ok_json(serde_json::json!({
+                "success": true,
+                "build": build_json,
+                "flashed": resp.flashed,
+                "chip": resp.chip,
+                "firmware_path": core_firmware_path,
+            })),
+            Err(e) => Self::err_text(format!("build succeeded but flash failed for dev_bench: {e:#}")),
+        }
+    }
+
+    #[tool(description = "Reset embarch-dev-bench's own chip via embarch-core — needed after flash_dev_bench/build_and_flash_dev_bench, since flashing halts the core rather than starting it running. No project param, see build_dev_bench.")]
+    async fn reset_dev_bench(&self) -> Result<CallToolResult, McpError> {
+        let dev_bench = match self.dev_bench_config() {
+            Ok(c) => c,
+            Err(e) => return Err(e),
+        };
+        let resolved = match crate::dev_bench::resolve(dev_bench) {
+            Ok(r) => r,
+            Err(e) => return Self::err_text(format!("{e:#}")),
+        };
+
+        match self.core.reset(&resolved.chip, resolved.probe_serial.as_deref()).await {
+            Ok(resp) => Self::ok_json(serde_json::json!({
+                "reset": resp.reset,
+                "target": resolved.descriptor,
+            })),
+            Err(e) => Self::err_text(format!("reset failed for dev_bench: {e:#}")),
         }
     }
 
@@ -442,9 +627,26 @@ impl EmbarchApi {
             Err(e) => return Self::err_text(format!("{e:#}")),
         };
 
-        match self.core.reset(&resolved.chip).await {
+        match self.core.reset(&resolved.chip, resolved.probe_serial.as_deref()).await {
             Ok(resp) => Self::ok_json(serde_json::json!({ "reset": resp.reset, "target": resolved.descriptor })),
             Err(e) => Self::err_text(format!("reset failed for '{}': {e:#}", project.name)),
+        }
+    }
+
+    #[tool(description = "Enroll a physical probe with embarch-topology's enrollment storage (design.md decision 22), recording which board its serial number is wired to. Requires exactly one debug probe currently attached — Core refuses (naming every candidate) otherwise, since the whole point is a human physically isolating the one board they mean before confirming. Once enrolled, flash/reset/run_study all refuse to touch that probe unless a live hardware-ID readback still matches what was recorded here. No project param — this isn't build-target selection.")]
+    async fn enroll_probe(
+        &self,
+        Parameters(EnrollProbeParams { role, chip }): Parameters<EnrollProbeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match self.core.enroll_probe(&role, &chip).await {
+            Ok(resp) => Self::ok_json(serde_json::json!({
+                "probe_serial": resp.probe_serial,
+                "role": resp.role,
+                "chip": resp.chip,
+                "hardware_id": resp.hardware_id,
+                "confirmed_at_utc_ms": resp.confirmed_at_utc_ms,
+            })),
+            Err(e) => Self::err_text(format!("enroll_probe failed: {e:#}")),
         }
     }
 

@@ -49,6 +49,18 @@ pub struct Resolved {
     pub plan: BuildPlan,
     pub chip: String,
     pub flash_format: String,
+    /// Only meaningful for `flash_format = "bin"` (`embarch-core/design.md`
+    /// §3 decision 18) — `None` for every DUT project resolved here today,
+    /// since none yet builds a raw `.bin` at a fixed offset; `dev_bench.rs`'s
+    /// own resolution is the first real user of this field.
+    pub base_address: Option<String>,
+    /// Disambiguates which attached debug probe to flash/reset through when
+    /// more than one is present (`embarch-core/design.md` §3 decision 9).
+    /// `None` for every DUT project resolved here today — a real gap only
+    /// dev-bench's own resolution surfaced (see `dev_bench.rs`), since
+    /// exercising two probes simultaneously (a DUT's own probe alongside
+    /// dev-bench's) is new as of that pipeline.
+    pub probe_serial: Option<String>,
     pub descriptor: serde_json::Value,
 }
 
@@ -77,6 +89,8 @@ fn resolve_static(project: &ProjectConfig) -> Result<Resolved> {
             .clone()
             .expect("validate() enforces chip for a static project"),
         flash_format: project.flash_format.clone(),
+        base_address: None,
+        probe_serial: project.probe_serial.clone(),
         descriptor: serde_json::json!({ "project": project.name }),
     })
 }
@@ -178,6 +192,8 @@ async fn resolve_zephyr(project: &ProjectConfig, selection: Selection<'_>, core:
         },
         chip,
         flash_format: project.flash_format.clone(),
+        base_address: None,
+        probe_serial: project.probe_serial.clone(),
         descriptor: serde_json::json!({
             "project": project.name,
             "board": target.board,

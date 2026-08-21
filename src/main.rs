@@ -2,13 +2,11 @@ mod build;
 mod cli;
 mod config;
 mod core_client;
-mod env;
-mod probe;
+mod dev_bench;
 mod resolve;
 mod study;
 mod token_discovery;
 mod tools;
-mod topology;
 mod zephyr;
 
 use anyhow::{Context, Result};
@@ -158,6 +156,38 @@ pub enum Commands {
         /// Write the CSV to this file instead of stdout.
         #[arg(long)]
         out: Option<PathBuf>,
+    },
+    /// Build embarch-dev-bench's own firmware (the ESP32-C5 espressif
+    /// workspace) by running `west build`. No project — dev-bench isn't a
+    /// `[[projects]]` entry, see config.rs's `DevBenchConfig`. Requires
+    /// [dev_bench] to be configured.
+    BuildDevBench,
+    /// Flash embarch-dev-bench's own firmware via embarch-core.
+    FlashDevBench {
+        /// Flash this file instead of dev-bench's own configured build
+        /// artifact.
+        #[arg(long)]
+        firmware_path: Option<String>,
+    },
+    /// Build embarch-dev-bench's own firmware and, only if the build
+    /// succeeds with a fresh artifact, flash it.
+    BuildAndFlashDevBench,
+    /// Reset embarch-dev-bench's own chip via embarch-core — needed after
+    /// flash-dev-bench/build-and-flash-dev-bench, since flashing halts the
+    /// core rather than starting it running.
+    ResetDevBench,
+    /// Enroll a physical probe with embarch-core's known_boards table
+    /// (design.md decision 22), recording which board its serial number is
+    /// wired to. Requires exactly one debug probe currently attached.
+    EnrollProbe {
+        /// A human-chosen label for this board (e.g.
+        /// "reference-dut-fw" or "dev-bench").
+        #[arg(long)]
+        role: String,
+        /// The probe-rs chip target this probe should attach as (e.g.
+        /// "nRF54L15", "esp32c5").
+        #[arg(long)]
+        chip: String,
     },
 }
 

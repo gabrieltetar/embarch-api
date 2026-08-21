@@ -36,6 +36,13 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         Commands::StudyWaveformData { study_id, out } => {
             study_waveform_data(&core, &study_id, out.as_deref(), json).await
         }
+        Commands::BuildDevBench => build_dev_bench(&config, json).await,
+        Commands::FlashDevBench { firmware_path } => {
+            flash_dev_bench(&config, &core, firmware_path, json).await
+        }
+        Commands::BuildAndFlashDevBench => build_and_flash_dev_bench(&config, &core, json).await,
+        Commands::ResetDevBench => reset_dev_bench(&config, &core, json).await,
+        Commands::EnrollProbe { role, chip } => enroll_probe(&core, &role, &chip, json).await,
     }
 }
 
@@ -300,7 +307,10 @@ async fn flash(
     // (`core_client.rs`'s own doc comment, `design.md` §9).
     let path = firmware_path.unwrap_or_else(|| resolved.plan.artifact_path.display().to_string());
 
-    match core.flash(&resolved.chip, &path, &resolved.flash_format).await {
+    match core
+        .flash(&resolved.chip, &path, &resolved.flash_format, resolved.base_address.as_deref(), resolved.probe_serial.as_deref())
+        .await
+    {
         Ok(resp) => finish(
             json,
             true,
@@ -356,7 +366,16 @@ async fn build_and_flash(
     // Always the WSL2-local path — see the sibling `flash` fn above.
     let core_firmware_path = outcome.artifact_path.display().to_string();
 
-    match core.flash(&resolved.chip, &core_firmware_path, &resolved.flash_format).await {
+    match core
+        .flash(
+            &resolved.chip,
+            &core_firmware_path,
+            &resolved.flash_format,
+            resolved.base_address.as_deref(),
+            resolved.probe_serial.as_deref(),
+        )
+        .await
+    {
         Ok(resp) => finish(
             json,
             true,
@@ -391,7 +410,7 @@ async fn reset(
         Err(code) => return code,
     };
 
-    match core.reset(&resolved.chip).await {
+    match core.reset(&resolved.chip, resolved.probe_serial.as_deref()).await {
         Ok(resp) => finish(
             json,
             true,
@@ -399,6 +418,185 @@ async fn reset(
             format!("reset '{project_name}': {}", resp.reset),
         ),
         Err(e) => error_result(json, format!("reset failed for '{project_name}': {e:#}")),
+    }
+}
+
+fn dev_bench_config_or_exit(config: &Config, json: bool) -> Result<&crate::config::DevBenchConfig, i32> {
+    config.dev_bench.as_ref().ok_or_else(|| {
+        error_result(
+            json,
+            "no [dev_bench] configured — add a [dev_bench] table (source_path, west_binary) \
+             to build/flash embarch-dev-bench's own firmware"
+                .to_string(),
+        )
+    })
+}
+
+async fn build_dev_bench(config: &Config, json: bool) -> i32 {
+    let dev_bench = match dev_bench_config_or_exit(config, json) {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    let resolved = match crate::dev_bench::resolve(dev_bench) {
+        Ok(r) => r,
+        Err(e) => return error_result(json, format!("{e:#}")),
+    };
+
+    let build_locks = crate::build::BuildLocks::new();
+    match build_locks.run_build(&resolved.plan).await {
+        Ok(outcome) => {
+            let mut value = build_outcome_json(&outcome);
+            value["success"] = serde_json::Value::Bool(outcome.build_succeeded());
+            value["target"] = resolved.descriptor.clone();
+            let human = build_human_summary("dev_bench", &outcome);
+            finish(json, outcome.build_succeeded(), value, human)
+        }
+        Err(e) => error_result(json, format!("failed to run build for dev_bench: {e:#}")),
+    }
+}
+
+async fn flash_dev_bench(
+    config: &Config,
+    core: &CoreClient,
+    firmware_path: Option<String>,
+    json: bool,
+) -> i32 {
+    let dev_bench = match dev_bench_config_or_exit(config, json) {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    let resolved = match crate::dev_bench::resolve(dev_bench) {
+        Ok(r) => r,
+        Err(e) => return error_result(json, format!("{e:#}")),
+    };
+
+    let path = firmware_path.unwrap_or_else(|| resolved.plan.artifact_path.display().to_string());
+
+    match core
+        .flash(&resolved.chip, &path, &resolved.flash_format, resolved.base_address.as_deref(), resolved.probe_serial.as_deref())
+        .await
+    {
+        Ok(resp) => finish(
+            json,
+            true,
+            serde_json::json!({
+                "success": true,
+                "flashed": resp.flashed,
+                "chip": resp.chip,
+                "firmware_path": path,
+                "target": resolved.descriptor,
+            }),
+            format!("flashed dev_bench via chip {} ({})", resp.chip, path),
+        ),
+        Err(e) => error_result(json, format!("flash failed for dev_bench: {e:#}")),
+    }
+}
+
+async fn build_and_flash_dev_bench(config: &Config, core: &CoreClient, json: bool) -> i32 {
+    let dev_bench = match dev_bench_config_or_exit(config, json) {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    let resolved = match crate::dev_bench::resolve(dev_bench) {
+        Ok(r) => r,
+        Err(e) => return error_result(json, format!("{e:#}")),
+    };
+
+    let build_locks = crate::build::BuildLocks::new();
+    let outcome = match build_locks.run_build(&resolved.plan).await {
+        Ok(outcome) => outcome,
+        Err(e) => return error_result(json, format!("failed to run build for dev_bench: {e:#}")),
+    };
+
+    let mut build_json = build_outcome_json(&outcome);
+    build_json["target"] = resolved.descriptor.clone();
+
+    if !outcome.ready_to_flash() {
+        let mut value = build_json;
+        value["success"] = serde_json::Value::Bool(false);
+        let reason = if outcome.timed_out {
+            "build timed out".to_string()
+        } else if outcome.exit_code != Some(0) {
+            "build failed".to_string()
+        } else {
+            "build succeeded but no fresh artifact was found — refusing to flash".to_string()
+        };
+        value["reason"] = serde_json::Value::String(reason.clone());
+        let human = format!("{reason} for dev_bench — refusing to flash");
+        return finish(json, false, value, human);
+    }
+
+    let core_firmware_path = outcome.artifact_path.display().to_string();
+
+    match core
+        .flash(
+            &resolved.chip,
+            &core_firmware_path,
+            &resolved.flash_format,
+            resolved.base_address.as_deref(),
+            resolved.probe_serial.as_deref(),
+        )
+        .await
+    {
+        Ok(resp) => finish(
+            json,
+            true,
+            serde_json::json!({
+                "success": true,
+                "build": build_json,
+                "flashed": resp.flashed,
+                "chip": resp.chip,
+                "firmware_path": core_firmware_path,
+            }),
+            format!(
+                "build and flash succeeded for dev_bench via chip {} ({})",
+                resp.chip, core_firmware_path
+            ),
+        ),
+        Err(e) => error_result(json, format!("build succeeded but flash failed for dev_bench: {e:#}")),
+    }
+}
+
+async fn reset_dev_bench(config: &Config, core: &CoreClient, json: bool) -> i32 {
+    let dev_bench = match dev_bench_config_or_exit(config, json) {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    let resolved = match crate::dev_bench::resolve(dev_bench) {
+        Ok(r) => r,
+        Err(e) => return error_result(json, format!("{e:#}")),
+    };
+
+    match core.reset(&resolved.chip, resolved.probe_serial.as_deref()).await {
+        Ok(resp) => finish(
+            json,
+            true,
+            serde_json::json!({ "success": true, "reset": resp.reset, "target": resolved.descriptor }),
+            format!("reset dev_bench: {}", resp.reset),
+        ),
+        Err(e) => error_result(json, format!("reset failed for dev_bench: {e:#}")),
+    }
+}
+
+async fn enroll_probe(core: &CoreClient, role: &str, chip: &str, json: bool) -> i32 {
+    match core.enroll_probe(role, chip).await {
+        Ok(resp) => finish(
+            json,
+            true,
+            serde_json::json!({
+                "success": true,
+                "probe_serial": resp.probe_serial,
+                "role": resp.role,
+                "chip": resp.chip,
+                "hardware_id": resp.hardware_id,
+                "confirmed_at_utc_ms": resp.confirmed_at_utc_ms,
+            }),
+            format!(
+                "enrolled probe {} as role '{}' (chip '{}', hardware_id {})",
+                resp.probe_serial, resp.role, resp.chip, resp.hardware_id
+            ),
+        ),
+        Err(e) => error_result(json, format!("enroll-probe failed: {e:#}")),
     }
 }
 

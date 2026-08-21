@@ -39,8 +39,29 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-14
     runs-on: ${{ matrix.os }}
+    # Cargo.toml depends on both embarch-study-designer and embarch-topology
+    # as sibling path dependencies (DOC-PROTOCOL.md §2's layout — no Cargo
+    # workspace). `../embarch-study-designer`/`../embarch-topology` only
+    # resolve if this repo's own checkout also sits in a same-named sibling
+    # directory rather than at the workspace root, so every checkout below
+    # gets an explicit `path:` and every later step runs from inside
+    # `embarch-api/` — same fix as embarch-core's own release.yml, for the
+    # same latent gap (no sibling checkout at all, previously).
+    defaults:
+      run:
+        working-directory: embarch-api
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: embarch-api
+      - uses: actions/checkout@v4
+        with:
+          repository: gabrieltetar/embarch-study-designer
+          path: embarch-study-designer
+      - uses: actions/checkout@v4
+        with:
+          repository: gabrieltetar/embarch-topology
+          path: embarch-topology
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -77,10 +98,13 @@ jobs:
           cd dist
           if [[ "${{ matrix.target }}" == *windows* ]]; then
             7z a "${name}.zip" "${name}" >/dev/null
-            echo "asset=dist/${name}.zip" >> "$GITHUB_OUTPUT"
+            # `working-directory: embarch-api` only applies to `run:` steps,
+            # not the `uses:` upload step below, so this output needs the
+            # `embarch-api/` prefix.
+            echo "asset=embarch-api/dist/${name}.zip" >> "$GITHUB_OUTPUT"
           else
             tar czf "${name}.tar.gz" "${name}"
-            echo "asset=dist/${name}.tar.gz" >> "$GITHUB_OUTPUT"
+            echo "asset=embarch-api/dist/${name}.tar.gz" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Upload release asset
