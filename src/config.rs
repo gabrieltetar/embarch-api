@@ -23,7 +23,7 @@ fn default_build_timeout_secs() -> u64 {
 }
 
 fn default_core_port() -> u16 {
-    crate::topology::DEFAULT_CORE_PORT
+    embarch_topology::software::DEFAULT_CORE_PORT
 }
 
 #[derive(Debug, Deserialize)]
@@ -140,6 +140,14 @@ pub struct ProjectConfig {
     pub serial_port: Option<String>,
     #[serde(default)]
     pub serial_baud: Option<u32>,
+    /// Disambiguates this project's own debug probe when more than one is
+    /// attached (`embarch-core/design.md` §3 decision 9) — matched against
+    /// `ProbeInfo.serial_number` (`status`'s own `probes` list). Documented
+    /// in this file's own §4 table since that decision was written, but
+    /// never actually wired up here until dev-bench's own build/flash
+    /// pipeline made a second real probe common enough to need it for real.
+    #[serde(default)]
+    pub probe_serial: Option<String>,
     /// Only meaningful for `discovery = "zephyr-west"`: the `west` binary to
     /// invoke (often not on bare `PATH` — see `config.example.toml`).
     #[serde(default)]
@@ -204,11 +212,55 @@ impl ProjectConfig {
     }
 }
 
+/// The one dev-bench build target this suite knows about — deliberately not
+/// a `[[projects]]` entry (`design.md`'s dev-bench-flashing-pipeline
+/// decision): a DUT project is something a firmware engineer or an agent
+/// adds/discovers per repo, but dev-bench is EmbArch's own fixed test rig —
+/// there's exactly one, and its board/chip/flash format/flash base address
+/// are facts this suite already knows (`dev_bench.rs`'s own constants), not
+/// per-project knobs. Only `source_path`/`west_binary` are genuinely
+/// machine-specific (where the sibling repo is checked out, and where
+/// `west` actually lives, since it's often not on bare `PATH` — see
+/// `config.example.toml`), so those are the only fields this table declares.
+#[derive(Debug, Deserialize)]
+pub struct DevBenchConfig {
+    /// Absolute path to the `embarch-dev-bench` workspace this suite builds
+    /// today (`workspaces/espressif` — `dev_bench.rs`'s own `BOARD` constant
+    /// names the exact board). Not auto-derived from a sibling-repo
+    /// convention at runtime: an explicit, declared fact, same posture every
+    /// DUT project's own `source_path` already has, deliberately not
+    /// guessed the way an earlier `artifact_path_for_core` UNC-guessing
+    /// scheme was (`embarch-core/design.md` §7's retrospective on exactly
+    /// that class of mistake).
+    pub source_path: PathBuf,
+    /// The `west` binary to invoke — often not on bare `PATH` (see
+    /// `config.example.toml`), same reasoning as a `discovery = "zephyr-west"`
+    /// project's own `west_binary` field.
+    pub west_binary: PathBuf,
+    #[serde(default = "default_build_timeout_secs")]
+    pub build_timeout_secs: u64,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    /// Disambiguates dev-bench's own debug probe from a DUT's, whenever both
+    /// are attached at once (`embarch-core/design.md` §3 decision 9) — a
+    /// real, not hypothetical, need the moment a DUT probe is also plugged
+    /// in: Core's default `open_first_probe()` isn't guaranteed to pick the
+    /// right one, and picking wrong fails outright (wrong debug interface
+    /// for the wrong chip), not silently. Find it via embarch-api's own
+    /// `status` tool/CLI subcommand's `probes` list.
+    #[serde(default)]
+    pub probe_serial: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub core: CoreConfig,
     #[serde(default, rename = "projects")]
     pub projects: Vec<ProjectConfig>,
+    /// Absent means dev-bench build/flash tools are unavailable — a clear
+    /// "not configured" error rather than a silent no-op or a guessed path.
+    #[serde(default)]
+    pub dev_bench: Option<DevBenchConfig>,
 }
 
 impl Config {
@@ -233,6 +285,15 @@ impl Config {
 
     fn validate(&self) -> Result<()> {
         self.core.resolve_token().context("invalid [core] config")?;
+
+        if let Some(dev_bench) = &self.dev_bench {
+            if !dev_bench.source_path.exists() {
+                bail!(
+                    "[dev_bench] has source_path {} which does not exist",
+                    dev_bench.source_path.display()
+                );
+            }
+        }
 
         let mut seen = std::collections::HashSet::new();
         for project in &self.projects {
@@ -417,6 +478,63 @@ flash_format = "hex"
         .unwrap();
         let err = Config::load_from_path(&path).unwrap_err();
         assert!(err.to_string().contains("must not set"), "{err}");
+    }
+
+    #[test]
+    fn dev_bench_absent_by_default() {
+        let dir = tempdir();
+        let config = write_config(
+            dir.path(),
+            r#"
+[core]
+base_url = "auto"
+token_env = "EMBARCH_TOKEN"
+"#,
+        );
+        assert!(config.dev_bench.is_none());
+    }
+
+    #[test]
+    fn dev_bench_missing_source_path_fails_validation() {
+        let dir = tempdir();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[core]
+base_url = "auto"
+token_env = "EMBARCH_TOKEN"
+
+[dev_bench]
+source_path = "/definitely/does/not/exist/anywhere"
+west_binary = "/usr/bin/west"
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from_path(&path).unwrap_err();
+        assert!(err.to_string().contains("[dev_bench]"), "{err}");
+    }
+
+    #[test]
+    fn dev_bench_loads_when_source_path_exists() {
+        let dir = tempdir();
+        let config = write_config(
+            dir.path(),
+            &format!(
+                r#"
+[core]
+base_url = "auto"
+token_env = "EMBARCH_TOKEN"
+
+[dev_bench]
+source_path = "{}"
+west_binary = "/usr/bin/west"
+"#,
+                dir.path().display()
+            ),
+        );
+        let dev_bench = config.dev_bench.expect("dev_bench should be present");
+        assert_eq!(dev_bench.build_timeout_secs, default_build_timeout_secs());
     }
 
     #[test]
