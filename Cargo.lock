@@ -369,6 +369,7 @@ dependencies = [
  "bytes",
  "clap",
  "embarch-study-designer",
+ "embarch-topology",
  "heapless",
  "reqwest",
  "rmcp",
@@ -390,6 +391,16 @@ dependencies = [
  "heapless",
  "postcard",
  "serde",
+]
+
+[[package]]
+name = "embarch-topology"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "reqwest",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

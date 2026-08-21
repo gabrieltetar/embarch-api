@@ -108,3 +108,17 @@ build_timeout_secs = 900
 # snippets, there's no real-file list to validate arbitrary flags against, so
 # these are passed straight through to west build unchanged.
 # default_extra_args = ["-p", "always"]
+
+# embarch-dev-bench's own firmware — deliberately NOT a [[projects]] entry
+# (design.md's dev-bench-flashing-pipeline decision): dev-bench isn't a DUT a
+# firmware engineer or an agent configures/discovers, it's EmbArch's own
+# fixed test rig. Board/chip/flash_format/base_address are constants
+# dev_bench.rs already knows, not config fields — only the two genuinely
+# machine-specific facts (where the sibling repo is checked out, where west
+# actually lives) are declared here. Enables build_dev_bench/flash_dev_bench/
+# build_and_flash_dev_bench; omit this table entirely if you don't run
+# embarch-dev-bench firmware from this machine.
+# [dev_bench]
+# source_path = "/path/to/embarch-dev-bench/workspaces/espressif"
+# west_binary = "/path/to/embarch-dev-bench/workspaces/espressif/.venv/bin/west"
+# build_timeout_secs = 900
