@@ -239,8 +239,50 @@ fn find_config_upward(start: &Path) -> Option<PathBuf> {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // `Builder::thread_stack_size` only sizes threads the *runtime* spawns
+    // (worker/blocking-pool threads) — the top-level future driven by
+    // `block_on` still runs on whatever thread calls it, which for a plain
+    // `fn main` is the process's own main thread, at the OS/platform
+    // default (8 MiB on Linux, 1 MiB on Windows) with no `Builder` knob to
+    // change it. That's not enough to deserialize a real `StudyResult` in
+    // place (~1.3 MB by value, `embarch-study-designer`'s
+    // worst-case-capacity `heapless` fields, embarch-core/design.md
+    // decision 24, plus unoptimized debug-build frame overhead on top) —
+    // confirmed via a real crash, not just the type's known size: this
+    // exact shape (`Builder::thread_stack_size` alone, no thread
+    // respawn) still `SIGABRT`-crashed on `main` itself serving
+    // `study_status` for a real 3-step Milestone 3 study
+    // (`BleConnect`->`GattDiscover`->`GattMonitorAll`) against real
+    // hardware, both over MCP and via this same subcommand run directly.
+    // Matches the exact "debug builds only" risk
+    // `embarch-study-designer/design.md` §7 already tracked from a smaller
+    // 2-step case — this is that same bug, not a new one, just the first
+    // real GATT-sized trigger, and the first time it's needed a real
+    // production fix rather than a test-only `RUST_MIN_STACK`/
+    // `std::thread::Builder` workaround (already used for exactly this in
+    // `study.rs`'s own tests — same fix, now applied to the real binary).
+    // The actual fix: spawn the runtime itself, `block_on` included, on a
+    // dedicated thread with an explicit stack size, since that's the only
+    // lever that covers the calling thread too. 64 MiB matches the
+    // `RUST_MIN_STACK` value this repo's tests already use for the same
+    // underlying cause.
+    std::thread::Builder::new()
+        .stack_size(512 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_stack_size(512 * 1024 * 1024)
+                .build()
+                .context("failed to build the tokio runtime")?
+                .block_on(async_main())
+        })
+        .context("failed to spawn main worker thread")?
+        .join()
+        .map_err(|_| anyhow::anyhow!("main worker thread panicked"))?
+}
+
+async fn async_main() -> Result<()> {
     // stdout is the MCP JSON-RPC transport — logging must go to stderr, or
     // it corrupts the stream the moment anything logs.
     tracing_subscriber::fmt().with_writer(std::io::stderr).init();
