@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::build::{BuildLocks, BuildOutcome};
 use crate::config::{Config, ProjectConfig};
-use crate::core_client::{CoreClient, StudyConflictError};
+use crate::core_client::{CoreClient, StudyConflictError, TopologyMismatchError};
 use crate::resolve::{self, Selection};
 
 #[derive(Clone)]
@@ -255,6 +255,24 @@ pub struct EnrollProbeParams {
     /// once enrolled, for every later `flash`/`reset`/study gate check
     /// against this same probe.
     pub chip: String,
+}
+
+/// `embarch-core/design.md` §3 decision 28's `POST /validate`, wrapped per
+/// decision 34's own precedent (`EnrollProbeParams`, above): no
+/// `project`/build-target params, since this isn't build-target selection
+/// either — just "is the board enrolled as `role` still the one attached."
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ValidateParams {
+    /// The enrollment role to re-check (e.g. "dev-bench" or a project's own
+    /// DUT role) — matches `enroll_probe`'s own `role`.
+    pub role: String,
+}
+
+/// `embarch-core/design.md` §3 decision 28's `GET /alerts`.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct AlertsParams {
+    /// How many of the most recent alerts to return. Defaults to 20.
+    pub limit: Option<usize>,
 }
 
 #[tool_router]
@@ -647,6 +665,59 @@ impl EmbarchApi {
                 "confirmed_at_utc_ms": resp.confirmed_at_utc_ms,
             })),
             Err(e) => Self::err_text(format!("enroll_probe failed: {e:#}")),
+        }
+    }
+
+    #[tool(description = "Explicit, non-destructive re-check of an already-enrolled board's live identity via embarch-core's POST /validate (design.md §3 decision 28) — the same check flash/reset/run_study already run mid-attach, callable on its own without touching hardware otherwise. On a match, returns the enrolled board's fields. On a topology mismatch (the attached chip no longer matches what was recorded), returns an error naming both the recorded and live hardware IDs plus a fix_it_url pointing at embarch-topology's UI — relayed as text, never auto-opened (embarch-topology/design.md §3 decision 12: opening/focusing the UI is the caller's job). On no board enrolled under role yet, returns a plain not-enrolled error.")]
+    async fn validate(
+        &self,
+        Parameters(ValidateParams { role }): Parameters<ValidateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match self.core.validate(&role).await {
+            Ok(resp) => Self::ok_json(serde_json::json!({
+                "ok": true,
+                "role": resp.role,
+                "probe_serial": resp.probe_serial,
+                "chip": resp.chip,
+                "hardware_id": resp.hardware_id,
+                "confirmed_at_utc_ms": resp.confirmed_at_utc_ms,
+            })),
+            Err(e) => match e.downcast_ref::<TopologyMismatchError>() {
+                Some(mismatch) => Self::err_text(format!(
+                    "topology mismatch for role '{}' (probe {}, chip '{}'): {} (recorded \
+                     hardware_id {}, live {:?}) — fix it at {}",
+                    mismatch.role,
+                    mismatch.probe_serial,
+                    mismatch.chip,
+                    mismatch.reason,
+                    mismatch.recorded_hardware_id,
+                    mismatch.live_hardware_id,
+                    mismatch.fix_it_url
+                )),
+                None => Self::err_text(format!("validate failed: {e:#}")),
+            },
+        }
+    }
+
+    #[tool(description = "List the most recent topology-mismatch alerts from embarch-core's durable log via GET /alerts (design.md §3 decision 28) — what a validate 409, or a mismatch caught mid-flash/reset/run_study, gets logged as. Defaults to the 20 most recent.")]
+    async fn alerts(
+        &self,
+        Parameters(AlertsParams { limit }): Parameters<AlertsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match self.core.alerts(limit.unwrap_or(20)).await {
+            Ok(alerts) => Self::ok_json(serde_json::json!({
+                "alerts": alerts.into_iter().map(|a| serde_json::json!({
+                    "id": a.id,
+                    "occurred_at_utc_ms": a.occurred_at_utc_ms,
+                    "role": a.role,
+                    "probe_serial": a.probe_serial,
+                    "chip": a.chip,
+                    "recorded_hardware_id": a.recorded_hardware_id,
+                    "live_hardware_id": a.live_hardware_id,
+                    "reason": a.reason,
+                })).collect::<Vec<_>>(),
+            })),
+            Err(e) => Self::err_text(format!("alerts failed: {e:#}")),
         }
     }
 

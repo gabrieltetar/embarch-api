@@ -189,6 +189,24 @@ pub enum Commands {
         #[arg(long)]
         chip: String,
     },
+    /// Explicit, non-destructive re-check of an already-enrolled board's
+    /// live identity via embarch-core (design.md §3 decision 28) — the same
+    /// check flash/reset/run-study already run mid-attach, callable on its
+    /// own. A topology mismatch exits nonzero with the recorded/live
+    /// hardware IDs and a fix_it_url printed to stderr — never opened
+    /// automatically (`embarch-topology`'s own `validate` CLI does the same).
+    Validate {
+        /// The enrollment role to re-check (e.g. "dev-bench").
+        #[arg(long)]
+        role: String,
+    },
+    /// List the most recent topology-mismatch alerts from embarch-core's
+    /// durable log (design.md §3 decision 28).
+    Alerts {
+        /// How many of the most recent alerts to return.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
 }
 
 /// Walks up from `start` looking for `embarch/embarch.toml` at each level —
