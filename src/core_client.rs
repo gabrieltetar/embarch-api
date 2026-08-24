@@ -108,6 +108,80 @@ pub struct EnrollProbeResponse {
     pub confirmed_at_utc_ms: u64,
 }
 
+/// `embarch-core/design.md` §3 decision 28's `POST /validate` — an
+/// explicit, non-destructive re-check of an already-enrolled board's live
+/// identity, the same check `flash`/`reset`/`run_study` already run
+/// mid-attach, callable on its own without touching hardware otherwise.
+#[derive(Debug, Serialize)]
+struct ValidateRequest<'a> {
+    role: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ValidateResponse {
+    pub role: String,
+    pub probe_serial: String,
+    pub chip: String,
+    pub hardware_id: String,
+    pub confirmed_at_utc_ms: u64,
+}
+
+/// `POST /validate`'s `409 Conflict` body — the enrolled board's live
+/// identity no longer matches what's recorded.
+#[derive(Debug, Deserialize)]
+struct TopologyMismatchBody {
+    role: String,
+    probe_serial: String,
+    chip: String,
+    recorded_hardware_id: String,
+    live_hardware_id: Option<String>,
+    reason: String,
+    fix_it_url: String,
+}
+
+/// Distinct error for `POST /validate`'s `409 Conflict` — kept as its own
+/// downcastable type (`StudyConflictError`'s own precedent above) so a
+/// caller that wants to branch on "this specifically is a stale identity,
+/// not some other failure" can `e.downcast_ref::<TopologyMismatchError>()`
+/// for it, including `fix_it_url` to relay onward (never auto-opened here —
+/// `embarch-topology/design.md` §3 decision 12's "opening the UI is the
+/// caller's job," and this crate's own posture is to relay it as text, same
+/// as `embarch-topology validate`'s own CLI never opening a browser).
+#[derive(Debug)]
+pub struct TopologyMismatchError {
+    pub role: String,
+    pub probe_serial: String,
+    pub chip: String,
+    pub recorded_hardware_id: String,
+    pub live_hardware_id: Option<String>,
+    pub reason: String,
+    pub fix_it_url: String,
+}
+
+impl std::fmt::Display for TopologyMismatchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "topology mismatch: {} — fix it at {}", self.reason, self.fix_it_url)
+    }
+}
+
+impl std::error::Error for TopologyMismatchError {}
+
+/// One entry from `GET /alerts` — mirrors `embarch_topology::hardware::
+/// Alert`'s fields without depending on that crate's `hardware` feature
+/// (this crate deliberately never links `probe-rs`/`serialport`,
+/// `embarch-topology/design.md` §4's own "no hardware knowledge" boundary).
+#[derive(Debug, Deserialize)]
+pub struct AlertResponse {
+    pub id: String,
+    pub occurred_at_utc_ms: u64,
+    pub role: String,
+    pub probe_serial: String,
+    pub chip: String,
+    pub recorded_hardware_id: String,
+    pub live_hardware_id: Option<String>,
+    pub reason: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SerialLogResponse {
     pub port: String,
@@ -450,6 +524,77 @@ impl CoreClient {
         let body = EnrollProbeRequest { role, chip };
         self.send(self.client.post(url).json(&body), self.reset_timeout)
             .await
+    }
+
+    /// `POST /validate` (`embarch-core/design.md` §3 decision 28) — the
+    /// explicit, non-destructive counterpart to the live re-check
+    /// `flash`/`reset`/`run_study` already run mid-attach: same underlying
+    /// `embarch_topology::hardware::validate_role` call, callable on its own
+    /// at any time. Reuses `reset_timeout`, same reasoning as `enroll_probe`
+    /// above: one probe attach plus a couple of memory reads, not a
+    /// multi-second flash.
+    pub async fn validate(&self, role: &str) -> Result<ValidateResponse> {
+        let url = format!("{}/validate", self.base_url().await?);
+        let response = self
+            .client
+            .post(url)
+            .bearer_auth(&self.token)
+            .timeout(self.reset_timeout)
+            .json(&ValidateRequest { role })
+            .send()
+            .await
+            .context("request to embarch-core failed")?;
+
+        let status = response.status();
+        if status.is_success() {
+            return response
+                .json::<ValidateResponse>()
+                .await
+                .context("failed to parse embarch-core's response as JSON");
+        }
+
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "<no response body>".to_string());
+
+        if status == reqwest::StatusCode::CONFLICT {
+            return match serde_json::from_str::<TopologyMismatchBody>(&body) {
+                Ok(m) => Err(anyhow::Error::new(TopologyMismatchError {
+                    role: m.role,
+                    probe_serial: m.probe_serial,
+                    chip: m.chip,
+                    recorded_hardware_id: m.recorded_hardware_id,
+                    live_hardware_id: m.live_hardware_id,
+                    reason: m.reason,
+                    fix_it_url: m.fix_it_url,
+                })),
+                Err(_) => Err(anyhow!(
+                    "embarch-core returned 409 Conflict (a topology mismatch), but its response \
+                     body didn't parse as expected: {body}"
+                )),
+            };
+        }
+
+        if status == reqwest::StatusCode::NOT_FOUND {
+            // Core's 404 body is already a complete, human-readable message
+            // (`embarch-topology::hardware::NotEnrolled`'s own `Display`) —
+            // relayed verbatim rather than wrapped in more prose.
+            return Err(anyhow!("{body}"));
+        }
+
+        Err(anyhow!("embarch-core returned {status}: {body}"))
+    }
+
+    /// `GET /alerts` (`embarch-core/design.md` §3 decision 28) — recent
+    /// topology-mismatch alerts from Core's durable log
+    /// (`embarch_topology::hardware::recent_alerts`). Reuses
+    /// `status_timeout`: a pure local-file read on Core's side, no hardware
+    /// touched.
+    pub async fn alerts(&self, limit: usize) -> Result<Vec<AlertResponse>> {
+        let url = format!("{}/alerts", self.base_url().await?);
+        let request = self.client.get(url).query(&[("limit", limit.to_string())]);
+        self.send(request, self.status_timeout).await
     }
 
     pub async fn serial_log(

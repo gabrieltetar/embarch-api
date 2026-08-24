@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::build::BuildOutcome;
 use crate::config::{Config, ProjectConfig};
-use crate::core_client::{CoreClient, StudyConflictError};
+use crate::core_client::{CoreClient, StudyConflictError, TopologyMismatchError};
 use crate::resolve::{self, Resolved, Selection};
 use crate::{Commands, TargetSelection};
 
@@ -43,6 +43,8 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         Commands::BuildAndFlashDevBench => build_and_flash_dev_bench(&config, &core, json).await,
         Commands::ResetDevBench => reset_dev_bench(&config, &core, json).await,
         Commands::EnrollProbe { role, chip } => enroll_probe(&core, &role, &chip, json).await,
+        Commands::Validate { role } => validate(&core, &role, json).await,
+        Commands::Alerts { limit } => alerts(&core, limit, json).await,
     }
 }
 
@@ -597,6 +599,80 @@ async fn enroll_probe(core: &CoreClient, role: &str, chip: &str, json: bool) -> 
             ),
         ),
         Err(e) => error_result(json, format!("enroll-probe failed: {e:#}")),
+    }
+}
+
+async fn validate(core: &CoreClient, role: &str, json: bool) -> i32 {
+    match core.validate(role).await {
+        Ok(resp) => finish(
+            json,
+            true,
+            serde_json::json!({
+                "success": true,
+                "ok": true,
+                "role": resp.role,
+                "probe_serial": resp.probe_serial,
+                "chip": resp.chip,
+                "hardware_id": resp.hardware_id,
+                "confirmed_at_utc_ms": resp.confirmed_at_utc_ms,
+            }),
+            format!("ok: '{}' still matches hardware_id {}", resp.role, resp.hardware_id),
+        ),
+        Err(e) => match e.downcast_ref::<TopologyMismatchError>() {
+            // Relay the mismatch and its fix_it_url as text — never opened
+            // automatically (`embarch-topology validate`'s own CLI does the
+            // same; `embarch-topology/design.md` §3 decision 12).
+            Some(mismatch) => error_result(
+                json,
+                format!(
+                    "topology mismatch for role '{}' (probe {}, chip '{}'): {} (recorded \
+                     hardware_id {}, live {:?}) — fix it at {}",
+                    mismatch.role,
+                    mismatch.probe_serial,
+                    mismatch.chip,
+                    mismatch.reason,
+                    mismatch.recorded_hardware_id,
+                    mismatch.live_hardware_id,
+                    mismatch.fix_it_url
+                ),
+            ),
+            None => error_result(json, format!("validate failed: {e:#}")),
+        },
+    }
+}
+
+async fn alerts(core: &CoreClient, limit: usize, json: bool) -> i32 {
+    match core.alerts(limit).await {
+        Ok(alerts) => {
+            let human = if alerts.is_empty() {
+                "no alerts recorded".to_string()
+            } else {
+                alerts
+                    .iter()
+                    .map(|a| format!("{} role={} probe={} reason={}", a.occurred_at_utc_ms, a.role, a.probe_serial, a.reason))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            finish(
+                json,
+                true,
+                serde_json::json!({
+                    "success": true,
+                    "alerts": alerts.iter().map(|a| serde_json::json!({
+                        "id": a.id,
+                        "occurred_at_utc_ms": a.occurred_at_utc_ms,
+                        "role": a.role,
+                        "probe_serial": a.probe_serial,
+                        "chip": a.chip,
+                        "recorded_hardware_id": a.recorded_hardware_id,
+                        "live_hardware_id": a.live_hardware_id,
+                        "reason": a.reason,
+                    })).collect::<Vec<_>>(),
+                }),
+                human,
+            )
+        }
+        Err(e) => error_result(json, format!("alerts failed: {e:#}")),
     }
 }
 
