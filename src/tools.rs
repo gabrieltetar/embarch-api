@@ -193,11 +193,13 @@ pub struct SerialLogParams {
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct RunStudyParams {
     /// The full Study to submit — embarch-study-designer's schema (name,
-    /// steps, validations, steps_crc). Untyped here (rather than a typed
-    /// Study field) since embarch-study-designer is a #![no_std] crate that
-    /// doesn't depend on schemars; the object is validated by deserializing
-    /// it into Study server-side, immediately on receipt. steps_crc is
-    /// recomputed from steps and overwritten regardless of what's given.
+    /// requires, steps, validations, streams, steps_crc, streams_crc).
+    /// Untyped here (rather than a typed Study field) since
+    /// embarch-study-designer is a #![no_std] crate that doesn't depend on
+    /// schemars; the object is validated by deserializing it into Study
+    /// server-side, immediately on receipt. Both seals — steps_crc over
+    /// steps and streams_crc over streams — are recomputed and overwritten
+    /// regardless of what's given.
     ///
     /// Real MCP-path gap found running `embarch-doc/embarch-api/milestone-8.md`
     /// §3.8 against a live MCP client: `serde_json::Value`'s own `JsonSchema`
@@ -232,7 +234,7 @@ fn study_value_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::S
 /// or some other JSON type entirely — `Study`'s own deserialization is what
 /// rejects that case) passes through untouched. Pure and split out from
 /// [`EmbarchApi::run_study`] so it's unit-testable with no MCP/Core
-/// plumbing involved, same posture as `study.rs`'s `recompute_steps_crc`.
+/// plumbing involved, same posture as `study.rs`'s `reseal_study`.
 fn unwrap_stringified_json(v: serde_json::Value) -> Result<serde_json::Value, serde_json::Error> {
     match v {
         serde_json::Value::String(s) => serde_json::from_str(&s),
@@ -788,7 +790,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Submit a Study (embarch-study-designer's schema: name, steps, validations, steps_crc) for embarch-core to run against whatever DUT is connected through its dev-bench serial link. No project param — a study isn't tied to a configured project, unlike build/flash. steps_crc is recomputed from steps and overwritten regardless of what's submitted. Returns { study_id } immediately (async) — call study_status to poll progress. Errors if a study is already in-flight on Core.")]
+    #[tool(description = "Submit a Study (embarch-study-designer's schema: name, requires, steps, validations, streams, steps_crc, streams_crc) for embarch-core to run against whatever DUT is connected through its dev-bench serial link. No project param — a study isn't tied to a configured project, unlike build/flash. Both seals (steps_crc over steps, streams_crc over streams) are recomputed and overwritten regardless of what's submitted. Returns { study_id } immediately (async) — call study_status to poll progress. Errors if a study is already in-flight on Core.")]
     async fn run_study(
         &self,
         Parameters(RunStudyParams { study }): Parameters<RunStudyParams>,
@@ -808,15 +810,13 @@ impl EmbarchApi {
             }
         };
 
-        // design.md §3 decision 26: recompute and overwrite steps_crc
-        // unconditionally, regardless of whatever value (including a
-        // missing/zero one) was in the submitted JSON.
-        if crate::study::recompute_steps_crc(&mut study).is_err() {
-            return Self::err_text(
-                "one step's postcard encoding was too large to compute steps_crc over \
-                 (StepTooLargeError) — should be unreachable given embarch-study-designer's \
-                 configured limits",
-            );
+        // design.md §3 decision 26: recompute and overwrite both of a
+        // study's seals unconditionally, regardless of whatever values
+        // (including missing/zero ones) were in the submitted JSON.
+        if let Err(e) = crate::study::reseal_study(&mut study) {
+            return Self::err_text(format!(
+                "{e} — should be unreachable given embarch-study-designer's configured limits"
+            ));
         }
 
         match self.core.post_study(&study).await {
@@ -848,7 +848,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Fetch a study's power-measurement CSV data via embarch-core, returned as text content. A study with no power_sample steps has no power data — that's a clear error naming study_id, not empty output.")]
+    #[tool(description = "Fetch a study's power-measurement CSV data via embarch-core, returned as text content. A study that declared no power capture — no stream tap with a PowerFrontEnd source — has no power data, and that's a clear error naming study_id, not empty output.")]
     async fn study_power_data(
         &self,
         Parameters(StudyIdParams { study_id }): Parameters<StudyIdParams>,

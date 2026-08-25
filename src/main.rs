@@ -142,8 +142,8 @@ pub enum Commands {
     /// Submit a Study (embarch-study-designer's schema) for embarch-core to
     /// run against whatever DUT is connected through its dev-bench serial
     /// link. No project — a study isn't tied to a configured project.
-    /// steps_crc is recomputed from steps and overwritten regardless of
-    /// what's in the file.
+    /// Both seals (steps_crc over steps, streams_crc over streams) are
+    /// recomputed and overwritten regardless of what's in the file.
     RunStudy {
         /// Path to a JSON file matching Study's schema.
         #[arg(long = "study-file")]
@@ -152,9 +152,10 @@ pub enum Commands {
     /// Get a submitted study's status via embarch-core.
     StudyStatus { study_id: String },
     /// Fetch a study's power-measurement CSV data via embarch-core. Writes
-    /// to stdout, or to --out if given. A study with no power_sample steps
-    /// has no power data — that's reported as an error naming study_id, not
-    /// silently empty output.
+    /// to stdout, or to --out if given. A study that declared no power
+    /// capture — no stream tap with a PowerFrontEnd source — has no power
+    /// data, and that's reported as an error naming study_id, not silently
+    /// empty output.
     StudyPowerData {
         study_id: String,
         /// Write the CSV to this file instead of stdout.

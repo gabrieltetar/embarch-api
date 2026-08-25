@@ -768,16 +768,13 @@ async fn run_study(core: &CoreClient, study_file: &Path, json: bool) -> i32 {
         }
     };
 
-    // design.md §3 decision 26: recompute and overwrite steps_crc
-    // unconditionally, regardless of whatever value (including a
-    // missing/zero one) was in the submitted JSON.
-    if crate::study::recompute_steps_crc(&mut study).is_err() {
+    // design.md §3 decision 26: recompute and overwrite both of a study's
+    // seals unconditionally, regardless of whatever values (including
+    // missing/zero ones) were in the submitted JSON.
+    if let Err(e) = crate::study::reseal_study(&mut study) {
         return error_result(
             json,
-            "one step's postcard encoding was too large to compute steps_crc over \
-             (StepTooLargeError) — should be unreachable given embarch-study-designer's \
-             configured limits"
-                .to_string(),
+            format!("{e} — should be unreachable given embarch-study-designer's configured limits"),
         );
     }
 

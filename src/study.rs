@@ -1,23 +1,47 @@
 //! Shared helper for the `run_study` MCP tool / `run-study` CLI subcommand
-//! (`tools.rs`, `cli.rs`): recomputing `Study.steps_crc` immediately before
-//! submission to embarch-core.
+//! (`tools.rs`, `cli.rs`): recomputing both of a `Study`'s integrity seals
+//! immediately before submission to embarch-core.
 
-use embarch_study_designer::{steps_crc, StepTooLargeError, Study};
+use embarch_study_designer::{steps_crc, streams_crc, Study};
 
-/// Overwrites `study.steps_crc` with a freshly computed value over
-/// `study.steps`, regardless of whatever value (including a missing/zero
-/// one) was already present in the submitted JSON —
-/// `embarch-study-designer/design.md` §3 decision 26: `steps_crc` is filled
-/// in by whoever *submits* a `Study`, unconditionally, not trusted from the
-/// caller. Idempotent: a caller that already computed a correct value is
-/// unaffected.
+/// Why a `Study` couldn't be resealed — which of the two seals failed to
+/// compute, rather than one opaque "too large".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResealError {
+    Step(embarch_study_designer::StepTooLargeError),
+    StreamTap(embarch_study_designer::StreamTapTooLargeError),
+}
+
+impl std::fmt::Display for ResealError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResealError::Step(_) => write!(f, "one step's postcard encoding was too large to compute steps_crc over"),
+            ResealError::StreamTap(_) => write!(f, "one stream tap's postcard encoding was too large to compute streams_crc over"),
+        }
+    }
+}
+
+impl std::error::Error for ResealError {}
+
+/// Overwrites `study.steps_crc` and `study.streams_crc` with freshly
+/// computed values over `study.steps` and `study.streams`, regardless of
+/// whatever values (including missing/zero ones) were already present in the
+/// submitted JSON — `embarch-study-designer/design.md` §3 decision 26: a
+/// seal is filled in by whoever *submits* a `Study`, unconditionally, not
+/// trusted from the caller. Idempotent: a caller that already computed
+/// correct values is unaffected.
 ///
-/// Errors only if a single `Step`'s postcard encoding doesn't fit
-/// `steps_crc`'s internal scratch buffer (`StepTooLargeError`) — should be
-/// unreachable given `embarch-study-designer`'s configured `limits`, but
-/// surfaced as an error rather than assumed impossible.
-pub fn recompute_steps_crc(study: &mut Study) -> Result<(), StepTooLargeError> {
-    study.steps_crc = steps_crc(&study.steps)?;
+/// Both seals, since decision 39's 2026-08-25 amendment gave `streams` its
+/// own. They are recomputed independently, exactly as Core checks them
+/// independently — that is what lets a failure name which half is at fault.
+///
+/// Errors only if a single `Step`/`StreamTap`'s postcard encoding doesn't
+/// fit the corresponding scratch buffer — should be unreachable given
+/// `embarch-study-designer`'s configured `limits`, but surfaced as an error
+/// rather than assumed impossible.
+pub fn reseal_study(study: &mut Study) -> Result<(), ResealError> {
+    study.steps_crc = steps_crc(&study.steps).map_err(ResealError::Step)?;
+    study.streams_crc = streams_crc(&study.streams).map_err(ResealError::StreamTap)?;
     Ok(())
 }
 
@@ -38,7 +62,6 @@ mod tests {
                     target_name: None,
                 },
                 timeout_ms: 1_000,
-                power_sample: None,
                 continue_on_fail: false,
                 delay_before_ms: 0,
             })
@@ -55,15 +78,28 @@ mod tests {
             validations: heapless::Vec::new(),
             streams: heapless::Vec::new(),
             steps_crc: crc,
+            streams_crc: crc,
         }
     }
 
     #[test]
     fn overwrites_a_missing_or_zero_crc() {
         let mut study = study_with_crc(0);
-        recompute_steps_crc(&mut study).unwrap();
+        reseal_study(&mut study).unwrap();
         assert_ne!(study.steps_crc, 0);
         assert_eq!(study.steps_crc, steps_crc(&study.steps).unwrap());
+    }
+
+    /// Both seals are overwritten, not just `steps_crc` — and a study with
+    /// no taps reseals to 0, which is the genuine CRC of an empty list
+    /// rather than a value left untouched.
+    #[test]
+    fn overwrites_a_stale_streams_crc_too() {
+        let mut study = study_with_crc(0xDEAD_BEEF);
+        assert_eq!(study.streams_crc, 0xDEAD_BEEF);
+        reseal_study(&mut study).unwrap();
+        assert_eq!(study.streams_crc, streams_crc(&study.streams).unwrap());
+        assert_eq!(study.streams_crc, 0);
     }
 
     #[test]
@@ -71,25 +107,25 @@ mod tests {
         let mut study = study_with_crc(0xDEAD_BEEF);
         let correct = steps_crc(&study.steps).unwrap();
         assert_ne!(correct, 0xDEAD_BEEF);
-        recompute_steps_crc(&mut study).unwrap();
+        reseal_study(&mut study).unwrap();
         assert_eq!(study.steps_crc, correct);
     }
 
     #[test]
     fn recomputation_is_idempotent_on_an_already_correct_crc() {
         let mut study = study_with_crc(0);
-        recompute_steps_crc(&mut study).unwrap();
+        reseal_study(&mut study).unwrap();
         let first = study.steps_crc;
-        recompute_steps_crc(&mut study).unwrap();
+        reseal_study(&mut study).unwrap();
         assert_eq!(study.steps_crc, first);
     }
 
     /// Exercises exactly what `run-study`'s CLI path does with a
     /// hand-authored `--study-file`, minus the actual HTTP call: read the
-    /// file, deserialize into `Study`, recompute `steps_crc`. Kept as a
+    /// file, deserialize into `Study`, reseal both CRCs. Kept as a
     /// crate-internal unit test rather than a `tests/` integration test
     /// since embarch-api is a bin-only crate with no lib target for an
-    /// integration test to import `Study`/`recompute_steps_crc` from.
+    /// integration test to import `Study`/`reseal_study` from.
     #[test]
     fn self_test_fixture_round_trips_end_to_end() {
         // Run on a dedicated, generously-sized stack: `Study` embeds a
@@ -134,8 +170,9 @@ mod tests {
             other => panic!("expected BleAdvertise, got {other:?}"),
         }
 
-        recompute_steps_crc(&mut study).expect("steps_crc should compute cleanly");
+        reseal_study(&mut study).expect("both seals should compute cleanly");
         assert_ne!(study.steps_crc, 0);
         assert_eq!(study.steps_crc, steps_crc(&study.steps).unwrap());
+        assert_eq!(study.streams_crc, streams_crc(&study.streams).unwrap());
     }
 }

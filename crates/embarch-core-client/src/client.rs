@@ -63,7 +63,55 @@ pub struct ProbeInfo {
 pub struct StatusResponse {
     pub status: String,
     pub probes: Vec<ProbeInfo>,
+    /// The **host type** schema version Core was built against
+    /// (`embarch-study-designer/design.md` §3 decision 12 and its
+    /// 2026-08-25 amendment) — the number that guards this hop, which
+    /// carries `Study`/`StudyResult` whole rather than the dev-bench subset.
+    ///
+    /// `Option` only so a Core predating the field still *parses*, which is
+    /// what lets [`CoreClient::post_study`] report the drift by name instead
+    /// of failing as an opaque JSON decode error. `None` is not treated as
+    /// "compatible" — see that method.
+    #[serde(default)]
+    pub study_designer_schema_version: Option<u32>,
 }
+
+/// `embarch-api` and Core disagree about `embarch-study-designer`'s host
+/// type schema (`embarch-study-designer/design.md` §3 decision 12).
+/// Downcastable so a caller can distinguish it from a transport failure —
+/// the same idiom `StudyConflictError` already uses.
+#[derive(Debug)]
+pub struct SchemaVersionMismatch {
+    pub api_version: u32,
+    /// `None` when Core served no version at all, i.e. a Core built before
+    /// the constant was split out onto `GET /status`.
+    pub core_version: Option<u32>,
+}
+
+impl std::fmt::Display for SchemaVersionMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.core_version {
+            Some(core) => write!(
+                f,
+                "embarch-study-designer host type schema mismatch: this embarch-api was built \
+                 against v{}, embarch-core reports v{core}. A `Study` crosses this hop whole, so \
+                 submitting across the drift would fail in whatever way serde happens to fail. \
+                 Rebuild and redeploy whichever side is behind.",
+                self.api_version
+            ),
+            None => write!(
+                f,
+                "embarch-study-designer host type schema mismatch: this embarch-api was built \
+                 against v{}, and embarch-core served no version at all — it predates \
+                 `GET /status` carrying one (design.md §3 decision 12's 2026-08-25 amendment). \
+                 Redeploy embarch-core.",
+                self.api_version
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SchemaVersionMismatch {}
 
 #[derive(Debug, Serialize)]
 struct FlashRequest<'a> {
@@ -777,7 +825,32 @@ impl CoreClient {
     /// `embarch_study_designer::steps_crc` before calling this — this
     /// method sends `study` exactly as given, it does not recompute
     /// anything itself.
+    /// Submits a `Study`, **after** confirming Core agrees about
+    /// `embarch-study-designer`'s host type schema
+    /// (`embarch-study-designer/design.md` §3 decision 12 and its
+    /// 2026-08-25 amendment).
+    ///
+    /// The check lives here rather than at each caller because both the CLI
+    /// and the MCP path submit through this one method, and a drift detector
+    /// that only one of them runs is not a detector. `GET /status` is
+    /// already this hop's connection-establishment check, so this is one
+    /// extra cheap read immediately before the submit rather than a separate
+    /// handshake.
+    ///
+    /// **A mismatch detector, not a negotiator** — there is no fallback to
+    /// an older shape, matching the suite's standing posture. A Core serving
+    /// no version at all is reported as a mismatch too, not waved through:
+    /// it is a Core built before this field existed, which is precisely the
+    /// drift the field was added to catch.
     pub async fn post_study(&self, study: &Study) -> Result<PostStudyResponse> {
+        let core_version = self.status().await?.study_designer_schema_version;
+        if core_version != Some(embarch_study_designer::HOST_TYPE_SCHEMA_VERSION) {
+            return Err(anyhow::Error::new(SchemaVersionMismatch {
+                api_version: embarch_study_designer::HOST_TYPE_SCHEMA_VERSION,
+                core_version,
+            }));
+        }
+
         let url = format!("{}/study", self.base_url().await?);
         let response = self
             .client
