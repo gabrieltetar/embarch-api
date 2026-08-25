@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::build::BuildOutcome;
 use crate::config::{Config, ProjectConfig};
-use crate::core_client::{CoreClient, StudyConflictError, TopologyMismatchError};
+use embarch_core_client::{CoreClient, StudyConflictError, TopologyMismatchError};
 use crate::resolve::{self, Resolved, Selection};
 use crate::{Commands, TargetSelection};
 
@@ -42,7 +42,9 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         }
         Commands::BuildAndFlashDevBench => build_and_flash_dev_bench(&config, &core, json).await,
         Commands::ResetDevBench => reset_dev_bench(&config, &core, json).await,
-        Commands::EnrollProbe { role, chip } => enroll_probe(&core, &role, &chip, json).await,
+        Commands::EnrollProbe { role, chip, probe_serial } => {
+            enroll_probe(&core, &role, &chip, probe_serial.as_deref(), json).await
+        }
         Commands::Validate { role } => validate(&core, &role, json).await,
         Commands::Alerts { limit } => alerts(&core, limit, json).await,
     }
@@ -580,8 +582,8 @@ async fn reset_dev_bench(config: &Config, core: &CoreClient, json: bool) -> i32 
     }
 }
 
-async fn enroll_probe(core: &CoreClient, role: &str, chip: &str, json: bool) -> i32 {
-    match core.enroll_probe(role, chip).await {
+async fn enroll_probe(core: &CoreClient, role: &str, chip: &str, probe_serial: Option<&str>, json: bool) -> i32 {
+    match core.enroll_probe(role, chip, probe_serial).await {
         Ok(resp) => finish(
             json,
             true,

@@ -1,4 +1,9 @@
 /target
+# 2026-08-24: `crates/embarch-core-client` builds its own `target/` when
+# compiled/linted standalone from inside its own directory (no `[workspace]`
+# ties it to the root's build output) — same reasoning as the bare `/target`
+# above, just not root-anchored.
+crates/*/target
 /config.toml
 /config.toml.bak*
 /*.local.toml

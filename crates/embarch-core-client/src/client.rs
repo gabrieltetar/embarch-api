@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::OnceCell;
 
-use crate::config::CoreConfig;
+use crate::CoreConfig;
 use embarch_topology::software::{ProbeOutcome, TopologyClass};
 
 /// Where Core's address comes from.
@@ -44,7 +44,14 @@ pub struct CoreClient {
     study_timeout: Duration,
 }
 
-#[derive(Debug, Deserialize)]
+// `Serialize`/`Clone` added 2026-08-24 (`ProbeInfo`, `StatusResponse`,
+// `EnrolledBoardResponse`, `AlertResponse`, `DevBenchPortResponse`) —
+// `embarch-ui`'s Dashboard/Topology tabs re-serialize what they deserialize
+// from Core, to hand it back to the browser as JSON/SSE payloads
+// (`embarch-ui/milestone-1.md` §4.4). `embarch-api` itself never needed
+// either derive, but adding them is behavior-neutral for every existing
+// deserialize-only caller.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProbeInfo {
     pub identifier: String,
     pub vendor_id: u16,
@@ -52,7 +59,7 @@ pub struct ProbeInfo {
     pub serial_number: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusResponse {
     pub status: String,
     pub probes: Vec<ProbeInfo>,
@@ -97,9 +104,22 @@ pub struct ResetResponse {
 struct EnrollProbeRequest<'a> {
     role: &'a str,
     chip: &'a str,
+    /// Picks which currently-attached probe to enroll when more than one is
+    /// present (`embarch-core/design.md` §3 decision 22's own doc comment;
+    /// `embarch-topology/design.md` §3 decision 15) — omitted, Core falls
+    /// back to its original "exactly one attached" requirement. Added
+    /// 2026-08-24: this field existed on Core's side since decision 15 but
+    /// had no way to reach it through this client until `embarch-ui`'s
+    /// Enroll tab needed to send exactly what its drag-and-drop UI already
+    /// knows (`embarch-ui/milestone-1.md` §4.5).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    probe_serial: Option<&'a str>,
 }
 
-#[derive(Debug, Deserialize)]
+// `Serialize` added 2026-08-24 alongside decision 5's amendment — the
+// Enroll tab (`embarch-ui/milestone-1.md` §4.5) hands this straight back to
+// the browser as JSON after a successful enroll.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct EnrollProbeResponse {
     pub probe_serial: String,
     pub role: String,
@@ -170,7 +190,7 @@ impl std::error::Error for TopologyMismatchError {}
 /// Alert`'s fields without depending on that crate's `hardware` feature
 /// (this crate deliberately never links `probe-rs`/`serialport`,
 /// `embarch-topology/design.md` §4's own "no hardware knowledge" boundary).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlertResponse {
     pub id: String,
     pub occurred_at_utc_ms: u64,
@@ -180,6 +200,49 @@ pub struct AlertResponse {
     pub recorded_hardware_id: String,
     pub live_hardware_id: Option<String>,
     pub reason: String,
+}
+
+/// One entry from `GET /probes/enrolled` (`embarch-core/design.md` §3
+/// decision 25, `link_port_serial` added decision 27) — every currently
+/// enrolled board. Added 2026-08-24 for `embarch-ui`'s Dashboard/Topology
+/// tabs (`embarch-ui/design.md` §3 decision 5's amendment): reading this
+/// over HTTP, rather than `embarch_topology::hardware::list_enrolled()`
+/// in-process, is what keeps it correct when Core runs on a different
+/// machine than whichever process is asking — the same "never link
+/// probe-rs/serialport directly" rule §11 already states for this crate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnrolledBoardResponse {
+    pub probe_serial: String,
+    pub role: String,
+    pub chip: String,
+    pub hardware_id: String,
+    pub confirmed_at_utc_ms: u64,
+    #[serde(default)]
+    pub link_port_serial: Option<String>,
+}
+
+/// `GET /dev-bench/port`'s success body (`embarch-core/design.md` §4/§5) —
+/// which serial port `embarch-dev-bench` is on right now. Every field but
+/// `port_name`/`detected_by` is nullable, matching Core's own endpoint doc:
+/// an explicitly-configured port need not be USB-enumerable.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DevBenchPortResponse {
+    pub port_name: String,
+    pub detected_by: String,
+    pub vendor_id: Option<u16>,
+    pub product_id: Option<u16>,
+    pub serial_number: Option<String>,
+    pub product: Option<String>,
+    pub interface: Option<u8>,
+}
+
+/// `GET /logs/recent`'s body (`embarch-core/design.md` §4) — plain lines
+/// exactly as `tracing_subscriber`'s own formatter wrote them, no
+/// server-side structuring/filtering (`embarch-ui/design.md` §3 decision
+/// 7's resolution of that open question).
+#[derive(Debug, Deserialize)]
+struct LogsRecentResponse {
+    lines: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -516,12 +579,15 @@ impl CoreClient {
 
     /// `POST /probes/enroll` (`embarch-core/design.md` §3 decision 22,
     /// `embarch-api/design.md` §3 decision 34) — records which physical
-    /// board `role`'s probe is, refusing anything but exactly one currently
-    /// attached probe. Reuses `reset_timeout`: like `reset`, this is one
-    /// probe attach plus a couple of memory reads, not a multi-second flash.
-    pub async fn enroll_probe(&self, role: &str, chip: &str) -> Result<EnrollProbeResponse> {
+    /// board `role`'s probe is. `probe_serial` picks a specific attached
+    /// probe when more than one is present (given, e.g. by a drag-and-drop
+    /// UI that already knows exactly which card was dropped); omitted,
+    /// Core falls back to its "exactly one attached" requirement. Reuses
+    /// `reset_timeout`: like `reset`, this is one probe attach plus a
+    /// couple of memory reads, not a multi-second flash.
+    pub async fn enroll_probe(&self, role: &str, chip: &str, probe_serial: Option<&str>) -> Result<EnrollProbeResponse> {
         let url = format!("{}/probes/enroll", self.base_url().await?);
-        let body = EnrollProbeRequest { role, chip };
+        let body = EnrollProbeRequest { role, chip, probe_serial };
         self.send(self.client.post(url).json(&body), self.reset_timeout)
             .await
     }
@@ -595,6 +661,64 @@ impl CoreClient {
         let url = format!("{}/alerts", self.base_url().await?);
         let request = self.client.get(url).query(&[("limit", limit.to_string())]);
         self.send(request, self.status_timeout).await
+    }
+
+    /// `GET /probes/enrolled` (`embarch-core/design.md` §3 decision 25) —
+    /// every currently enrolled board. Reuses `status_timeout`: a pure read
+    /// of `embarch-topology`'s own storage on Core's side, no hardware
+    /// touched — same posture as `alerts` above.
+    pub async fn list_enrolled(&self) -> Result<Vec<EnrolledBoardResponse>> {
+        let url = format!("{}/probes/enrolled", self.base_url().await?);
+        self.send(self.client.get(url), self.status_timeout).await
+    }
+
+    /// `GET /dev-bench/port` (`embarch-core/design.md` §4/§5) — which
+    /// serial port `embarch-dev-bench` is on right now, if any. Core's own
+    /// `404` for "no port matches" is an expected state (bench unplugged),
+    /// not a Core failure, so it's surfaced as `Ok(None)` rather than an
+    /// error — a caller that wants to render "not connected" doesn't need
+    /// to match on an error string to do it.
+    pub async fn dev_bench_port(&self) -> Result<Option<DevBenchPortResponse>> {
+        let url = format!("{}/dev-bench/port", self.base_url().await?);
+        let response = self
+            .client
+            .get(url)
+            .bearer_auth(&self.token)
+            .timeout(self.status_timeout)
+            .send()
+            .await
+            .context("request to embarch-core failed")?;
+
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if status.is_success() {
+            return response
+                .json::<DevBenchPortResponse>()
+                .await
+                .map(Some)
+                .context("failed to parse embarch-core's response as JSON");
+        }
+
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "<no response body>".to_string());
+        Err(anyhow!("embarch-core returned {status}: {body}"))
+    }
+
+    /// `GET /logs/recent` (`embarch-core/design.md` §4, `embarch-ui/design.md`
+    /// §3 decision 7) — the tail of Core's own current daily log file.
+    /// Reuses `status_timeout`: a pure local-file read on Core's side, no
+    /// hardware touched. `embarch-ui`'s own Debug tab is the first caller —
+    /// never a direct filesystem read of Core's logfile, since Core can run
+    /// on a different machine (the whole reason `embarch-topology` exists).
+    pub async fn logs_recent(&self, tail: usize) -> Result<Vec<String>> {
+        let url = format!("{}/logs/recent", self.base_url().await?);
+        let request = self.client.get(url).query(&[("tail", tail.to_string())]);
+        let response: LogsRecentResponse = self.send(request, self.status_timeout).await?;
+        Ok(response.lines)
     }
 
     pub async fn serial_log(

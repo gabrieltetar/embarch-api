@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 
 use crate::build::BuildPlan;
 use crate::config::{Discovery, ProjectConfig};
-use crate::core_client::CoreClient;
+use embarch_core_client::CoreClient;
 use crate::zephyr;
 
 /// The four optional call-time params `design.md` §3 decision 12 adds to

@@ -1,0 +1,23 @@
+[package]
+name = "embarch-core-client"
+version = "0.1.0"
+edition = "2021"
+
+# Extracted from embarch-api's own `core_client.rs`/`config.rs::CoreConfig`/
+# `token_discovery.rs` (2026-08-24, embarch-ui/design.md §3 decision 5's
+# resolution, embarch-ui/milestone-1.md §4.1): the one implementation of
+# "how do I reach embarch-core over HTTP+Bearer," shared by embarch-api and
+# embarch-ui rather than duplicated between them — the same "one
+# implementation, multiple call sites" shape embarch-topology/design.md
+# decisions 2/8/14 already established for topology detection/enrollment.
+
+[dependencies]
+anyhow = "1.0.103"
+bytes = "1"
+embarch-study-designer = { path = "../../../embarch-study-designer" }
+embarch-topology = { path = "../../../embarch-topology" }
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "query", "rustls", "multipart"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+tokio = { version = "1.53.0", features = ["sync", "fs"] }
+tracing = "0.1.44"

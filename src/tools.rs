@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::build::{BuildLocks, BuildOutcome};
 use crate::config::{Config, ProjectConfig};
-use crate::core_client::{CoreClient, StudyConflictError, TopologyMismatchError};
+use embarch_core_client::{CoreClient, StudyConflictError, TopologyMismatchError};
 use crate::resolve::{self, Selection};
 
 #[derive(Clone)]
@@ -255,6 +255,11 @@ pub struct EnrollProbeParams {
     /// once enrolled, for every later `flash`/`reset`/study gate check
     /// against this same probe.
     pub chip: String,
+    /// Picks which currently-attached probe to enroll when more than one is
+    /// present (`embarch-topology/design.md` §3 decision 15). Omitted,
+    /// Core falls back to its "exactly one attached" requirement.
+    #[serde(default)]
+    pub probe_serial: Option<String>,
 }
 
 /// `embarch-core/design.md` §3 decision 28's `POST /validate`, wrapped per
@@ -651,12 +656,12 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Enroll a physical probe with embarch-topology's enrollment storage (design.md decision 22), recording which board its serial number is wired to. Requires exactly one debug probe currently attached — Core refuses (naming every candidate) otherwise, since the whole point is a human physically isolating the one board they mean before confirming. Once enrolled, flash/reset/run_study all refuse to touch that probe unless a live hardware-ID readback still matches what was recorded here. No project param — this isn't build-target selection.")]
+    #[tool(description = "Enroll a physical probe with embarch-topology's enrollment storage (design.md decision 22), recording which board its serial number is wired to. Requires exactly one debug probe currently attached, unless probe_serial picks a specific one — Core refuses (naming every candidate) otherwise, since the whole point is knowing exactly which board is meant before confirming. Once enrolled, flash/reset/run_study all refuse to touch that probe unless a live hardware-ID readback still matches what was recorded here. No project param — this isn't build-target selection.")]
     async fn enroll_probe(
         &self,
-        Parameters(EnrollProbeParams { role, chip }): Parameters<EnrollProbeParams>,
+        Parameters(EnrollProbeParams { role, chip, probe_serial }): Parameters<EnrollProbeParams>,
     ) -> Result<CallToolResult, McpError> {
-        match self.core.enroll_probe(&role, &chip).await {
+        match self.core.enroll_probe(&role, &chip, probe_serial.as_deref()).await {
             Ok(resp) => Self::ok_json(serde_json::json!({
                 "probe_serial": resp.probe_serial,
                 "role": resp.role,

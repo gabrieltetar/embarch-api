@@ -1,7 +1,7 @@
 //! Resolves the one `embarch-dev-bench` build target this suite knows about
 //! into a `resolve::Resolved`, the same shape `resolve::resolve` produces
 //! for a `[[projects]]` entry — so `build.rs`'s `BuildLocks`/`run_build` and
-//! `core_client.rs`'s `flash` are reused as-is, with no new build/flash
+//! `embarch-core-client`'s `CoreClient::flash` are reused as-is, with no new build/flash
 //! machinery. Deliberately **not** a `[[projects]]` entry itself (see
 //! `config::DevBenchConfig`'s own doc comment for why): dev-bench isn't a
 //! DUT a firmware engineer or an agent configures/discovers, it's EmbArch's
@@ -29,7 +29,7 @@ const APP_DIR: &str = "app";
 const ARTIFACT_REL_PATH: &str = "build/zephyr/zephyr.bin";
 
 /// Resolves `config` into a `Resolved`, ready for `build::BuildLocks::run_build`
-/// and `core_client::CoreClient::flash`. Infallible today (every field is
+/// and `embarch_core_client::CoreClient::flash`. Infallible today (every field is
 /// either a fixed constant or already-validated config) — returns `Result`
 /// anyway so a future check (e.g. confirming `app/` exists under
 /// `source_path`) can be added without changing this function's signature.

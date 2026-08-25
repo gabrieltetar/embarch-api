@@ -1,22 +1,20 @@
 mod build;
 mod cli;
 mod config;
-mod core_client;
 mod dev_bench;
 mod resolve;
 mod study;
-mod token_discovery;
 mod tools;
 mod zephyr;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use embarch_core_client::CoreClient;
 use rmcp::ServiceExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use config::Config;
-use core_client::CoreClient;
 use tools::EmbarchApi;
 
 #[derive(Parser)]
@@ -188,6 +186,11 @@ pub enum Commands {
         /// "nRF54L15", "esp32c5").
         #[arg(long)]
         chip: String,
+        /// Picks which currently-attached probe to enroll when more than
+        /// one is present (`embarch-topology/design.md` §3 decision 15).
+        /// Omitted, falls back to "exactly one attached" — unchanged.
+        #[arg(long)]
+        probe_serial: Option<String>,
     },
     /// Explicit, non-destructive re-check of an already-enrolled board's
     /// live identity via embarch-core (design.md §3 decision 28) — the same

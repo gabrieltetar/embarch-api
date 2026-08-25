@@ -7,16 +7,17 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.103"
-bytes = "1"
 clap = { version = "4.6.2", features = ["derive"] }
+# 2026-08-24: `core_client.rs`/`config::CoreConfig`/`token_discovery.rs`
+# extracted into this shared crate (embarch-ui/design.md §3 decision 5,
+# embarch-ui/milestone-1.md §4.1) so embarch-ui depends on the same
+# implementation rather than a duplicated one. `bytes`/`reqwest` moved with
+# it — this crate no longer touches either directly. `embarch-topology`
+# also dropped as a direct dependency: its only use here was
+# `CoreConfig`'s default port constant, which moved with `CoreConfig`.
+embarch-core-client = { path = "crates/embarch-core-client" }
 embarch-study-designer = { path = "../embarch-study-designer" }
-# embarch-topology/design.md decisions 2, 3, 4: base_url = "auto" resolution
-# (formerly this crate's own topology.rs/env.rs/probe.rs) now calls this
-# shared crate live, in-process. No `features = ["hardware"]` — this crate
-# never touches probe-rs/serialport, same as embarch-umbrella.
-embarch-topology = { path = "../embarch-topology" }
 heapless = { version = "0.8", features = ["serde"] }
-reqwest = { version = "0.13.4", default-features = false, features = ["json", "query", "rustls", "multipart"] }
 rmcp = { version = "2.2.0", features = ["server", "transport-io"] }
 schemars = "1.2.1"
 serde = { version = "1.0.228", features = ["derive"] }
