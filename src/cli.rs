@@ -17,10 +17,13 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
             project,
             target,
             firmware_path,
-        } => flash(&config, &core, &project, &target, firmware_path, json).await,
-        Commands::BuildAndFlash { project, target } => {
-            build_and_flash(&config, &core, &project, &target, json).await
-        }
+            erase,
+        } => flash(&config, &core, &project, &target, firmware_path, erase, json).await,
+        Commands::BuildAndFlash {
+            project,
+            target,
+            erase,
+        } => build_and_flash(&config, &core, &project, &target, erase, json).await,
         Commands::Reset { project, target } => reset(&config, &core, &project, &target, json).await,
         Commands::SerialLog {
             project,
@@ -36,11 +39,16 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         Commands::StudyWaveformData { study_id, out } => {
             study_waveform_data(&core, &study_id, out.as_deref(), json).await
         }
-        Commands::BuildDevBench => build_dev_bench(&config, json).await,
-        Commands::FlashDevBench { firmware_path } => {
-            flash_dev_bench(&config, &core, firmware_path, json).await
+        Commands::StudyGattData { study_id, out } => {
+            study_gatt_data(&core, &study_id, out.as_deref(), json).await
         }
-        Commands::BuildAndFlashDevBench => build_and_flash_dev_bench(&config, &core, json).await,
+        Commands::BuildDevBench => build_dev_bench(&config, json).await,
+        Commands::FlashDevBench { firmware_path, erase } => {
+            flash_dev_bench(&config, &core, firmware_path, erase, json).await
+        }
+        Commands::BuildAndFlashDevBench { erase } => {
+            build_and_flash_dev_bench(&config, &core, erase, json).await
+        }
         Commands::ResetDevBench => reset_dev_bench(&config, &core, json).await,
         Commands::EnrollProbe { role, chip, probe_serial } => {
             enroll_probe(&core, &role, &chip, probe_serial.as_deref(), json).await
@@ -299,6 +307,7 @@ async fn flash(
     project_name: &str,
     target: &TargetSelection,
     firmware_path: Option<String>,
+    erase: bool,
     json: bool,
 ) -> i32 {
     let resolved = match resolve_or_exit(config, core, project_name, target, json).await {
@@ -312,7 +321,7 @@ async fn flash(
     let path = firmware_path.unwrap_or_else(|| resolved.plan.artifact_path.display().to_string());
 
     match core
-        .flash(&resolved.chip, &path, &resolved.flash_format, resolved.base_address.as_deref(), resolved.probe_serial.as_deref())
+        .flash(&resolved.chip, &path, &resolved.flash_format, resolved.base_address.as_deref(), resolved.probe_serial.as_deref(), erase)
         .await
     {
         Ok(resp) => finish(
@@ -336,6 +345,7 @@ async fn build_and_flash(
     core: &CoreClient,
     project_name: &str,
     target: &TargetSelection,
+    erase: bool,
     json: bool,
 ) -> i32 {
     let resolved = match resolve_or_exit(config, core, project_name, target, json).await {
@@ -377,6 +387,7 @@ async fn build_and_flash(
             &resolved.flash_format,
             resolved.base_address.as_deref(),
             resolved.probe_serial.as_deref(),
+            erase,
         )
         .await
     {
@@ -463,6 +474,7 @@ async fn flash_dev_bench(
     config: &Config,
     core: &CoreClient,
     firmware_path: Option<String>,
+    erase: bool,
     json: bool,
 ) -> i32 {
     let dev_bench = match dev_bench_config_or_exit(config, json) {
@@ -477,7 +489,7 @@ async fn flash_dev_bench(
     let path = firmware_path.unwrap_or_else(|| resolved.plan.artifact_path.display().to_string());
 
     match core
-        .flash(&resolved.chip, &path, &resolved.flash_format, resolved.base_address.as_deref(), resolved.probe_serial.as_deref())
+        .flash(&resolved.chip, &path, &resolved.flash_format, resolved.base_address.as_deref(), resolved.probe_serial.as_deref(), erase)
         .await
     {
         Ok(resp) => finish(
@@ -496,7 +508,12 @@ async fn flash_dev_bench(
     }
 }
 
-async fn build_and_flash_dev_bench(config: &Config, core: &CoreClient, json: bool) -> i32 {
+async fn build_and_flash_dev_bench(
+    config: &Config,
+    core: &CoreClient,
+    erase: bool,
+    json: bool,
+) -> i32 {
     let dev_bench = match dev_bench_config_or_exit(config, json) {
         Ok(c) => c,
         Err(code) => return code,
@@ -539,6 +556,7 @@ async fn build_and_flash_dev_bench(config: &Config, core: &CoreClient, json: boo
             &resolved.flash_format,
             resolved.base_address.as_deref(),
             resolved.probe_serial.as_deref(),
+            erase,
         )
         .await
     {
@@ -808,7 +826,7 @@ async fn study_status(core: &CoreClient, study_id: &str, json: bool) -> i32 {
     }
 }
 
-/// Shared by `study-power-data`/`study-waveform-data`: write `bytes` to
+/// Shared by `study-power-data`/`study-waveform-data`/`study-gatt-data`: write `bytes` to
 /// `out` if given, else straight to stdout. Raw payload data, unlike every
 /// other subcommand's output — `--json` only changes how *status* is
 /// reported (below, for the `--out` case), it never wraps a CSV payload as
@@ -855,5 +873,12 @@ async fn study_waveform_data(core: &CoreClient, study_id: &str, out: Option<&Pat
     match core.get_study_waveform_data(study_id).await {
         Ok(bytes) => write_study_csv(json, "waveform-data", study_id, &bytes, out),
         Err(e) => error_result(json, format!("study-waveform-data failed for '{study_id}': {e:#}")),
+    }
+}
+
+async fn study_gatt_data(core: &CoreClient, study_id: &str, out: Option<&Path>, json: bool) -> i32 {
+    match core.get_study_gatt_data(study_id).await {
+        Ok(bytes) => write_study_csv(json, "gatt-data", study_id, &bytes, out),
+        Err(e) => error_result(json, format!("study-gatt-data failed for '{study_id}': {e:#}")),
     }
 }

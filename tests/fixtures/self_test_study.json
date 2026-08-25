@@ -1,5 +1,6 @@
 {
   "name": "dev-bench-self-test",
+  "requires": { "dev_bench_version": "any", "firmware_version": "any" },
   "steps": [
     {
       "name": "advertise-short",

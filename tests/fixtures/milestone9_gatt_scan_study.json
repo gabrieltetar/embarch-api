@@ -1,5 +1,6 @@
 {
   "name": "milestone-9-dut-gatt-scan",
+  "requires": { "dev_bench_version": "any", "firmware_version": "any" },
   "steps": [
     {
       "name": "connect-dut",

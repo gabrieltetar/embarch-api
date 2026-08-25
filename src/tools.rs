@@ -108,6 +108,13 @@ pub struct TargetParams {
     /// back to the project's configured default_extra_args, not "no extra
     /// args".
     pub extra_args: Option<Vec<String>>,
+    /// Fully erase the chip before writing, rather than erasing only the
+    /// sectors the new image covers — the equivalent of `west flash --erase`.
+    /// Without it, flash regions the new image doesn't cover survive from
+    /// the previous firmware, including a Zephyr settings/NVS partition and
+    /// so any BLE bonds or provisioning state held there. Defaults to false. Only meaningful for `build_and_flash` — `build` and
+    /// `reset` don't write flash, and ignore it.
+    pub erase: Option<bool>,
 }
 
 impl TargetParams {
@@ -149,6 +156,12 @@ pub struct FlashParams {
     /// artifact_path — use this to flash an already-built file without
     /// rebuilding. Bypasses target resolution entirely.
     pub firmware_path: Option<String>,
+    /// Fully erase the chip before writing, rather than erasing only the
+    /// sectors the new image covers — the equivalent of `west flash --erase`.
+    /// Without it, flash regions the new image doesn't cover survive from
+    /// the previous firmware, including a Zephyr settings/NVS partition and
+    /// so any BLE bonds or provisioning state held there. Defaults to false.
+    pub erase: Option<bool>,
 }
 
 impl FlashParams {
@@ -231,6 +244,12 @@ fn unwrap_stringified_json(v: serde_json::Value) -> Result<serde_json::Value, se
 pub struct FlashDevBenchParams {
     /// Flash this file instead of dev-bench's own configured build artifact.
     pub firmware_path: Option<String>,
+    /// Fully erase the chip before writing, rather than erasing only the
+    /// sectors the new image covers — the equivalent of `west flash --erase`.
+    /// Without it, flash regions the new image doesn't cover survive from
+    /// the previous firmware, including a Zephyr settings/NVS partition and
+    /// so any BLE bonds or provisioning state held there. Defaults to false.
+    pub erase: Option<bool>,
 }
 
 /// Shared by every tool that operates on an already-submitted study by id.
@@ -398,6 +417,7 @@ impl EmbarchApi {
                     &project.flash_format,
                     resolved.base_address.as_deref(),
                     resolved.probe_serial.as_deref(),
+                    params.erase.unwrap_or(false),
                 )
                 .await
             {
@@ -422,7 +442,7 @@ impl EmbarchApi {
 
         match self
             .core
-            .flash(&resolved.chip, &path, &project.flash_format, resolved.base_address.as_deref(), resolved.probe_serial.as_deref())
+            .flash(&resolved.chip, &path, &project.flash_format, resolved.base_address.as_deref(), resolved.probe_serial.as_deref(), params.erase.unwrap_or(false))
             .await
         {
             Ok(resp) => Self::ok_json(serde_json::json!({
@@ -486,6 +506,7 @@ impl EmbarchApi {
                 &project.flash_format,
                 resolved.base_address.as_deref(),
                 resolved.probe_serial.as_deref(),
+                params.erase.unwrap_or(false),
             )
             .await
         {
@@ -532,7 +553,7 @@ impl EmbarchApi {
     #[tool(description = "Flash embarch-dev-bench's own firmware via embarch-core. Defaults to dev-bench's own configured build artifact, or pass firmware_path to flash a specific file without rebuilding.")]
     async fn flash_dev_bench(
         &self,
-        Parameters(FlashDevBenchParams { firmware_path }): Parameters<FlashDevBenchParams>,
+        Parameters(FlashDevBenchParams { firmware_path, erase }): Parameters<FlashDevBenchParams>,
     ) -> Result<CallToolResult, McpError> {
         let dev_bench = match self.dev_bench_config() {
             Ok(c) => c,
@@ -547,7 +568,7 @@ impl EmbarchApi {
 
         match self
             .core
-            .flash(&resolved.chip, &path, &resolved.flash_format, resolved.base_address.as_deref(), resolved.probe_serial.as_deref())
+            .flash(&resolved.chip, &path, &resolved.flash_format, resolved.base_address.as_deref(), resolved.probe_serial.as_deref(), erase.unwrap_or(false))
             .await
         {
             Ok(resp) => Self::ok_json(serde_json::json!({
@@ -601,6 +622,11 @@ impl EmbarchApi {
                 &resolved.flash_format,
                 resolved.base_address.as_deref(),
                 resolved.probe_serial.as_deref(),
+                // build_and_flash_dev_bench takes no parameters at all (see
+                // its own tool description), so there's nowhere to put an
+                // erase request. Use flash_dev_bench with erase: true for
+                // that.
+                false,
             )
             .await
         {
@@ -847,6 +873,20 @@ impl EmbarchApi {
                 Err(e) => Self::err_text(format!("waveform-data response wasn't valid UTF-8: {e}")),
             },
             Err(e) => Self::err_text(format!("study_waveform_data failed for '{study_id}': {e:#}")),
+        }
+    }
+
+    #[tool(description = "Fetch a study's full GATT transcript as CSV via embarch-core, returned as text content. This is the exhaustive record — every notification, indication, read, write, subscribe and connect/disconnect event across every step, with each payload in both hex and printable-ASCII columns — as opposed to study_status's per-step gatt_activity, which is a capped inbound-only summary. A study with no GATT steps has no transcript; that's a clear error naming study_id, not empty output.")]
+    async fn study_gatt_data(
+        &self,
+        Parameters(StudyIdParams { study_id }): Parameters<StudyIdParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match self.core.get_study_gatt_data(&study_id).await {
+            Ok(bytes) => match String::from_utf8(bytes.to_vec()) {
+                Ok(csv) => Ok(CallToolResult::success(vec![ContentBlock::text(csv)])),
+                Err(e) => Self::err_text(format!("gatt-data response wasn't valid UTF-8: {e}")),
+            },
+            Err(e) => Self::err_text(format!("study_gatt_data failed for '{study_id}': {e:#}")),
         }
     }
 }

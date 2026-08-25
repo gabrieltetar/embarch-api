@@ -35,17 +35,25 @@ mod tests {
                 action: Action::BleConnect {
                     role: BleRole::Central,
                     target_address: None,
+                    target_name: None,
                 },
                 timeout_ms: 1_000,
                 power_sample: None,
                 continue_on_fail: false,
+                delay_before_ms: 0,
             })
             .unwrap();
 
         Study {
             name: heapless::String::try_from("t").unwrap(),
+            // `embarch-study-designer/design.md` §3 decision 40: mandatory,
+            // with "any" an explicit legal value. These cases are about
+            // `steps_crc` and have nothing to say about which builds a study
+            // needs, so they say so.
+            requires: embarch_study_designer::Requirements::any(),
             steps,
             validations: heapless::Vec::new(),
+            streams: heapless::Vec::new(),
             steps_crc: crc,
         }
     }

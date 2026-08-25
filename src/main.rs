@@ -99,12 +99,26 @@ pub enum Commands {
         /// Flash this file instead of the project's configured artifact_path.
         #[arg(long)]
         firmware_path: Option<String>,
+        /// Fully erase the chip before writing, rather than erasing only the
+        /// sectors the new image covers. The equivalent of `west flash
+        /// --erase`: without it, flash regions the new image doesn't cover
+        /// (a Zephyr settings/NVS partition, and so any BLE bonds or
+        /// provisioning state in it) survive from the previous firmware.
+        #[arg(long)]
+        erase: bool,
     },
     /// Build a project and, only if it succeeds with a fresh artifact, flash it.
     BuildAndFlash {
         project: String,
         #[command(flatten)]
         target: TargetSelection,
+        /// Fully erase the chip before writing, rather than erasing only the
+        /// sectors the new image covers. The equivalent of `west flash
+        /// --erase`: without it, flash regions the new image doesn't cover
+        /// (a Zephyr settings/NVS partition, and so any BLE bonds or
+        /// provisioning state in it) survive from the previous firmware.
+        #[arg(long)]
+        erase: bool,
     },
     /// Reset a project's target chip via embarch-core.
     Reset {
@@ -155,6 +169,18 @@ pub enum Commands {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Fetch a study's full GATT transcript as CSV via embarch-core — every
+    /// notification, indication, read, write, subscribe and connect event
+    /// across every step, uncapped, with each payload rendered as both hex
+    /// and printable ASCII. This is the exhaustive record; study-status's
+    /// per-step gatt_activity is a capped, inbound-only summary. Same
+    /// stdout/--out behavior as study-power-data.
+    StudyGattData {
+        study_id: String,
+        /// Write the CSV to this file instead of stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Build embarch-dev-bench's own firmware (the ESP32-C5 espressif
     /// workspace) by running `west build`. No project — dev-bench isn't a
     /// `[[projects]]` entry, see config.rs's `DevBenchConfig`. Requires
@@ -166,10 +192,25 @@ pub enum Commands {
         /// artifact.
         #[arg(long)]
         firmware_path: Option<String>,
+        /// Fully erase the chip before writing, rather than erasing only the
+        /// sectors the new image covers. The equivalent of `west flash
+        /// --erase`: without it, flash regions the new image doesn't cover
+        /// (a Zephyr settings/NVS partition, and so any BLE bonds or
+        /// provisioning state in it) survive from the previous firmware.
+        #[arg(long)]
+        erase: bool,
     },
     /// Build embarch-dev-bench's own firmware and, only if the build
     /// succeeds with a fresh artifact, flash it.
-    BuildAndFlashDevBench,
+    BuildAndFlashDevBench {
+        /// Fully erase the chip before writing, rather than erasing only the
+        /// sectors the new image covers. The equivalent of `west flash
+        /// --erase`: without it, flash regions the new image doesn't cover
+        /// (a Zephyr settings/NVS partition, and so any BLE bonds or
+        /// provisioning state in it) survive from the previous firmware.
+        #[arg(long)]
+        erase: bool,
+    },
     /// Reset embarch-dev-bench's own chip via embarch-core — needed after
     /// flash-dev-bench/build-and-flash-dev-bench, since flashing halts the
     /// core rather than starting it running.

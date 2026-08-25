@@ -74,6 +74,10 @@ struct FlashRequest<'a> {
     base_address: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     probe_serial: Option<&'a str>,
+    /// Omitted entirely when false, so a Core predating the field is
+    /// unaffected by callers that don't ask for an erase.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    erase: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -510,6 +514,13 @@ impl CoreClient {
     /// site, so a caller that always passes the same value regardless of
     /// format doesn't have to special-case it here either.
     ///
+    /// `erase` requests a full chip erase before writing (`west flash
+    /// --erase`), rather than erasing only the sectors the image covers.
+    /// Threaded through both transports — the JSON body and the multipart
+    /// upload — since a WSL-host Core takes the latter, and an erase that
+    /// silently applied on one path but not the other would be worse than
+    /// not offering it.
+    ///
     /// `probe_serial` (`embarch-core/design.md` §3 decision 9) disambiguates
     /// which attached debug probe to use when more than one is present —
     /// designed there well ahead of a real second probe existing, and never
@@ -526,6 +537,7 @@ impl CoreClient {
         format: &str,
         base_address: Option<&str>,
         probe_serial: Option<&str>,
+        erase: bool,
     ) -> Result<FlashResponse> {
         let url = format!("{}/flash", self.base_url().await?);
 
@@ -537,6 +549,7 @@ impl CoreClient {
                     format,
                     base_address,
                     probe_serial,
+                    erase,
                 };
                 self.send(self.client.post(url).json(&body), self.flash_timeout)
                     .await
@@ -559,6 +572,9 @@ impl CoreClient {
                 }
                 if let Some(probe_serial) = probe_serial {
                     form = form.text("probe_serial", probe_serial.to_string());
+                }
+                if erase {
+                    form = form.text("erase", "true");
                 }
                 let form = form.part(
                     "firmware",
@@ -890,6 +906,25 @@ impl CoreClient {
             "waveform-data",
             study_id,
             "no waveform data captured for this study",
+        )
+        .await
+    }
+
+    /// `GET /study/{study_id}/gatt-data` — the study's whole GATT transcript
+    /// as raw CSV bytes (`embarch-study-designer/design.md` §3 decision 36,
+    /// §4.3b): every notification, indication, read, write, subscribe and
+    /// connection event, across every step, uncapped.
+    ///
+    /// Distinct from what `GET /study/{id}` returns inline: that carries each
+    /// step's `gatt_activity`, a bounded per-step summary (at most
+    /// `MAX_GATT_ACTIVITY_RECORDS` inbound notifications, nothing outbound).
+    /// Same "expected, not exceptional" `404` posture as the two above — a
+    /// study with no GATT steps captured no transcript.
+    pub async fn get_study_gatt_data(&self, study_id: &str) -> Result<Bytes> {
+        self.get_study_csv(
+            "gatt-data",
+            study_id,
+            "no GATT transcript captured for this study",
         )
         .await
     }
