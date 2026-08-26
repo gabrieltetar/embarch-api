@@ -384,6 +384,7 @@ impl EmbarchApi {
                     "discovery": if p.is_zephyr_west() { "zephyr-west" } else { "static" },
                     "chip": p.chip,
                     "flash_format": p.flash_format,
+                    "base_address": p.base_address.map(|a| format!("{a:#x}")),
                     "source_path": p.source_path.display().to_string(),
                     "has_serial_defaults": p.serial_port.is_some(),
                 })

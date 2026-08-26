@@ -50,9 +50,12 @@ pub struct Resolved {
     pub chip: String,
     pub flash_format: String,
     /// Only meaningful for `flash_format = "bin"` (`embarch-core/design.md`
-    /// §3 decision 18) — `None` for every DUT project resolved here today,
-    /// since none yet builds a raw `.bin` at a fixed offset; `dev_bench.rs`'s
-    /// own resolution is the first real user of this field.
+    /// §3 decision 18). Comes from the project's own `base_address` config
+    /// field (`design.md` §3 decision 42) for a `[[projects]]` entry, and
+    /// from `dev_bench.rs`'s fixed constant for dev-bench — which was the
+    /// only source of it at all until decision 42, the gap that forced the
+    /// ESP32-C5 validation to flash by hand-written `POST /flash` instead of
+    /// through here.
     pub base_address: Option<String>,
     /// Disambiguates which attached debug probe to flash/reset through when
     /// more than one is present (`embarch-core/design.md` §3 decision 9).
@@ -89,7 +92,7 @@ fn resolve_static(project: &ProjectConfig) -> Result<Resolved> {
             .clone()
             .expect("validate() enforces chip for a static project"),
         flash_format: project.flash_format.clone(),
-        base_address: None,
+        base_address: format_base_address(project.base_address),
         probe_serial: project.probe_serial.clone(),
         descriptor: serde_json::json!({ "project": project.name }),
     })
@@ -192,7 +195,7 @@ async fn resolve_zephyr(project: &ProjectConfig, selection: Selection<'_>, core:
         },
         chip,
         flash_format: project.flash_format.clone(),
-        base_address: None,
+        base_address: format_base_address(project.base_address),
         probe_serial: project.probe_serial.clone(),
         descriptor: serde_json::json!({
             "project": project.name,
@@ -270,6 +273,16 @@ pub fn list_targets(project: &ProjectConfig) -> Result<serde_json::Value> {
     }
 }
 
+/// Core's `/flash` takes the offset as a hex-or-decimal *string*
+/// (`embarch-core/design.md` §3 decision 18's `parse_base_address`), while
+/// the config field is a TOML integer (`design.md` §3 decision 42) so a
+/// value written `0x2000` reads as one. `{:#x}` is the round trip: it is the
+/// form Core's own error message names, and the form `dev_bench.rs`'s
+/// constant is already written in.
+fn format_base_address(configured: Option<u64>) -> Option<String> {
+    configured.map(|address| format!("{address:#x}"))
+}
+
 fn describe_targets(targets: &[zephyr::Target]) -> String {
     if targets.is_empty() {
         return "  (none)".to_string();
@@ -279,4 +292,50 @@ fn describe_targets(targets: &[zephyr::Target]) -> String {
         .map(|t| format!("  {}", t.board_qualifier_with_app()))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn static_project(extra: &str) -> ProjectConfig {
+        // Deserialized directly rather than through `Config::load_from_path`
+        // — `resolve_static` never touches the filesystem, so there's no
+        // need for a real `source_path` on disk here.
+        toml::from_str(&format!(
+            r#"
+name = "p"
+source_path = "/nonexistent"
+build_command = ["true"]
+chip = "esp32c5"
+artifact_path = "out.bin"
+flash_format = "bin"
+{extra}
+"#
+        ))
+        .expect("test project config should parse")
+    }
+
+    #[test]
+    fn base_address_is_formatted_as_the_hex_string_core_takes() {
+        // Core's `parse_base_address` accepts hex-or-decimal; `{:#x}` is the
+        // form its own error message names and the form `dev_bench.rs`'s
+        // constant already uses, so a config-driven flash and a dev-bench
+        // flash put the identical bytes on the wire.
+        assert_eq!(format_base_address(Some(0x2000)).as_deref(), Some("0x2000"));
+        assert_eq!(format_base_address(Some(0)).as_deref(), Some("0x0"));
+        assert_eq!(format_base_address(None), None);
+    }
+
+    #[test]
+    fn resolve_static_passes_the_configured_base_address_through() {
+        let resolved = resolve_static(&static_project("base_address = 0x2000")).unwrap();
+        assert_eq!(resolved.base_address.as_deref(), Some("0x2000"));
+    }
+
+    #[test]
+    fn resolve_static_leaves_base_address_unset_when_the_project_omits_it() {
+        let resolved = resolve_static(&static_project("")).unwrap();
+        assert_eq!(resolved.base_address, None);
+    }
 }

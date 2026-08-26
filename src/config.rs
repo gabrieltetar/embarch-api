@@ -69,6 +69,25 @@ pub struct ProjectConfig {
     #[serde(default)]
     pub chip: Option<String>,
     pub flash_format: String,
+    /// Flash offset for this project's artifact (`design.md` §3 decision 42),
+    /// passed straight through to Core's `POST /flash` — a **build-config
+    /// fact of the project**, not a per-call parameter, for the same reason
+    /// `flash_format` isn't one: an agent should never have to know or
+    /// supply a hex number to flash a board.
+    ///
+    /// Required in practice for a `flash_format = "bin"` project, which has
+    /// no self-describing load address of its own
+    /// (`embarch-core/design.md` §3 decision 18); silently ignored by Core
+    /// for a self-locating format like `hex`/`elf`, so leaving it set across
+    /// a format change is harmless.
+    ///
+    /// Opaque pass-through — deliberately **not** validated here against the
+    /// target's memory map, same posture `chip`/`flash_format` already have
+    /// (§3 decision 8). Written as a TOML integer, hex literal included
+    /// (`base_address = 0x2000`); `resolve.rs` formats it back to the hex
+    /// string Core's endpoint takes.
+    #[serde(default)]
+    pub base_address: Option<u64>,
     #[serde(default = "default_build_timeout_secs")]
     pub build_timeout_secs: u64,
     #[serde(default)]
@@ -379,6 +398,48 @@ flash_format = "hex"
         );
         assert_eq!(config.projects[0].discovery, Discovery::Static);
         assert!(!config.projects[0].is_zephyr_west());
+    }
+
+    #[test]
+    fn base_address_defaults_to_none_and_reads_a_toml_hex_literal() {
+        let dir = tempdir();
+        let config = write_config(
+            dir.path(),
+            &format!(
+                r#"
+[core]
+base_url = "auto"
+token_env = "EMBARCH_TOKEN"
+
+[[projects]]
+name = "hex-project"
+source_path = "{dir}"
+build_command = ["true"]
+chip = "nRF54L15"
+artifact_path = "out.hex"
+flash_format = "hex"
+
+[[projects]]
+name = "bin-project"
+source_path = "{dir}"
+build_command = ["true"]
+chip = "esp32c5"
+artifact_path = "out.bin"
+flash_format = "bin"
+base_address = 0x2000
+"#,
+                dir = dir.path().display()
+            ),
+        );
+        // Absent is the default — every project predating decision 42 keeps
+        // loading unchanged.
+        assert_eq!(config.project("hex-project").unwrap().base_address, None);
+        // TOML's own hex-integer literal, so the config reads the way an
+        // offset is actually written down.
+        assert_eq!(
+            config.project("bin-project").unwrap().base_address,
+            Some(0x2000)
+        );
     }
 
     #[test]

@@ -52,6 +52,13 @@ artifact_path = "build/zephyr/zephyr.hex"
 # `probe-rs chip list | grep -i nrf54`.
 chip = "nRF54L15"
 flash_format = "hex"
+# Optional: the flash offset to write the artifact at, passed through to
+# embarch-core (design.md §3 decision 42). Not needed here — a `hex` image
+# carries its own load address — but *required in practice* for a
+# flash_format = "bin" project, whose raw binary carries none. Write it as a
+# TOML hex literal; it's a build-config fact of the project, deliberately not
+# something a caller (or an agent) supplies per flash.
+# base_address = 0x2000
 build_timeout_secs = 900
 # Optional: only needed when embarch-core runs on a different machine/OS than
 # the build (e.g. Core on Windows, build here in WSL2). Windows-visible UNC

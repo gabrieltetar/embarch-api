@@ -158,6 +158,7 @@ fn list_projects(config: &Config, json: bool) -> i32 {
                 "discovery": if p.is_zephyr_west() { "zephyr-west" } else { "static" },
                 "chip": p.chip,
                 "flash_format": p.flash_format,
+                "base_address": p.base_address.map(|a| format!("{a:#x}")),
                 "source_path": p.source_path.display().to_string(),
                 "has_serial_defaults": p.serial_port.is_some(),
             })
@@ -172,11 +173,17 @@ fn list_projects(config: &Config, json: bool) -> i32 {
             .iter()
             .map(|p| {
                 format!(
-                    "{} (discovery={}, chip={}, flash_format={}, source_path={}, serial_defaults={})",
+                    "{} (discovery={}, chip={}, flash_format={}{}, source_path={}, serial_defaults={})",
                     p.name,
                     if p.is_zephyr_west() { "zephyr-west" } else { "static" },
                     p.chip.as_deref().unwrap_or("<resolved per call>"),
                     p.flash_format,
+                    // Only shown when set: it's meaningful for a `bin`
+                    // project and ignored everywhere else, so printing an
+                    // empty column on every hex/elf project is noise.
+                    p.base_address
+                        .map(|a| format!(", base_address={a:#x}"))
+                        .unwrap_or_default(),
                     p.source_path.display(),
                     p.serial_port.is_some()
                 )
