@@ -672,7 +672,9 @@ async fn validate(core: &CoreClient, role: &str, json: bool) -> i32 {
         Err(e) => match e.downcast_ref::<TopologyMismatchError>() {
             // Relay the mismatch and its fix_it_url as text — never opened
             // automatically (`embarch-topology validate`'s own CLI does the
-            // same; `embarch-topology/design.md` §3 decision 12).
+            // same; `embarch-topology/design.md` §3 decision 12). The URL is
+            // a fixed `embarch-ui` Topology-tab link as of decision 19 there,
+            // not a discovered one — still opaque from here either way.
             Some(mismatch) => error_result(
                 json,
                 format!(

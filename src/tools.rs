@@ -771,7 +771,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Explicit, non-destructive re-check of an already-enrolled board's live identity via embarch-core's POST /validate (design.md §3 decision 28) — the same check flash/reset/run_study already run mid-attach, callable on its own without touching hardware otherwise. On a match, returns the enrolled board's fields. On a topology mismatch (the attached chip no longer matches what was recorded), returns an error naming both the recorded and live hardware IDs plus a fix_it_url pointing at embarch-topology's UI — relayed as text, never auto-opened (embarch-topology/design.md §3 decision 12: opening/focusing the UI is the caller's job). On no board enrolled under role yet, returns a plain not-enrolled error.")]
+    #[tool(description = "Explicit, non-destructive re-check of an already-enrolled board's live identity via embarch-core's POST /validate (design.md §3 decision 28) — the same check flash/reset/run_study already run mid-attach, callable on its own without touching hardware otherwise. On a match, returns the enrolled board's fields. On a topology mismatch (the attached chip no longer matches what was recorded), returns an error naming both the recorded and live hardware IDs plus a fix_it_url pointing at embarch-ui's Topology tab — relayed as text, never auto-opened (embarch-topology/design.md §3 decision 12: opening/focusing the UI is the caller's job). On no board enrolled under role yet, returns a plain not-enrolled error.")]
     async fn validate(
         &self,
         Parameters(ValidateParams { role }): Parameters<ValidateParams>,
