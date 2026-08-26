@@ -74,7 +74,6 @@ mod tests {
             // needs, so they say so.
             requires: embarch_study_designer::Requirements::any(),
             steps,
-            validations: heapless::Vec::new(),
             streams: heapless::Vec::new(),
             steps_crc: crc,
             streams_crc: crc,
@@ -133,8 +132,9 @@ mod tests {
         // enables the `alloc` feature by name), which is the "noted for
         // follow-up" this comment used to end on. `Study` is no longer the
         // ~77 KB value it was. What still justifies the big stack is
-        // `Study.validations`, still a 64-slot inline array of 576-byte
-        // `PostHocValidation`s, plus `Step`'s own large `Action` variants.
+        // `Step`'s own large `Action` variants, and `StudyResult.steps` --
+        // still a 64-slot inline array of ~20 KB `StepResult`s, which is the
+        // next instance of exactly this defect.
         std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
             .spawn(run_self_test_fixture_round_trip)

@@ -193,7 +193,7 @@ pub struct SerialLogParams {
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct RunStudyParams {
     /// The full Study to submit — embarch-study-designer's schema (name,
-    /// requires, steps, validations, streams, steps_crc, streams_crc).
+    /// requires, steps, streams, steps_crc, streams_crc).
     /// Untyped here (rather than a typed Study field) since
     /// embarch-study-designer is a #![no_std] crate that doesn't depend on
     /// schemars; the object is validated by deserializing it into Study
@@ -859,7 +859,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Submit a Study (embarch-study-designer's schema: name, requires, steps, validations, streams, steps_crc, streams_crc) for embarch-core to run against whatever DUT is connected through its dev-bench serial link. Both seals (steps_crc over steps, streams_crc over streams) are recomputed and overwritten regardless of what's submitted. Returns { study_id } immediately (async) — call study_status to poll progress. Errors if a study is already in-flight on Core.\n\nStudy.requires names the dev-bench and DUT firmware builds the study is meant to run against ('any' if it genuinely doesn't matter). reflash says what to do about it: 'none' (default), 'dev-bench', 'dut', or 'both' — build and flash from the working tree AS IT CURRENTLY STANDS, then verify. This never runs git checkout: if the tree isn't at the revision the study wants, the call fails naming both revisions and leaves the tree, and the board, alone. Reflashing the DUT needs project (plus the usual board/variant/revision/app/snippets/extra_args), since a study isn't project-shaped but a firmware build is. allow_version_mismatch proceeds anyway and the override is recorded in the result's provenance.overrides — never silently honoured.")]
+    #[tool(description = "Submit a Study (embarch-study-designer's schema: name, requires, steps, streams, steps_crc, streams_crc) for embarch-core to run against whatever DUT is connected through its dev-bench serial link. Both seals (steps_crc over steps, streams_crc over streams) are recomputed and overwritten regardless of what's submitted. Returns { study_id } immediately (async) — call study_status to poll progress. Errors if a study is already in-flight on Core.\n\nStudy.requires names the dev-bench and DUT firmware builds the study is meant to run against ('any' if it genuinely doesn't matter). reflash says what to do about it: 'none' (default), 'dev-bench', 'dut', or 'both' — build and flash from the working tree AS IT CURRENTLY STANDS, then verify. This never runs git checkout: if the tree isn't at the revision the study wants, the call fails naming both revisions and leaves the tree, and the board, alone. Reflashing the DUT needs project (plus the usual board/variant/revision/app/snippets/extra_args), since a study isn't project-shaped but a firmware build is. allow_version_mismatch proceeds anyway and the override is recorded in the result's provenance.overrides — never silently honoured.")]
     async fn run_study(
         &self,
         Parameters(params): Parameters<RunStudyParams>,
