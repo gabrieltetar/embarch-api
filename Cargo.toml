@@ -16,7 +16,13 @@ clap = { version = "4.6.2", features = ["derive"] }
 # also dropped as a direct dependency: its only use here was
 # `CoreConfig`'s default port constant, which moved with `CoreConfig`.
 embarch-core-client = { path = "crates/embarch-core-client" }
-embarch-study-designer = { path = "../embarch-study-designer" }
+# `alloc` (embarch-study-designer/design.md §3 decision 46) backs `Study.steps`
+# with a heap `Vec` instead of a 64-slot inline array of ~600-byte `Step`s.
+# This crate is the one that actually crashed on the old shape — a debug build
+# overflowed its stack serving a live `study_status` over MCP — and, unlike
+# embarch-core/embarch-ui, it enables none of the `std`-implying features that
+# would pull `alloc` in anyway, so it has to ask for it by name.
+embarch-study-designer = { path = "../embarch-study-designer", features = ["alloc"] }
 heapless = { version = "0.8", features = ["serde"] }
 rmcp = { version = "2.2.0", features = ["server", "transport-io"] }
 schemars = "1.2.1"

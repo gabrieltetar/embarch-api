@@ -51,8 +51,7 @@ mod tests {
     use embarch_study_designer::{Action, BleRole};
 
     fn study_with_crc(crc: u32) -> Study {
-        let mut steps: heapless::Vec<embarch_study_designer::Step, { embarch_study_designer::limits::MAX_STEPS_PER_STUDY }> =
-            heapless::Vec::new();
+        let mut steps = embarch_study_designer::step_list::StepList::new();
         steps
             .push(embarch_study_designer::Step {
                 name: heapless::String::try_from("connect").unwrap(),
@@ -128,20 +127,14 @@ mod tests {
     /// integration test to import `Study`/`reseal_study` from.
     #[test]
     fn self_test_fixture_round_trips_end_to_end() {
-        // Run on a dedicated, generously-sized stack: `Study` embeds a
-        // `heapless::Vec<Step, MAX_STEPS_PER_STUDY>` — a fixed-size *inline*
-        // array sized for all 64 slots regardless of how many the fixture
-        // actually populates, and `Step`'s `Action` variants are large too
-        // (`GattOperation::Write`'s 512-byte payload) — so a debug-profile,
-        // unoptimized `serde_json::from_str::<Study>` recurses through
-        // sizable stack frames. That overflows libtest's default per-test
-        // thread stack (2 MiB) even for this two-step fixture, though not
-        // the larger stack a normal process main thread gets on Linux.
-        // Worth flagging: the same shape applies to `run_study`/`run-study`
-        // parsing a real `--study-file`/MCP payload in production, and a
-        // small-default-stack platform (e.g. Windows' 1 MiB) could hit this
-        // for real — out of scope to fix in embarch-study-designer itself
-        // here, but noted for follow-up.
+        // Kept on a dedicated, generously-sized stack, for a reason that
+        // shrank: `embarch-study-designer/design.md` §3 decision 46 replaced
+        // `Study.steps`' 64-slot inline array with a heap `Vec` (this crate
+        // enables the `alloc` feature by name), which is the "noted for
+        // follow-up" this comment used to end on. `Study` is no longer the
+        // ~77 KB value it was. What still justifies the big stack is
+        // `Study.validations`, still a 64-slot inline array of 576-byte
+        // `PostHocValidation`s, plus `Step`'s own large `Action` variants.
         std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
             .spawn(run_self_test_fixture_round_trip)
