@@ -12,6 +12,7 @@ use serde::Deserialize;
 pub mod api_log;
 pub mod client;
 pub mod token_discovery;
+pub mod user_dirs;
 pub mod version;
 
 pub use client::*;

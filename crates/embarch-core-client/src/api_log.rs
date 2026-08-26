@@ -47,25 +47,14 @@ pub fn log_dir() -> Result<PathBuf> {
     Ok(user_data_dir()?.join("api").join("logs"))
 }
 
-#[cfg(windows)]
-fn user_data_dir() -> Result<PathBuf> {
-    let local_app_data = std::env::var("LOCALAPPDATA")
-        .context("LOCALAPPDATA environment variable is not set")?;
-    Ok(PathBuf::from(local_app_data).join("embarch"))
-}
-
-/// `$XDG_DATA_HOME/embarch`, or `$HOME/.local/share/embarch` — the XDG
-/// default, spelled out rather than pulling in a crate for two lines.
-#[cfg(unix)]
-fn user_data_dir() -> Result<PathBuf> {
-    if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-        if !xdg.trim().is_empty() {
-            return Ok(PathBuf::from(xdg).join("embarch"));
-        }
-    }
-    let home = std::env::var("HOME").context("HOME environment variable is not set")?;
-    Ok(PathBuf::from(home).join(".local").join("share").join("embarch"))
-}
+/// Moved to [`crate::user_dirs::user_data_dir`] when `embarch-ui` needed the
+/// same directory for something that is not a log (its recent-projects
+/// list, `embarch-ui/design.md` §3 decision 14). Re-exported through this
+/// alias rather than left duplicated, for exactly the reason this module's
+/// own header gives for living in this crate at all: a path two callers
+/// resolve independently is a path they will eventually resolve
+/// differently.
+use crate::user_dirs::user_data_dir;
 
 /// The most recent day's file among `candidates`. `tracing-appender`'s date
 /// suffix is ISO (`yyyy-MM-dd`), so lexicographic order agrees with
