@@ -51,7 +51,7 @@ mod tests {
     use embarch_study_designer::{Action, BleRole};
 
     fn study_with_crc(crc: u32) -> Study {
-        let mut steps = embarch_study_designer::step_list::StepList::new();
+        let mut steps = embarch_study_designer::bounded::StepList::new();
         steps
             .push(embarch_study_designer::Step {
                 name: heapless::String::try_from("connect").unwrap(),
