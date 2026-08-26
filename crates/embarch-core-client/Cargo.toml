@@ -21,3 +21,8 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 tokio = { version = "1.53.0", features = ["sync", "fs"] }
 tracing = "0.1.44"
+
+[dev-dependencies]
+# Only for the manifest-beside-the-artifact test, which needs a real directory
+# on disk: the rule it pins is a filesystem fact, not a string transformation.
+tempfile = "3"

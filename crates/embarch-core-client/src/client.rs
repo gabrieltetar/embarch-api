@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use embarch_study_designer::{Study, StudyResult};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::OnceCell;
@@ -126,7 +126,35 @@ struct FlashRequest<'a> {
     /// unaffected by callers that don't ask for an erase.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     erase: bool,
+    /// The build's `outpost-manifest.json`, when one sits beside the artifact.
+    /// Omitted entirely when there is none, so a Core predating the field is
+    /// unaffected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    manifest_path: Option<&'a str>,
 }
+
+/// The manifest an `embarch-outpost` build leaves beside its artifact
+/// (`embarch-outpost/design.md` §5.4).
+///
+/// **Derived from the firmware path rather than passed in**, deliberately.
+/// That decision says the engineer never handles this file, "because the
+/// failure mode of forgetting is not a visible error but a silently
+/// mislabelled trace, and the only reliable fix is for the manifest to travel
+/// automatically with the build that produced it." A parameter is a thing a
+/// caller can forget, and this crate has a dozen `flash` call sites across
+/// `tools.rs`, `cli.rs` and `reflash.rs` — every one of which would be a place
+/// to forget it. A rule applied here cannot be.
+///
+/// Absent for anything that is not an outpost-carrying build, including every
+/// dev-bench flash, which is why nothing needs to know which board it is
+/// talking to.
+fn manifest_beside(firmware_path: &str) -> Option<PathBuf> {
+    let path = Path::new(firmware_path).parent()?.join(OUTPOST_MANIFEST_FILE);
+    path.is_file().then_some(path)
+}
+
+/// The name `embarch-outpost`'s post-link CMake step emits.
+const OUTPOST_MANIFEST_FILE: &str = "outpost-manifest.json";
 
 #[derive(Debug, Deserialize)]
 pub struct FlashResponse {
@@ -667,9 +695,17 @@ impl CoreClient {
         erase: bool,
     ) -> Result<FlashResponse> {
         let url = format!("{}/flash", self.base_url().await?);
+        let manifest = manifest_beside(firmware_path);
+        if let Some(manifest) = manifest.as_deref() {
+            tracing::debug!(
+                manifest = %manifest.display(),
+                "an outpost manifest sits beside this artifact; sending it with the flash"
+            );
+        }
 
         match self.topology_class().await? {
             TopologyClass::Local => {
+                let manifest_path = manifest.as_deref().and_then(Path::to_str);
                 let body = FlashRequest {
                     chip,
                     firmware_path,
@@ -677,6 +713,7 @@ impl CoreClient {
                     base_address,
                     probe_serial,
                     erase,
+                    manifest_path,
                 };
                 self.send(self.client.post(url).json(&body), self.flash_timeout)
                     .await
@@ -702,6 +739,14 @@ impl CoreClient {
                 }
                 if erase {
                     form = form.text("erase", "true");
+                }
+                // Uploaded as bytes for the same reason the artifact is: a
+                // `WslHost`/`Remote` Core cannot open a path on this side.
+                if let Some(manifest) = manifest.as_deref() {
+                    let json = tokio::fs::read_to_string(manifest).await.with_context(|| {
+                        format!("failed to read the outpost manifest at {}", manifest.display())
+                    })?;
+                    form = form.text("manifest", json);
                 }
                 let form = form.part(
                     "firmware",
@@ -1147,6 +1192,39 @@ impl CoreClient {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// The manifest travels because it *sits beside the artifact*, not because
+    /// a caller remembered to name it. This is the whole mechanism, so it is
+    /// pinned here rather than left to whichever call site happens to be
+    /// exercised.
+    #[test]
+    fn a_manifest_beside_the_artifact_is_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifact = dir.path().join("zephyr.hex");
+        std::fs::write(&artifact, b"x").unwrap();
+
+        assert_eq!(
+            manifest_beside(artifact.to_str().unwrap()),
+            None,
+            "a build with no outpost must send no manifest"
+        );
+
+        let manifest = dir.path().join("outpost-manifest.json");
+        std::fs::write(&manifest, b"{}").unwrap();
+        assert_eq!(manifest_beside(artifact.to_str().unwrap()), Some(manifest));
+    }
+
+    #[test]
+    fn a_directory_named_like_the_manifest_is_not_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifact = dir.path().join("zephyr.hex");
+        std::fs::write(&artifact, b"x").unwrap();
+        std::fs::create_dir(dir.path().join("outpost-manifest.json")).unwrap();
+
+        assert_eq!(manifest_beside(artifact.to_str().unwrap()), None);
+    }
+
     use super::*;
 
     /// A default-options submit must produce the exact URL every caller sent
