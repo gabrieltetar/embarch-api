@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
-use embarch_study_designer::{Study, StudyResult};
+use embarch_study_designer::{StreamEncoding, Study, StudyResult};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -299,6 +299,126 @@ pub struct EnrolledBoardResponse {
     pub confirmed_at_utc_ms: u64,
     #[serde(default)]
     pub link_port_serial: Option<String>,
+}
+
+/// One declared DUT signal link — `POST /signals` / `GET /signals`
+/// (`embarch-topology/design.md` §3 decision 18 and its 2026-08-25
+/// amendment).
+///
+/// **A mirror of `embarch_topology::hardware::SignalLink`, not that type.**
+/// The `hardware` module is behind that crate's `hardware` feature, which is
+/// what pulls in `probe-rs`/`serialport` — the two dependencies this crate
+/// deliberately never links (`embarch-api/design.md` §11). Same reasoning
+/// [`AlertResponse`] and [`EnrolledBoardResponse`] already state, and the
+/// same obligation: the serde shape here has to match that type's byte for
+/// byte, since this is what Core parses on the way in.
+///
+/// `Serialize` **and** `Deserialize` on one type rather than a request/
+/// response pair, because the write and the read genuinely carry the same
+/// thing: `declare_signal` is idempotent by name, so what comes back out of
+/// `GET /signals` is exactly what went in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignalLink {
+    /// What a `Study` names when it taps this signal
+    /// (`StreamSource::Signal { name }`). Unique within the table.
+    pub name: String,
+    /// The enrollment role the signal comes out of — `"dut"` for the
+    /// outpost's UART.
+    pub origin_role: String,
+    pub direction: SignalDirection,
+    pub route: SignalRoute,
+}
+
+/// Which way a signal travels. The outpost is `DutToHost` and TX-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SignalDirection {
+    DutToHost,
+    HostToDut,
+    Bidirectional,
+}
+
+/// Where a signal currently goes. Mirrors
+/// `embarch_topology::hardware::Route`, including its `tag = "kind"`
+/// representation — the tag is what Core's `Json<SignalLink>` extractor
+/// matches on, so it is part of the wire contract rather than a local
+/// styling choice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", tag = "kind")]
+pub enum SignalRoute {
+    /// Straight to a serial port on the Core machine, **bypassing dev-bench
+    /// entirely** — what the outpost uses today. `port_serial` is the
+    /// bridge's own USB serial, one of [`SerialPortResponse::serial_number`].
+    Direct { port_serial: String },
+    /// Terminates on declared dev-bench pins, relayed over dev-bench's
+    /// existing Core link.
+    ViaDevBench { rx_pin: String, tx_pin: String },
+}
+
+/// One serial port from `GET /serial-ports` — mirrors
+/// `embarch_topology::hardware::DetectedPort`, for the same
+/// no-`probe-rs`/`serialport`-here reason [`SignalLink`] does.
+///
+/// This is **Core's** enumeration, and that distinction is the point: a
+/// serial port on the machine running the asking process is not a serial port
+/// on the machine running Core (`embarch-ui/design.md` §3 decision 5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SerialPortResponse {
+    pub port_name: String,
+    /// Which rule produced this entry. Always `"enumerated"` from
+    /// `GET /serial-ports`, which narrows nothing — the VID-match values come
+    /// from `/dev-bench/port`, which answers a different question.
+    pub detected_by: String,
+    pub vendor_id: Option<u16>,
+    pub product_id: Option<u16>,
+    /// What a `Route::Direct` is declared by. A port reporting `None` here
+    /// cannot be declared as one, since nothing could resolve it later.
+    pub serial_number: Option<String>,
+    pub product: Option<String>,
+    pub interface: Option<u8>,
+}
+
+/// `GET /study/{study_id}/streams`' body — what a study's taps captured, and
+/// **why a trace has no names when it has none**
+/// (`embarch-core/design.md` §3 decision 30(c)'s 2026-08-26 amendment).
+#[derive(Debug, Clone, Deserialize)]
+pub struct StudyStreamIndex {
+    pub streams: Vec<StudyStreamEntry>,
+}
+
+/// One declared tap, as the study's own stream index reports it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct StudyStreamEntry {
+    pub id: u8,
+    pub name: String,
+    pub encoding: StreamEncoding,
+    #[serde(default)]
+    pub alias: Option<String>,
+    /// Whether a decoded rendering exists — i.e. whether
+    /// [`CoreClient::get_study_stream`] with `raw = false` hands back a
+    /// decoded rendering or the raw bytes.
+    pub rendered: bool,
+    /// Why this tap's rendering is missing, incomplete, or **unnamed**.
+    ///
+    /// The one field this whole endpoint exists for. `None` is "nothing to
+    /// report"; `Some` on an `OutpostTrace` tap means the trace decoded into
+    /// structure but carries **no names**, and a caller must not present it as
+    /// a named trace (`embarch-ui/design.md` §3 decision 10).
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+impl StudyStreamEntry {
+    /// Whether this tap's rendering can be presented as fully resolved: it
+    /// rendered, and Core had nothing to say about why it might not be what
+    /// it looks like.
+    ///
+    /// Deliberately a conjunction of both, rather than reading the note's
+    /// text: the note is Core's own prose, and a caller that pattern-matched
+    /// on it would be re-deriving a judgement Core already made.
+    pub fn is_fully_resolved(&self) -> bool {
+        self.rendered && self.note.is_none()
+    }
 }
 
 /// `GET /dev-bench/port`'s success body (`embarch-core/design.md` §4/§5) —
@@ -622,6 +742,34 @@ impl CoreClient {
             .json::<T>()
             .await
             .context("failed to parse embarch-core's response as JSON")
+    }
+
+    /// `send`'s counterpart for a route that answers `204 No Content`.
+    ///
+    /// Needed because [`CoreClient::send`] always parses a body, and axum's
+    /// `StatusCode`-only responses have none — `send::<()>` would fail on the
+    /// empty body rather than on anything real.
+    async fn send_no_content(
+        &self,
+        request: reqwest::RequestBuilder,
+        timeout: Duration,
+    ) -> Result<()> {
+        let response = request
+            .bearer_auth(&self.token)
+            .timeout(timeout)
+            .send()
+            .await
+            .context("request to embarch-core failed")?;
+
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "<no response body>".to_string());
+        Err(anyhow!("embarch-core returned {status}: {body}"))
     }
 
     /// Formats a non-2xx `/study/*` error body: Core's new `{code, message,
@@ -1172,6 +1320,132 @@ impl CoreClient {
         .await
     }
 
+    /// `POST /signals` — declares (or re-declares) where a named DUT signal
+    /// currently goes (`embarch-topology/design.md` §3 decision 18's
+    /// 2026-08-25 amendment).
+    ///
+    /// Idempotent by name, and that overwrite **is** the migration path the
+    /// decision promises: moving the outpost from a `Direct` route onto
+    /// dev-bench pins is one call, and no saved `Study` changes, because a
+    /// study names the signal and never the carrier.
+    ///
+    /// Goes over HTTP rather than calling
+    /// `embarch_topology::hardware::declare_signal` in-process for the same
+    /// reason enrollment does: Core owns writes to that storage, and a write
+    /// from elsewhere would bypass its `hw_lock` (`embarch-topology/design.md`
+    /// decision 14) — and on this suite's real primary deployment a plain-user
+    /// process cannot write the file at all.
+    ///
+    /// Reuses `status_timeout`: an enrollment-file write on Core's side, no
+    /// hardware touched.
+    pub async fn declare_signal(&self, link: &SignalLink) -> Result<()> {
+        let url = format!("{}/signals", self.base_url().await?);
+        self.send_no_content(self.client.post(url).json(link), self.status_timeout)
+            .await
+    }
+
+    /// `GET /signals` — every declared signal link.
+    ///
+    /// An empty list is the normal starting state, not a failure: nothing has
+    /// been wired yet, and a wire between two headers is invisible to software
+    /// until someone says it is there.
+    pub async fn list_signals(&self) -> Result<Vec<SignalLink>> {
+        let url = format!("{}/signals", self.base_url().await?);
+        self.send(self.client.get(url), self.status_timeout).await
+    }
+
+    /// `DELETE /signals/{name}` — un-declares a signal.
+    ///
+    /// `Ok(false)` when nothing was declared under that name, mirroring
+    /// `embarch_topology::hardware::remove_signal`'s own distinction rather
+    /// than flattening Core's `404` into an error: a caller retracting a row
+    /// it thought existed wants to learn it did not, not to handle an error
+    /// string.
+    pub async fn remove_signal(&self, name: &str) -> Result<bool> {
+        let url = format!("{}/signals/{}", self.base_url().await?, urlencode(name));
+        let response = self
+            .client
+            .delete(url)
+            .bearer_auth(&self.token)
+            .timeout(self.status_timeout)
+            .send()
+            .await
+            .context("request to embarch-core failed")?;
+
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+        if status.is_success() {
+            return Ok(true);
+        }
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "<no response body>".to_string());
+        Err(anyhow!("embarch-core returned {status}: {body}"))
+    }
+
+    /// `GET /serial-ports` — every USB serial port **Core's** machine
+    /// currently enumerates, unnarrowed.
+    ///
+    /// What a human picks a `Route::Direct` signal's carrier from
+    /// (`embarch-ui/design.md` §3 decision 10). Not
+    /// [`CoreClient::dev_bench_port`] with the filter off: that answers "which
+    /// port is dev-bench's link" and VID-gates to do it, while a `Direct`
+    /// route's USB-UART bridge is a wire's carrier and can carry any VID.
+    ///
+    /// An empty list is a success — nothing plugged in is a real answer.
+    /// Reuses `status_timeout`: Core only reads USB descriptors the OS already
+    /// enumerated, opening nothing.
+    pub async fn list_serial_ports(&self) -> Result<Vec<SerialPortResponse>> {
+        let url = format!("{}/serial-ports", self.base_url().await?);
+        self.send(self.client.get(url), self.status_timeout).await
+    }
+
+    /// `GET /study/{study_id}/streams` — what a study's taps captured, and
+    /// why a trace has no names when it has none.
+    ///
+    /// `Ok(None)` for a study with no `streams/` directory at all: one that
+    /// predates it, or one that never got far enough to write it. That is an
+    /// expected state rather than a Core failure, same posture
+    /// [`CoreClient::dev_bench_port`] takes for "not plugged in".
+    ///
+    /// This is the **only** place over HTTP where an unnamed outpost trace is
+    /// distinguishable from a named one: `GET /study/{id}`'s `StreamRef` has
+    /// no room for the reason and `GET /study/{id}/stream/{name}` serves the
+    /// rendered CSV either way. A caller that renders a trace without reading
+    /// this is capable of presenting numeric thread pointers as resolved
+    /// names, which is the exact defect the manifest check exists to prevent.
+    pub async fn study_streams(&self, study_id: &str) -> Result<Option<StudyStreamIndex>> {
+        let url = format!("{}/study/{}/streams", self.base_url().await?, urlencode(study_id));
+        let response = self
+            .client
+            .get(url)
+            .bearer_auth(&self.token)
+            .timeout(self.status_timeout)
+            .send()
+            .await
+            .context("request to embarch-core failed")?;
+
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if status.is_success() {
+            return response
+                .json::<StudyStreamIndex>()
+                .await
+                .map(Some)
+                .context("failed to parse embarch-core's response as JSON");
+        }
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "<no response body>".to_string());
+        Err(anyhow!("embarch-core returned {status}: {body}"))
+    }
+
     /// `GET /dev-bench/hello` (`embarch-core/design.md` §4) — runs the
     /// `Hello`/`HelloAck` handshake on its own and reports what the bench
     /// currently flashed actually says it is. No `Study` is involved and no
@@ -1193,6 +1467,76 @@ impl CoreClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The mirror's contract, written out.**
+    ///
+    /// [`SignalLink`] is a hand-maintained mirror of
+    /// `embarch_topology::hardware::SignalLink`, and no crate in the suite can
+    /// see both: the real type is behind that crate's `hardware` feature,
+    /// which is what pulls in `probe-rs`/`serialport`, and this crate never
+    /// links those. So the coupling is pinned from each side against the same
+    /// literal instead — `embarch-core`'s
+    /// `the_signal_link_wire_shape_is_what_clients_send` asserts the other
+    /// half against this exact string.
+    ///
+    /// If you change this literal, change that test too; a silent drift here
+    /// is a `POST /signals` that fails only against a live Core.
+    const SIGNAL_LINK_JSON: &str = concat!(
+        r#"{"name":"outpost","origin_role":"dut","direction":"dut-to-host","#,
+        r#""route":{"kind":"direct","port_serial":"ABC123"}}"#
+    );
+
+    fn outpost_signal() -> SignalLink {
+        SignalLink {
+            name: "outpost".to_string(),
+            origin_role: "dut".to_string(),
+            direction: SignalDirection::DutToHost,
+            route: SignalRoute::Direct { port_serial: "ABC123".to_string() },
+        }
+    }
+
+    #[test]
+    fn a_declared_signal_serializes_to_the_shape_core_parses() {
+        assert_eq!(serde_json::to_string(&outpost_signal()).unwrap(), SIGNAL_LINK_JSON);
+        assert_eq!(
+            serde_json::from_str::<SignalLink>(SIGNAL_LINK_JSON).unwrap(),
+            outpost_signal()
+        );
+    }
+
+    /// The other route variant, whose tag is the one a `rename_all` could
+    /// plausibly get wrong (`via-dev-bench`, not `viaDevBench` or
+    /// `via_dev_bench`).
+    #[test]
+    fn the_via_dev_bench_route_keeps_its_kebab_tag() {
+        let link = SignalLink {
+            name: "outpost".to_string(),
+            origin_role: "dut".to_string(),
+            direction: SignalDirection::DutToHost,
+            route: SignalRoute::ViaDevBench { rx_pin: "P0.04".to_string(), tx_pin: "P0.05".to_string() },
+        };
+        let json = serde_json::to_string(&link).unwrap();
+        assert!(json.contains(r#""kind":"via-dev-bench""#), "{json}");
+        assert_eq!(serde_json::from_str::<SignalLink>(&json).unwrap(), link);
+    }
+
+    /// A trace is presentable as named only when Core both rendered it and had
+    /// nothing to say about it. Reading the note's prose to decide would be
+    /// re-deriving a judgement Core already made.
+    #[test]
+    fn a_noted_stream_is_never_fully_resolved() {
+        let entry = |rendered: bool, note: Option<&str>| StudyStreamEntry {
+            id: 0,
+            name: "outpost".to_string(),
+            encoding: StreamEncoding::OutpostTrace,
+            alias: None,
+            rendered,
+            note: note.map(str::to_string),
+        };
+        assert!(entry(true, None).is_fully_resolved());
+        assert!(!entry(true, Some("decoded but NOT named: …")).is_fully_resolved());
+        assert!(!entry(false, None).is_fully_resolved());
+    }
 
     /// The manifest travels because it *sits beside the artifact*, not because
     /// a caller remembered to name it. This is the whole mechanism, so it is

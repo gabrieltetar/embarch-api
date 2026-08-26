@@ -26,26 +26,26 @@
 //! is what keeps it that way.
 
 use anyhow::{Context, Result};
-use std::path::Path;
 
-/// The default [`crate::config::ProjectConfig::version_command`]: the same
-/// `git describe` invocation `embarch-dev-bench`'s own build embeds into
-/// `HelloAck.firmware_version` and `embarch-umbrella`'s doctor check 13
-/// compares against, so a project that declares nothing gets the convention
-/// the rest of the suite already uses.
-pub const DEFAULT_VERSION_COMMAND: &[&str] = &["git", "describe", "--always", "--dirty", "--abbrev=8"];
-
-/// Every subcommand or argv this crate is ever allowed to run against a
-/// firmware repo for versioning purposes is a *read*. These are the `git`
-/// subcommands that mutate a working tree, and
-/// [`reject_tree_mutating_command`] refuses any of them outright — including
-/// when they arrive through a project's own declared `version_command`,
-/// which is config a human wrote and this crate does not get to trust
-/// blindly with a tree it did not create.
-const TREE_MUTATING_GIT_SUBCOMMANDS: &[&str] = &[
-    "checkout", "switch", "reset", "restore", "clean", "stash", "merge", "rebase", "cherry-pick",
-    "apply", "am", "pull", "revert", "worktree", "submodule", "sparse-checkout",
-];
+/// The suite's default version command, the read that runs it, and the rule
+/// that keeps it a read — all three now live in `embarch-core-client`
+/// (`version.rs`), re-exported here so every call site and doc reference in
+/// this crate keeps its existing path.
+///
+/// **Moved 2026-08-26, and the move is the point.** `embarch-ui`'s Study
+/// Designer prefills a `Study`'s `requires.firmware_version` from the
+/// configured project's own `git describe` (`embarch-ui/design.md` §3
+/// decision 11), and `embarch-ui` cannot depend on this crate — no such
+/// dependency direction exists in the suite. The alternative was a second copy
+/// of this argv and of [`reject_tree_mutating_command`]'s over-rejecting rule,
+/// living in a crate that would never see these tests.
+/// `embarch-core-client` is where these two crates already meet.
+///
+/// [`tests::the_reflash_path_never_moves_the_tree`] still lives here and still
+/// fails the moment *this* crate's reflash path acquires a way to move an
+/// engineer's working tree — the constraint is about this path, wherever the
+/// function enforcing it is defined.
+pub use embarch_core_client::version::{default_version_command, derive_version};
 
 /// Which firmware a run should rebuild and reflash before submitting its
 /// study (`design.md` §3 decision 40).
@@ -98,99 +98,8 @@ impl ReflashTarget {
 pub fn version_command_for(declared: Option<&Vec<String>>) -> Vec<String> {
     match declared {
         Some(cmd) if !cmd.is_empty() => cmd.clone(),
-        _ => DEFAULT_VERSION_COMMAND.iter().map(|s| s.to_string()).collect(),
+        _ => default_version_command(),
     }
-}
-
-/// Refuses a command that would move the working tree, whatever its origin.
-///
-/// A `version_command` is config, and config is a place a mistake can be
-/// typed — `["git", "checkout", "v1.2.3"]` would be a perfectly plausible
-/// attempt at "make the version be this", and it is exactly the act
-/// `design.md` §3 decision 40 forbids. Refusing it here means the constraint
-/// holds against the config file too, not only against this crate's own
-/// code.
-pub fn reject_tree_mutating_command(command: &[String]) -> Result<()> {
-    let Some((program, args)) = command.split_first() else {
-        anyhow::bail!("version_command is empty — give it at least a program to run");
-    };
-    let program_name = Path::new(program)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(program.as_str());
-    if program_name != "git" {
-        return Ok(());
-    }
-    // Deliberately matches **any** argument, not just the one in subcommand
-    // position. `git -C /elsewhere checkout main` puts a path where the
-    // subcommand looks like it should be, and a rule that only inspected the
-    // first non-flag argument would wave it through — so this over-rejects
-    // instead, refusing a read-only `git log merge` along with the real
-    // thing. That trade is one-sided: a version command has no business
-    // naming any of these, and the cost of the false positive is renaming an
-    // argument, while the cost of the false negative is somebody's
-    // uncommitted work.
-    if let Some(subcommand) = args
-        .iter()
-        .find(|a| TREE_MUTATING_GIT_SUBCOMMANDS.contains(&a.as_str()))
-    {
-        anyhow::bail!(
-            "refusing to run `git ... {subcommand} ...`: embarch-api never moves an engineer's \
-             working tree to satisfy a study's version requirement (design.md §3 decision 40). \
-             Reflash builds the tree as it stands; if the study wants another revision, that \
-             checkout is yours to make."
-        );
-    }
-    Ok(())
-}
-
-/// Runs `command` in `cwd` and returns its trimmed stdout as this project's
-/// firmware version string.
-///
-/// **This describes the tree that was built, not the image that is running.**
-/// EmbArch has no readback path from a DUT, so there is nothing here to
-/// confirm the build actually embeds this string; whether it does is the
-/// project's business and its `version_command`'s to state. That is why the
-/// resulting `Provenance.firmware_source` is `FlashedThisRun` — "this run put
-/// the build of this tree on the board" — and not a claim to have read
-/// anything back off the DUT.
-pub async fn derive_version(cwd: &Path, command: &[String]) -> Result<String> {
-    reject_tree_mutating_command(command)?;
-    let (program, args) = command
-        .split_first()
-        .context("version_command must have at least one element")?;
-
-    if !cwd.exists() {
-        anyhow::bail!("cannot derive a firmware version: {} does not exist", cwd.display());
-    }
-
-    let output = tokio::process::Command::new(program)
-        .args(args)
-        .current_dir(cwd)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .await
-        .with_context(|| format!("failed to run version_command ({}) in {}", command.join(" "), cwd.display()))?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "version_command ({}) failed in {}: {}",
-            command.join(" "),
-            cwd.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-
-    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if version.is_empty() {
-        anyhow::bail!(
-            "version_command ({}) produced no output in {} — a blank firmware version would be \
-             recorded as a fact nobody can read",
-            command.join(" "),
-            cwd.display()
-        );
-    }
-    Ok(version)
 }
 
 /// The message a version mismatch fails with when no override was given.
@@ -436,6 +345,7 @@ fn build_failure_reason(outcome: &crate::build::BuildOutcome) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use embarch_core_client::version::{reject_tree_mutating_command, DEFAULT_VERSION_COMMAND};
 
     #[test]
     fn the_four_reflash_targets_round_trip_and_nothing_else_parses() {
@@ -471,7 +381,15 @@ mod tests {
     /// into a config file, which is the likeliest way it would come back.
     #[test]
     fn the_reflash_path_never_moves_the_tree() {
-        for subcommand in TREE_MUTATING_GIT_SUBCOMMANDS {
+        // The list itself now lives with the rule (`embarch-core-client`'s
+        // `version` module); what this crate pins is that *its* reflash path
+        // is still governed by it, named out in full so the coupling is
+        // visible from here.
+        for subcommand in [
+            "checkout", "switch", "reset", "restore", "clean", "stash", "merge", "rebase",
+            "cherry-pick", "apply", "am", "pull", "revert", "worktree", "submodule",
+            "sparse-checkout",
+        ] {
             let command = vec!["git".to_string(), subcommand.to_string(), "v1.2.3".to_string()];
             let err = reject_tree_mutating_command(&command)
                 .expect_err("`git {subcommand}` must be refused");
