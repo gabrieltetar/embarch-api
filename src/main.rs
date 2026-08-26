@@ -2,6 +2,7 @@ mod build;
 mod cli;
 mod config;
 mod dev_bench;
+mod logging;
 mod reflash;
 mod resolve;
 mod study;
@@ -39,7 +40,7 @@ struct Cli {
 /// The four `discovery = "zephyr-west"` selection flags (`design.md` §3
 /// decision 12), shared by every subcommand that runs a build or needs a
 /// chip. Ignored entirely for a `discovery = "static"` project.
-#[derive(clap::Args)]
+#[derive(clap::Args, Debug)]
 pub struct TargetSelection {
     /// Zephyr board name. Only meaningful for a discovery = "zephyr-west"
     /// project; ignored otherwise.
@@ -76,7 +77,7 @@ pub struct TargetSelection {
 /// CLI subcommand surface (design.md §3.10/§5a) — mirrors embarch-api's MCP
 /// tools in `tools.rs` one-for-one, so a human with no MCP client can invoke
 /// the identical operations directly.
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 pub enum Commands {
     /// List every project configured in embarch-api's config file.
     ListProjects,
@@ -392,11 +393,17 @@ fn main() -> Result<()> {
 }
 
 async fn async_main() -> Result<()> {
-    // stdout is the MCP JSON-RPC transport — logging must go to stderr, or
-    // it corrupts the stream the moment anything logs.
-    tracing_subscriber::fmt().with_writer(std::io::stderr).init();
-
+    // Parsed before logging is installed, not after: `logging::init` needs
+    // to know which mode this process is, and the presence of a subcommand
+    // is the only thing that says so (§3 decision 43 — one file, both
+    // modes, every line tagged with which). Nothing logs before this point,
+    // and clap reports its own errors without tracing.
     let cli = Cli::parse();
+    logging::init(if cli.command.is_some() {
+        logging::Mode::Cli
+    } else {
+        logging::Mode::Mcp
+    });
     let config_path = cli
         .config
         .or_else(|| std::env::var_os("EMBARCH_API_CONFIG").map(PathBuf::from))
@@ -411,12 +418,21 @@ async fn async_main() -> Result<()> {
     let core = CoreClient::new(&config.core).context("failed to build embarch-core client")?;
 
     if let Some(command) = cli.command {
+        // A one-shot CLI run would otherwise leave nothing in the logfile at
+        // all — most subcommands emit no `tracing` events of their own, and
+        // the process is gone before anyone looks (§3 decision 43's whole
+        // motivating case). These two lines are the record: what was asked
+        // for, and how it came out. `{command:?}` is clap's derived `Debug`,
+        // which carries the subcommand's own arguments with it.
+        tracing::info!("cli invocation: {command:?} (config {})", config_path.display());
         let exit_code = cli::run(command, cli.json, Arc::new(config), core).await;
+        tracing::info!("cli invocation finished with exit code {exit_code}");
         std::process::exit(exit_code);
     }
 
     tracing::info!(
-        "embarch-api starting: {} project(s) configured, core base_url={}{}",
+        "embarch-api starting (config {}): {} project(s) configured, core base_url={}{}",
+        config_path.display(),
         config.projects.len(),
         config.core.base_url,
         if config.core.is_auto() {
