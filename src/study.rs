@@ -77,6 +77,7 @@ mod tests {
             streams: heapless::Vec::new(),
             steps_crc: crc,
             streams_crc: crc,
+            dev_bench_log_level: Default::default(),
         }
     }
 

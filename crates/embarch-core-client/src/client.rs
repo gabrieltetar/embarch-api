@@ -398,26 +398,48 @@ pub struct StudyStreamEntry {
     /// [`CoreClient::get_study_stream`] with `raw = false` hands back a
     /// decoded rendering or the raw bytes.
     pub rendered: bool,
-    /// Why this tap's rendering is missing, incomplete, or **unnamed**.
+    /// Why this tap's rendering is missing, incomplete, **unnamed** or
+    /// **untimed**.
     ///
     /// The one field this whole endpoint exists for. `None` is "nothing to
     /// report"; `Some` on an `OutpostTrace` tap means the trace decoded into
-    /// structure but carries **no names**, and a caller must not present it as
-    /// a named trace (`embarch-ui/design.md` §3 decision 10).
+    /// structure but is missing its names, its times, or both — and a caller
+    /// must not present it as a complete one (`embarch-ui/design.md` §3
+    /// decision 10). **Prose, for a person:** branch on the two booleans
+    /// below, never on this text.
     #[serde(default)]
     pub note: Option<String>,
+    /// Whether an applicable manifest named this trace's threads, ISRs and
+    /// markers (`embarch-outpost/design.md` §3 decision 9). `None` from a Core
+    /// that predates the field, or on a tap where the question is meaningless.
+    #[serde(default)]
+    pub named: Option<bool>,
+    /// Whether this trace's frames carry Core's own receipt time — the only
+    /// clock an outpost trace has, since a record carries none
+    /// (`embarch-outpost/design.md` §3 decisions 4, 17). `Some(false)` is an
+    /// ordered, untimed trace: real, and to be drawn as such rather than
+    /// against an axis of milliseconds it does not have.
+    #[serde(default)]
+    pub timed: Option<bool>,
 }
 
 impl StudyStreamEntry {
-    /// Whether this tap's rendering can be presented as fully resolved: it
-    /// rendered, and Core had nothing to say about why it might not be what
-    /// it looks like.
+    /// Whether an applicable manifest named this trace.
     ///
-    /// Deliberately a conjunction of both, rather than reading the note's
-    /// text: the note is Core's own prose, and a caller that pattern-matched
-    /// on it would be re-deriving a judgement Core already made.
-    pub fn is_fully_resolved(&self) -> bool {
-        self.rendered && self.note.is_none()
+    /// Falls back to the old conjunction for a Core that predates
+    /// [`named`](Self::named) — which was correct while `note` could only ever
+    /// mean "unnamed". It stopped being correct when a trace gained a second
+    /// way to be incomplete: an untimed trace carries a note and is *named*,
+    /// and the fallback calls it unnamed. Hence the field.
+    pub fn is_named(&self) -> bool {
+        self.named.unwrap_or(self.rendered && self.note.is_none())
+    }
+
+    /// Whether this trace's frames carry receipt times. `None` — a Core that
+    /// predates the field — reads as **not timed**: a caller that assumed
+    /// otherwise would draw a millisecond axis over frame indices.
+    pub fn is_timed(&self) -> bool {
+        self.timed.unwrap_or(false)
     }
 }
 
@@ -1520,22 +1542,46 @@ mod tests {
         assert_eq!(serde_json::from_str::<SignalLink>(&json).unwrap(), link);
     }
 
-    /// A trace is presentable as named only when Core both rendered it and had
-    /// nothing to say about it. Reading the note's prose to decide would be
-    /// re-deriving a judgement Core already made.
+    /// Named and timed are **two** facts, and the pair is why they are two
+    /// fields instead of one note.
     #[test]
-    fn a_noted_stream_is_never_fully_resolved() {
-        let entry = |rendered: bool, note: Option<&str>| StudyStreamEntry {
+    fn named_and_timed_are_independent_and_neither_is_read_off_the_note() {
+        let entry = |rendered: bool, note: Option<&str>, named, timed| StudyStreamEntry {
             id: 0,
             name: "outpost".to_string(),
             encoding: StreamEncoding::OutpostTrace,
             alias: None,
             rendered,
             note: note.map(str::to_string),
+            named,
+            timed,
         };
-        assert!(entry(true, None).is_fully_resolved());
-        assert!(!entry(true, Some("decoded but NOT named: …")).is_fully_resolved());
-        assert!(!entry(false, None).is_fully_resolved());
+
+        let both = entry(true, None, Some(true), Some(true));
+        assert!(both.is_named() && both.is_timed());
+
+        // The case the old single-flag rule got wrong: a note, and a trace
+        // that is genuinely named.
+        let untimed = entry(
+            true,
+            Some("decoded but NOT timed: no arrival stamps were recorded"),
+            Some(true),
+            Some(false),
+        );
+        assert!(untimed.is_named(), "an untimed trace is still a named one");
+        assert!(!untimed.is_timed());
+
+        let unnamed = entry(true, Some("decoded but NOT named: …"), Some(false), Some(true));
+        assert!(!unnamed.is_named());
+        assert!(unnamed.is_timed());
+
+        // A Core that predates the fields: fall back to the old conjunction
+        // for names, and never claim a time base nobody reported.
+        let old = entry(true, None, None, None);
+        assert!(old.is_named());
+        assert!(!old.is_timed());
+        assert!(!entry(true, Some("decoded but NOT named: …"), None, None).is_named());
+        assert!(!entry(false, None, None, None).is_named());
     }
 
     /// The manifest travels because it *sits beside the artifact*, not because
