@@ -324,6 +324,85 @@ pub struct PostStudyResponse {
     pub study_id: String,
 }
 
+/// The two out-of-band run parameters `POST /study` accepts as **query
+/// parameters** (`embarch-core/design.md` §3 decision 31's amendment,
+/// `embarch-api/design.md` §3 decision 40).
+///
+/// Neither can ride inside the `Study` body: `embarch-study-designer/design.md`
+/// §3 decision 40 settles that reflash is "a run parameter, not a study
+/// field", so a saved study would otherwise carry a reflash instruction into
+/// every later re-read of its own results. Keeping them out of the body also
+/// leaves `Study`'s bytes — and therefore `steps_crc`/`streams_crc` — exactly
+/// as they were.
+///
+/// [`Default`] is "nothing was flashed, nothing is waived", which is the
+/// shape every caller that does not orchestrate a flash wants and the
+/// behavior every caller had before this existed.
+#[derive(Debug, Default, Clone)]
+pub struct StudyRunOptions {
+    /// Proceed past a version requirement this run does not satisfy. The
+    /// override is **recorded** in `StudyResult.provenance.overrides`, never
+    /// silently honoured.
+    pub allow_version_mismatch: bool,
+    /// What this run just flashed onto the DUT, if it did. Its presence is
+    /// what lets Core write `VersionSource::FlashedThisRun` honestly —
+    /// `POST /flash` and `POST /study` are separate calls with nothing
+    /// linking them, so the process that sequenced both is the only one that
+    /// can say so (`embarch-core/design.md` §3 decision 31's implementation
+    /// note).
+    pub flashed_firmware_version: Option<String>,
+}
+
+impl StudyRunOptions {
+    /// The `?k=v` suffix for `POST /study`, empty when nothing is set — so a
+    /// default-options submit is byte-identical to the URL every caller sent
+    /// before these existed.
+    fn query_suffix(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if self.allow_version_mismatch {
+            parts.push("allow_version_mismatch=1".to_string());
+        }
+        if let Some(version) = &self.flashed_firmware_version {
+            parts.push(format!("flashed_firmware_version={}", urlencode(version)));
+        }
+        if parts.is_empty() {
+            String::new()
+        } else {
+            format!("?{}", parts.join("&"))
+        }
+    }
+}
+
+/// Percent-encodes everything outside the unreserved set. A version string
+/// is `git describe` output in practice — `g1a2b3c-dirty`, all unreserved —
+/// but it is free-form and reaches this from a config-declared command, so
+/// encoding it is not optional. Hand-rolled rather than adding a dependency
+/// for one call site.
+fn urlencode(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for byte in raw.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char)
+            }
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
+}
+
+/// `GET /dev-bench/hello`'s body (`embarch-core/design.md` §4) — the
+/// `Hello`/`HelloAck` handshake run on its own, with no `Study` involved.
+/// `firmware_version` is what the bench currently running actually reports,
+/// which is the only version in this suite that is genuinely read back off
+/// the thing it describes.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct HelloAckResponse {
+    pub schema_version: u32,
+    pub compatible: bool,
+    pub firmware_version: String,
+}
+
 /// `POST /study`'s `409 Conflict` body: `{"study_id": "<uuid-string>"}`
 /// naming the study already in-flight.
 #[derive(Debug, Deserialize)]
@@ -842,7 +921,16 @@ impl CoreClient {
     /// no version at all is reported as a mismatch too, not waved through:
     /// it is a Core built before this field existed, which is precisely the
     /// drift the field was added to catch.
-    pub async fn post_study(&self, study: &Study) -> Result<PostStudyResponse> {
+    ///
+    /// `run` carries the two things that deliberately cannot ride inside the
+    /// `Study` body — see [`StudyRunOptions`]. Passing
+    /// `&StudyRunOptions::default()` is the pre-item-2 behavior exactly, and
+    /// produces a byte-identical request.
+    pub async fn post_study(
+        &self,
+        study: &Study,
+        run: &StudyRunOptions,
+    ) -> Result<PostStudyResponse> {
         let core_version = self.status().await?.study_designer_schema_version;
         if core_version != Some(embarch_study_designer::HOST_TYPE_SCHEMA_VERSION) {
             return Err(anyhow::Error::new(SchemaVersionMismatch {
@@ -851,7 +939,7 @@ impl CoreClient {
             }));
         }
 
-        let url = format!("{}/study", self.base_url().await?);
+        let url = format!("{}/study{}", self.base_url().await?, run.query_suffix());
         let response = self
             .client
             .post(url)
@@ -924,10 +1012,16 @@ impl CoreClient {
         Err(anyhow!(Self::format_study_error(status, &body)))
     }
 
-    /// Shared by `get_study_power_data`/`get_study_waveform_data`: both are
-    /// `GET /study/{study_id}/<endpoint>` returning a raw `text/csv` body,
-    /// differing only in the endpoint name and what a `404` means for that
-    /// particular data channel.
+    /// Shared by every "fetch a study's captured bytes" call: the three
+    /// fixed-channel aliases (`get_study_power_data` and friends) and the
+    /// parameterised [`CoreClient::get_study_stream`] they are aliases of.
+    /// All are `GET /study/{study_id}/<endpoint>` returning a raw body,
+    /// differing only in the endpoint and in what a `404` means there.
+    ///
+    /// Deliberately **not** a "looks like CSV" branch anywhere: what a tap's
+    /// bytes mean is its declared `StreamEncoding` and nothing else
+    /// (`embarch-study-designer/design.md` §3 decision 35), and Core has
+    /// already applied that declaration by the time these bytes are served.
     async fn get_study_csv(&self, endpoint: &str, study_id: &str, not_found: &str) -> Result<Bytes> {
         let url = format!("{}/study/{study_id}/{endpoint}", self.base_url().await?);
         let response = self
@@ -1000,5 +1094,109 @@ impl CoreClient {
             "no GATT transcript captured for this study",
         )
         .await
+    }
+
+    /// `GET /study/{study_id}/stream/{name}` (`embarch-core/design.md` §3
+    /// decision 30) — one declared stream tap's capture, as bytes. The
+    /// parameterised route the three fixed-channel calls above are now
+    /// aliases of.
+    ///
+    /// `raw` picks the byte-for-byte `.bin` over the tap's rendered file.
+    /// Rendered is the default *when the tap's declared `StreamEncoding` has
+    /// a rendering*; a `Raw` or `OutpostTrace` tap has none and serves its
+    /// raw bytes either way. Nothing here inspects the bytes to decide —
+    /// Core resolved the tap's declared encoding through the study's own
+    /// `streams/index.json` before serving anything.
+    ///
+    /// A `404` covers two expected outcomes and says which: the study
+    /// declared no tap by that name (Core's body lists the ones it did), or
+    /// that tap captured nothing. Use
+    /// [`CoreClient::get_study_status`]'s `result.streams` to see what a
+    /// completed study actually captured rather than guessing a name.
+    pub async fn get_study_stream(&self, study_id: &str, name: &str, raw: bool) -> Result<Bytes> {
+        let endpoint = if raw {
+            format!("stream/{}?raw=1", urlencode(name))
+        } else {
+            format!("stream/{}", urlencode(name))
+        };
+        self.get_study_csv(
+            &endpoint,
+            study_id,
+            &format!("no capture served for stream tap '{name}'"),
+        )
+        .await
+    }
+
+    /// `GET /dev-bench/hello` (`embarch-core/design.md` §4) — runs the
+    /// `Hello`/`HelloAck` handshake on its own and reports what the bench
+    /// currently flashed actually says it is. No `Study` is involved and no
+    /// study lock is taken beyond Core's own refusal while one is in flight.
+    ///
+    /// This is the only version string in the suite that is genuinely read
+    /// back off the thing it describes, which is why `run_study`'s pre-flight
+    /// check uses it rather than deriving the bench's version from a local
+    /// checkout the way `embarch-umbrella`'s doctor check 13 has to.
+    ///
+    /// Reuses `status_timeout`: like `/status`, this is one short serial
+    /// exchange, not a flash.
+    pub async fn dev_bench_hello(&self) -> Result<HelloAckResponse> {
+        let url = format!("{}/dev-bench/hello", self.base_url().await?);
+        self.send(self.client.get(url), self.status_timeout).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A default-options submit must produce the exact URL every caller sent
+    /// before these parameters existed. The three old MCP tools and the
+    /// `embarch-ui` Study Designer are still on that path, and an alias that
+    /// quietly started sending something different is precisely the
+    /// mid-flight breakage keeping them as aliases exists to avoid.
+    #[test]
+    fn default_run_options_change_the_request_not_at_all() {
+        assert_eq!(StudyRunOptions::default().query_suffix(), "");
+    }
+
+    #[test]
+    fn each_run_option_appears_only_when_it_is_actually_set() {
+        let allow = StudyRunOptions { allow_version_mismatch: true, ..Default::default() };
+        assert_eq!(allow.query_suffix(), "?allow_version_mismatch=1");
+
+        let flashed = StudyRunOptions {
+            flashed_firmware_version: Some("g1a2b3c".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(flashed.query_suffix(), "?flashed_firmware_version=g1a2b3c");
+
+        let both = StudyRunOptions {
+            allow_version_mismatch: true,
+            flashed_firmware_version: Some("g1a2b3c-dirty".to_string()),
+        };
+        assert_eq!(
+            both.query_suffix(),
+            "?allow_version_mismatch=1&flashed_firmware_version=g1a2b3c-dirty"
+        );
+    }
+
+    /// A version string is free-form: it comes from a project-declared
+    /// command, not from a fixed `git describe` this crate controls. A space
+    /// or an `&` in one must not become a second query parameter.
+    #[test]
+    fn a_version_string_cannot_smuggle_a_second_query_parameter() {
+        let sneaky = StudyRunOptions {
+            flashed_firmware_version: Some("v1 &allow_version_mismatch=1".to_string()),
+            ..Default::default()
+        };
+        let suffix = sneaky.query_suffix();
+        assert_eq!(suffix, "?flashed_firmware_version=v1%20%26allow_version_mismatch%3D1");
+        assert!(!suffix.contains("&allow_version_mismatch=1"));
+    }
+
+    #[test]
+    fn urlencode_leaves_the_unreserved_set_alone() {
+        assert_eq!(urlencode("g1a2b3c-dirty_x.y~z"), "g1a2b3c-dirty_x.y~z");
+        assert_eq!(urlencode("a/b"), "a%2Fb");
     }
 }

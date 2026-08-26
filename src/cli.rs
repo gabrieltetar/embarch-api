@@ -31,7 +31,25 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
             baud,
             duration_ms,
         } => serial_log(&config, &core, &project, port, baud, duration_ms, json).await,
-        Commands::RunStudy { study_file } => run_study(&core, &study_file, json).await,
+        Commands::RunStudy {
+            study_file,
+            reflash,
+            allow_version_mismatch,
+            project,
+            target,
+        } => {
+            run_study(
+                &config,
+                &core,
+                &study_file,
+                &reflash,
+                allow_version_mismatch,
+                project.as_deref(),
+                &target,
+                json,
+            )
+            .await
+        }
         Commands::StudyStatus { study_id } => study_status(&core, &study_id, json).await,
         Commands::StudyPowerData { study_id, out } => {
             study_power_data(&core, &study_id, out.as_deref(), json).await
@@ -41,6 +59,12 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         }
         Commands::StudyGattData { study_id, out } => {
             study_gatt_data(&core, &study_id, out.as_deref(), json).await
+        }
+        Commands::StudyStreamData { study_id, name, raw, out } => {
+            study_stream_data(&core, &study_id, &name, raw, out.as_deref(), json).await
+        }
+        Commands::ListStudyStreams { study_id } => {
+            list_study_streams(&core, &study_id, json).await
         }
         Commands::BuildDevBench => build_dev_bench(&config, json).await,
         Commands::FlashDevBench { firmware_path, erase } => {
@@ -744,7 +768,22 @@ async fn serial_log(
     }
 }
 
-async fn run_study(core: &CoreClient, study_file: &Path, json: bool) -> i32 {
+#[allow(clippy::too_many_arguments)]
+async fn run_study(
+    config: &Config,
+    core: &CoreClient,
+    study_file: &Path,
+    reflash: &str,
+    allow_version_mismatch: bool,
+    project: Option<&str>,
+    target: &TargetSelection,
+    json: bool,
+) -> i32 {
+    let reflash = match crate::reflash::ReflashTarget::parse(reflash) {
+        Ok(target) => target,
+        Err(e) => return error_result(json, format!("{e:#}")),
+    };
+
     let raw = match std::fs::read_to_string(study_file) {
         Ok(raw) => raw,
         Err(e) => {
@@ -778,13 +817,28 @@ async fn run_study(core: &CoreClient, study_file: &Path, json: bool) -> i32 {
         );
     }
 
-    match core.post_study(&study).await {
-        Ok(resp) => finish(
-            json,
-            true,
-            serde_json::json!({ "success": true, "study_id": resp.study_id }),
-            format!("study submitted: study_id={}", resp.study_id),
-        ),
+    let build_locks = crate::build::BuildLocks::new();
+    let request = crate::reflash::RunStudyRequest {
+        reflash,
+        allow_version_mismatch,
+        project,
+        selection: target.selection(),
+    };
+
+    match crate::reflash::run_study(config, core, &build_locks, &study, request).await {
+        Ok(outcome) => {
+            let mut value = outcome.to_json();
+            value["success"] = serde_json::Value::Bool(true);
+            let mut human = format!("study submitted: study_id={}", outcome.study_id);
+            for step in &outcome.reflashed {
+                human = format!(
+                    "reflashed {}: {}\n{human}",
+                    step["target"].as_str().unwrap_or("?"),
+                    step["artifact_path"].as_str().unwrap_or("?")
+                );
+            }
+            finish(json, true, value, human)
+        }
         Err(e) => match e.downcast_ref::<StudyConflictError>() {
             Some(conflict) => error_result(
                 json,
@@ -877,5 +931,80 @@ async fn study_gatt_data(core: &CoreClient, study_id: &str, out: Option<&Path>, 
     match core.get_study_gatt_data(study_id).await {
         Ok(bytes) => write_study_csv(json, "gatt-data", study_id, &bytes, out),
         Err(e) => error_result(json, format!("study-gatt-data failed for '{study_id}': {e:#}")),
+    }
+}
+
+async fn study_stream_data(
+    core: &CoreClient,
+    study_id: &str,
+    name: &str,
+    raw: bool,
+    out: Option<&Path>,
+    json: bool,
+) -> i32 {
+    match core.get_study_stream(study_id, name, raw).await {
+        Ok(bytes) => write_study_csv(json, &format!("stream '{name}'"), study_id, &bytes, out),
+        Err(e) => error_result(
+            json,
+            format!("study-stream-data failed for '{study_id}' stream '{name}': {e:#}"),
+        ),
+    }
+}
+
+/// `StudyResult.streams` for a completed study — no new Core route, because
+/// `GET /study/{id}` already returns the whole `StudyResult` inline once a
+/// study completes and `streams` has been part of it since Milestone 7 Phase
+/// B item 1. A listing endpoint Core doesn't need is a surface this suite
+/// keeps deciding not to build.
+async fn list_study_streams(core: &CoreClient, study_id: &str, json: bool) -> i32 {
+    match core.get_study_status(study_id).await {
+        Ok(resp) => match resp.result {
+            Some(result) => {
+                let streams = crate::tools::streams_json(&result);
+                let human = if result.streams.is_empty() {
+                    format!("study {study_id} declared no stream taps")
+                } else {
+                    result
+                        .streams
+                        .iter()
+                        .map(|s| {
+                            format!(
+                                "{} — {} bytes{}",
+                                s.name,
+                                s.bytes_written,
+                                if s.truncated { "  [TRUNCATED — this capture is short]" } else { "" }
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                finish(
+                    json,
+                    true,
+                    serde_json::json!({
+                        "success": true,
+                        "study_id": study_id,
+                        "status": resp.status,
+                        "streams": streams,
+                    }),
+                    human,
+                )
+            }
+            None => finish(
+                json,
+                true,
+                serde_json::json!({
+                    "success": true,
+                    "study_id": study_id,
+                    "status": resp.status,
+                    "streams": serde_json::Value::Null,
+                }),
+                format!(
+                    "study {study_id} is {} — a study reports what it captured once it completes",
+                    resp.status
+                ),
+            ),
+        },
+        Err(e) => error_result(json, format!("list-study-streams failed for '{study_id}': {e:#}")),
     }
 }

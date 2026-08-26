@@ -117,6 +117,27 @@ pub struct ProjectConfig {
     /// its whole argv.
     #[serde(default)]
     pub default_extra_args: Vec<String>,
+    /// How to produce **this project's own firmware version string**, run in
+    /// `source_path`, for `run_study --reflash dut|both`
+    /// (`design.md` §3 decision 40). Defaults to
+    /// `["git", "describe", "--always", "--dirty", "--abbrev=8"]` — the same
+    /// invocation `embarch-dev-bench`'s own build embeds and
+    /// `embarch-umbrella`'s doctor check 13 compares against, so the default
+    /// is the suite's existing convention rather than a new one.
+    ///
+    /// **Declared, not inferred, and the distinction is the point.** There is
+    /// no readback path from a DUT — this string describes the *tree that was
+    /// built*, and EmbArch has no way to confirm the image actually embeds
+    /// it. If a project's build stamps something else (a `VERSION` file, a
+    /// CI-supplied tag), declare the command that produces that instead;
+    /// EmbArch is not going to guess at it, for the same reason
+    /// `embarch-study-designer/design.md` §3 decision 35 keeps firmware
+    /// semantics out of anything this suite derives on its own.
+    ///
+    /// Only ever consulted when a run actually reflashes the DUT. A project
+    /// nobody reflashes through `run_study` never needs it.
+    #[serde(default)]
+    pub version_command: Option<Vec<String>>,
 }
 
 impl ProjectConfig {

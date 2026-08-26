@@ -215,6 +215,75 @@ pub struct RunStudyParams {
     /// unchanged, still a plain `serde_json::Value`.
     #[schemars(schema_with = "study_value_schema")]
     pub study: serde_json::Value,
+
+    /// Which firmware to rebuild and reflash before running, from the
+    /// working tree **as it currently stands**: "none" (the default),
+    /// "dev-bench", "dut", or "both". Defaults to "none" because flashing is
+    /// the destructive half — a study that merely observes a board somebody
+    /// just flashed by hand must not silently overwrite it.
+    ///
+    /// This never checks out a git revision. If the tree isn't at the
+    /// revision the study requires, the call fails naming both and leaves
+    /// the tree (and, for the DUT, the board) exactly as they were.
+    pub reflash: Option<String>,
+
+    /// Proceed even though a version requirement isn't satisfied. The
+    /// override is **recorded** in the result's
+    /// provenance.overrides — a run that was waved through is never
+    /// indistinguishable from one that met its requirements. Defaults to
+    /// false.
+    pub allow_version_mismatch: Option<bool>,
+
+    /// Which configured project is the DUT. Required by reflash = "dut" or
+    /// "both", ignored otherwise: a study isn't tied to a project, but
+    /// rebuilding the DUT's firmware is, and there is nowhere else for the
+    /// build target to come from.
+    pub project: Option<String>,
+    /// Zephyr board name for the DUT reflash. Only meaningful alongside
+    /// project, for a discovery = "zephyr-west" project — see list_targets.
+    pub board: Option<String>,
+    /// Board variant for the DUT reflash. Only meaningful alongside project.
+    pub variant: Option<String>,
+    /// Hardware revision for the DUT reflash. Only meaningful alongside project.
+    pub revision: Option<String>,
+    /// App directory name for the DUT reflash. Only meaningful alongside project.
+    pub app: Option<String>,
+    /// `-S` snippets for the DUT reflash. Omitted or empty falls back to the
+    /// project's configured default_snippets, not "no snippets".
+    pub snippets: Option<Vec<String>>,
+    /// Extra `west build` flags for the DUT reflash. Opaque passthrough.
+    /// Omitted or empty falls back to the project's default_extra_args.
+    pub extra_args: Option<Vec<String>>,
+}
+
+impl RunStudyParams {
+    fn selection(&self) -> Selection<'_> {
+        Selection {
+            board: self.board.as_deref(),
+            variant: self.variant.as_deref(),
+            revision: self.revision.as_deref(),
+            app: self.app.as_deref(),
+            snippets: self.snippets.as_deref().unwrap_or(&[]),
+            extra_args: self.extra_args.as_deref().unwrap_or(&[]),
+        }
+    }
+}
+
+/// `study_stream_data`'s params (`design.md` §3 decision 39) — one declared
+/// tap's capture, by the name the `Study` gave it.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct StudyStreamParams {
+    /// The study_id returned by run_study.
+    pub study_id: String,
+    /// The tap's declared name — `StreamTap.name` in the submitted Study.
+    /// Call list_study_streams to see what a completed study actually
+    /// captured rather than guessing.
+    pub name: String,
+    /// Return the tap's byte-for-byte capture instead of its rendered file.
+    /// Only makes a difference for a tap whose declared encoding has a
+    /// rendering at all (Samples, GattTranscript); a Raw or OutpostTrace tap
+    /// has none and returns its raw bytes either way. Defaults to false.
+    pub raw: Option<bool>,
 }
 
 /// `schemars(schema_with)` override for [`RunStudyParams::study`] — see that
@@ -790,11 +859,19 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Submit a Study (embarch-study-designer's schema: name, requires, steps, validations, streams, steps_crc, streams_crc) for embarch-core to run against whatever DUT is connected through its dev-bench serial link. No project param — a study isn't tied to a configured project, unlike build/flash. Both seals (steps_crc over steps, streams_crc over streams) are recomputed and overwritten regardless of what's submitted. Returns { study_id } immediately (async) — call study_status to poll progress. Errors if a study is already in-flight on Core.")]
+    #[tool(description = "Submit a Study (embarch-study-designer's schema: name, requires, steps, validations, streams, steps_crc, streams_crc) for embarch-core to run against whatever DUT is connected through its dev-bench serial link. Both seals (steps_crc over steps, streams_crc over streams) are recomputed and overwritten regardless of what's submitted. Returns { study_id } immediately (async) — call study_status to poll progress. Errors if a study is already in-flight on Core.\n\nStudy.requires names the dev-bench and DUT firmware builds the study is meant to run against ('any' if it genuinely doesn't matter). reflash says what to do about it: 'none' (default), 'dev-bench', 'dut', or 'both' — build and flash from the working tree AS IT CURRENTLY STANDS, then verify. This never runs git checkout: if the tree isn't at the revision the study wants, the call fails naming both revisions and leaves the tree, and the board, alone. Reflashing the DUT needs project (plus the usual board/variant/revision/app/snippets/extra_args), since a study isn't project-shaped but a firmware build is. allow_version_mismatch proceeds anyway and the override is recorded in the result's provenance.overrides — never silently honoured.")]
     async fn run_study(
         &self,
-        Parameters(RunStudyParams { study }): Parameters<RunStudyParams>,
+        Parameters(params): Parameters<RunStudyParams>,
     ) -> Result<CallToolResult, McpError> {
+        let reflash = match params.reflash.as_deref() {
+            Some(raw) => match crate::reflash::ReflashTarget::parse(raw) {
+                Ok(target) => target,
+                Err(e) => return Self::err_text(format!("{e:#}")),
+            },
+            None => crate::reflash::ReflashTarget::None,
+        };
+        let study = params.study.clone();
         let study = match unwrap_stringified_json(study) {
             Ok(v) => v,
             Err(e) => {
@@ -819,8 +896,17 @@ impl EmbarchApi {
             ));
         }
 
-        match self.core.post_study(&study).await {
-            Ok(resp) => Self::ok_json(serde_json::json!({ "study_id": resp.study_id })),
+        let request = crate::reflash::RunStudyRequest {
+            reflash,
+            allow_version_mismatch: params.allow_version_mismatch.unwrap_or(false),
+            project: params.project.as_deref(),
+            selection: params.selection(),
+        };
+
+        match crate::reflash::run_study(&self.config, &self.core, &self.build_locks, &study, request)
+            .await
+        {
+            Ok(outcome) => Self::ok_json(outcome.to_json()),
             Err(e) => match e.downcast_ref::<StudyConflictError>() {
                 Some(conflict) => Self::err_text(format!(
                     "a study is already in-flight on embarch-core (study_id: {})",
@@ -848,7 +934,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Fetch a study's power-measurement CSV data via embarch-core, returned as text content. A study that declared no power capture — no stream tap with a PowerFrontEnd source — has no power data, and that's a clear error naming study_id, not empty output.")]
+    #[tool(description = "Alias for study_stream_data, kept for one release: fetches whichever declared tap answers the 'power' alias (a Samples-encoded tap on a PowerFrontEnd source), as rendered CSV text. Prefer study_stream_data { study_id, name } — a study can declare several taps and only one of them can answer this alias. Call list_study_streams to see what a completed study actually captured, including whether a capture was truncated, which this tool cannot tell you. A study that declared no power tap has no power data, and that's a clear error naming study_id, not empty output.")]
     async fn study_power_data(
         &self,
         Parameters(StudyIdParams { study_id }): Parameters<StudyIdParams>,
@@ -862,7 +948,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Fetch a study's waveform CSV data via embarch-core, returned as text content. A study with no StreamCapture steps has no waveform data — that's a clear error naming study_id, not empty output.")]
+    #[tool(description = "Alias for study_stream_data, kept for one release: fetches whichever declared tap answers the 'waveform' alias (a Samples-encoded tap on any source other than PowerFrontEnd), as rendered CSV text. Prefer study_stream_data { study_id, name }, and call list_study_streams to see what a study actually captured and whether it was truncated. A study that declared no such tap has no waveform data — that's a clear error naming study_id, not empty output.")]
     async fn study_waveform_data(
         &self,
         Parameters(StudyIdParams { study_id }): Parameters<StudyIdParams>,
@@ -876,7 +962,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Fetch a study's full GATT transcript as CSV via embarch-core, returned as text content. This is the exhaustive record — every notification, indication, read, write, subscribe and connect/disconnect event across every step, with each payload in both hex and printable-ASCII columns — as opposed to study_status's per-step gatt_activity, which is a capped inbound-only summary. A study with no GATT steps has no transcript; that's a clear error naming study_id, not empty output.")]
+    #[tool(description = "Alias for study_stream_data, kept for one release: fetches whichever declared tap answers the 'gatt' alias (a GattTranscript-encoded tap), as rendered CSV text. This is the exhaustive record — every notification, indication, read, write, subscribe and connect/disconnect event across every step, with each payload in both hex and printable-ASCII columns — as opposed to study_status's per-step gatt_activity, which is a capped inbound-only summary. Prefer study_stream_data { study_id, name }, and call list_study_streams to see what a study captured and whether it was truncated. A study with no GATT transcript tap has none; that's a clear error naming study_id, not empty output.")]
     async fn study_gatt_data(
         &self,
         Parameters(StudyIdParams { study_id }): Parameters<StudyIdParams>,
@@ -889,6 +975,83 @@ impl EmbarchApi {
             Err(e) => Self::err_text(format!("study_gatt_data failed for '{study_id}': {e:#}")),
         }
     }
+
+    #[tool(description = "Fetch one declared stream tap's capture from a study, by the name the Study gave it. Replaces study_power_data/study_waveform_data/study_gatt_data, which are now aliases over the same mechanism and each answer for at most one tap. Returns the tap's rendered file when its declared StreamEncoding has one (CSV for Samples and GattTranscript), or its byte-for-byte capture when it doesn't (Raw, OutpostTrace) or when raw is true. What a tap's bytes mean is declared in the Study, never guessed from their content. Call list_study_streams first rather than guessing a name: a 404 names the taps the study did declare, and also covers the separate case of a declared tap that captured nothing.")]
+    async fn study_stream_data(
+        &self,
+        Parameters(StudyStreamParams { study_id, name, raw }): Parameters<StudyStreamParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let raw = raw.unwrap_or(false);
+        match self.core.get_study_stream(&study_id, &name, raw).await {
+            Ok(bytes) => match String::from_utf8(bytes.to_vec()) {
+                Ok(text) => Ok(CallToolResult::success(vec![ContentBlock::text(text)])),
+                // A `Raw`/`OutpostTrace` tap is bytes, and bytes are not
+                // required to be text. Saying how many arrived, and that
+                // they are on Core's disk, beats a decoding error that reads
+                // like the capture failed.
+                Err(e) => Self::err_text(format!(
+                    "stream '{name}' of study '{study_id}' is {} bytes that aren't valid UTF-8 \
+                     ({e}) — this is expected for a tap whose declared encoding is Raw or \
+                     OutpostTrace. The capture is intact on embarch-core; fetch it with the \
+                     study-stream-data CLI subcommand and --out to write it to a file.",
+                    e.as_bytes().len()
+                )),
+            },
+            Err(e) => Self::err_text(format!(
+                "study_stream_data failed for '{study_id}' stream '{name}': {e:#}"
+            )),
+        }
+    }
+
+    #[tool(description = "List what a completed study actually captured: one entry per declared stream tap, with its name, how many bytes it wrote, and whether it was TRUNCATED. Read truncated: it is how you learn a capture is short rather than complete — either a retention rotation deleted a segment, or dev-bench reported dropping records — and a capture that lost data must not be read as a whole one. An entry with bytes_written 0 is a tap that was declared and produced nothing, which is a different fact from a tap that wasn't declared at all. Only a completed study has this; a pending, running or failed one returns its status instead. Use the names from here with study_stream_data.")]
+    async fn list_study_streams(
+        &self,
+        Parameters(StudyIdParams { study_id }): Parameters<StudyIdParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match self.core.get_study_status(&study_id).await {
+            Ok(resp) => match resp.result {
+                Some(result) => Self::ok_json(serde_json::json!({
+                    "study_id": study_id,
+                    "status": resp.status,
+                    "streams": streams_json(&result),
+                })),
+                None => Self::ok_json(serde_json::json!({
+                    "study_id": study_id,
+                    "status": resp.status,
+                    "streams": serde_json::Value::Null,
+                    "reason": resp.reason.unwrap_or_else(|| {
+                        "no result yet — a study reports what it captured once it completes"
+                            .to_string()
+                    }),
+                })),
+            },
+            Err(e) => Self::err_text(format!("list_study_streams failed for '{study_id}': {e:#}")),
+        }
+    }
+}
+
+/// `StudyResult.streams` as JSON (`embarch-study-designer/design.md` §4.8).
+///
+/// Carries `truncated` through verbatim, which is the field this listing
+/// exists for: `StreamRef.truncated` is set both when a retention rotation
+/// deleted a segment and when a `StreamClose` reported a non-zero `dropped`,
+/// and a listing that dropped it would hand back a capture that reads
+/// complete and isn't. Shared by the MCP tool and the CLI subcommand so the
+/// two cannot disagree about what a stream listing is.
+pub fn streams_json(result: &embarch_study_designer::StudyResult) -> serde_json::Value {
+    serde_json::Value::Array(
+        result
+            .streams
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "name": s.name.as_str(),
+                    "bytes_written": s.bytes_written,
+                    "truncated": s.truncated,
+                })
+            })
+            .collect(),
+    )
 }
 
 #[tool_handler]

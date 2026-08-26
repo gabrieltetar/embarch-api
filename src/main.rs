@@ -2,6 +2,7 @@ mod build;
 mod cli;
 mod config;
 mod dev_bench;
+mod reflash;
 mod resolve;
 mod study;
 mod tools;
@@ -141,39 +142,72 @@ pub enum Commands {
     },
     /// Submit a Study (embarch-study-designer's schema) for embarch-core to
     /// run against whatever DUT is connected through its dev-bench serial
-    /// link. No project — a study isn't tied to a configured project.
-    /// Both seals (steps_crc over steps, streams_crc over streams) are
+    /// link. Both seals (steps_crc over steps, streams_crc over streams) are
     /// recomputed and overwritten regardless of what's in the file.
+    ///
+    /// The study's `requires` names the dev-bench and DUT builds it is meant
+    /// to run against ("any" if it genuinely doesn't matter); --reflash says
+    /// what to do about it. --project is needed only to reflash the DUT: a
+    /// study isn't tied to a configured project, but rebuilding that DUT's
+    /// firmware is.
     RunStudy {
         /// Path to a JSON file matching Study's schema.
         #[arg(long = "study-file")]
         study_file: PathBuf,
+        /// Which firmware to rebuild and reflash before running, from the
+        /// working tree AS IT CURRENTLY STANDS: none (the default),
+        /// dev-bench, dut, or both. Defaults to none because flashing is the
+        /// destructive half — a study that merely observes a board you just
+        /// flashed by hand should not silently overwrite it.
+        ///
+        /// This never runs `git checkout`. If the tree isn't at the revision
+        /// the study requires, the run fails naming both revisions and
+        /// leaves the tree — and the board — alone.
+        #[arg(long, default_value = "none")]
+        reflash: String,
+        /// Proceed even though a version requirement isn't satisfied. The
+        /// override is recorded in the result's provenance.overrides, never
+        /// silently honoured.
+        #[arg(long = "allow-version-mismatch")]
+        allow_version_mismatch: bool,
+        /// Which configured project is the DUT. Required by
+        /// `--reflash dut|both`, ignored otherwise: a study isn't tied to a
+        /// project, but rebuilding the DUT's firmware is.
+        #[arg(long)]
+        project: Option<String>,
+        #[command(flatten)]
+        target: TargetSelection,
     },
     /// Get a submitted study's status via embarch-core.
     StudyStatus { study_id: String },
-    /// Fetch a study's power-measurement CSV data via embarch-core. Writes
-    /// to stdout, or to --out if given. A study that declared no power
-    /// capture — no stream tap with a PowerFrontEnd source — has no power
-    /// data, and that's reported as an error naming study_id, not silently
-    /// empty output.
+    /// Alias for study-stream-data, kept for one release: fetches whichever
+    /// declared tap answers the "power" alias (a Samples-encoded tap on a
+    /// PowerFrontEnd source). Prefer `study-stream-data <study_id> --name
+    /// <tap>`, and see `list-study-streams` for what a study actually
+    /// captured. Writes to stdout, or to --out if given. A study that
+    /// declared no power tap has no power data, and that's reported as an
+    /// error naming study_id, not silently empty output.
     StudyPowerData {
         study_id: String,
         /// Write the CSV to this file instead of stdout.
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Fetch a study's waveform CSV data via embarch-core. Same
-    /// stdout/--out behavior as study-power-data.
+    /// Alias for study-stream-data, kept for one release: fetches whichever
+    /// declared tap answers the "waveform" alias (a Samples-encoded tap on
+    /// any source other than PowerFrontEnd). Same stdout/--out behavior as
+    /// study-power-data.
     StudyWaveformData {
         study_id: String,
         /// Write the CSV to this file instead of stdout.
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Fetch a study's full GATT transcript as CSV via embarch-core — every
-    /// notification, indication, read, write, subscribe and connect event
-    /// across every step, uncapped, with each payload rendered as both hex
-    /// and printable ASCII. This is the exhaustive record; study-status's
+    /// Alias for study-stream-data, kept for one release: fetches whichever
+    /// declared tap answers the "gatt" alias (a GattTranscript-encoded tap)
+    /// — every notification, indication, read, write, subscribe and connect
+    /// event across every step, uncapped, with each payload rendered as both
+    /// hex and printable ASCII. This is the exhaustive record; study-status's
     /// per-step gatt_activity is a capped, inbound-only summary. Same
     /// stdout/--out behavior as study-power-data.
     StudyGattData {
@@ -182,6 +216,36 @@ pub enum Commands {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Fetch one declared stream tap's capture from a study, by the name the
+    /// Study gave it. Replaces study-power-data/study-waveform-data/
+    /// study-gatt-data, which are now aliases over the same mechanism. Serves
+    /// the tap's rendered file when its declared StreamEncoding has one (CSV
+    /// for Samples and GattTranscript), or its byte-for-byte capture when it
+    /// doesn't (Raw, OutpostTrace) or when --raw is given. Same stdout/--out
+    /// behavior as study-power-data — and --out is the way to get a binary
+    /// capture out intact. Run list-study-streams first rather than guessing
+    /// a name.
+    StudyStreamData {
+        study_id: String,
+        /// The tap's declared name — StreamTap.name in the submitted Study.
+        #[arg(long)]
+        name: String,
+        /// Serve the byte-for-byte capture instead of the tap's rendered
+        /// file. No effect on a tap whose encoding has no rendering.
+        #[arg(long)]
+        raw: bool,
+        /// Write the capture to this file instead of stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// List what a completed study actually captured: one row per declared
+    /// stream tap, with its name, bytes written, and whether it was
+    /// TRUNCATED — which is how you learn a capture is short rather than
+    /// complete (a retention rotation deleted a segment, or dev-bench
+    /// reported dropping records). A row with 0 bytes is a tap that was
+    /// declared and captured nothing, which is a different fact from a tap
+    /// that was never declared.
+    ListStudyStreams { study_id: String },
     /// Build embarch-dev-bench's own firmware (the ESP32-C5 espressif
     /// workspace) by running `west build`. No project — dev-bench isn't a
     /// `[[projects]]` entry, see config.rs's `DevBenchConfig`. Requires
