@@ -816,9 +816,9 @@ async fn run_study(
         }
     };
 
-    // design.md §3 decision 26: recompute and overwrite both of a study's
-    // seals unconditionally, regardless of whatever values (including
-    // missing/zero ones) were in the submitted JSON.
+    // design.md §3 decision 26: recompute and overwrite all three of a
+    // study's seals unconditionally, regardless of whatever values
+    // (including missing/zero ones) were in the submitted JSON.
     if let Err(e) = crate::study::reseal_study(&mut study) {
         return error_result(
             json,

@@ -1,15 +1,16 @@
 //! Shared helper for the `run_study` MCP tool / `run-study` CLI subcommand
-//! (`tools.rs`, `cli.rs`): recomputing both of a `Study`'s integrity seals
-//! immediately before submission to embarch-core.
+//! (`tools.rs`, `cli.rs`): recomputing all three of a `Study`'s integrity
+//! seals immediately before submission to embarch-core.
 
-use embarch_study_designer::{steps_crc, streams_crc, Study};
+use embarch_study_designer::{protocols_crc, steps_crc, streams_crc, Study};
 
-/// Why a `Study` couldn't be resealed — which of the two seals failed to
+/// Why a `Study` couldn't be resealed — which of the three seals failed to
 /// compute, rather than one opaque "too large".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResealError {
     Step(embarch_study_designer::StepTooLargeError),
     StreamTap(embarch_study_designer::StreamTapTooLargeError),
+    Protocol(embarch_study_designer::ProtocolTooLargeError),
 }
 
 impl std::fmt::Display for ResealError {
@@ -17,31 +18,45 @@ impl std::fmt::Display for ResealError {
         match self {
             ResealError::Step(_) => write!(f, "one step's postcard encoding was too large to compute steps_crc over"),
             ResealError::StreamTap(_) => write!(f, "one stream tap's postcard encoding was too large to compute streams_crc over"),
+            ResealError::Protocol(_) => write!(f, "one protocol definition's postcard encoding was too large to compute protocols_crc over"),
         }
     }
 }
 
 impl std::error::Error for ResealError {}
 
-/// Overwrites `study.steps_crc` and `study.streams_crc` with freshly
-/// computed values over `study.steps` and `study.streams`, regardless of
-/// whatever values (including missing/zero ones) were already present in the
-/// submitted JSON — `embarch-study-designer/design.md` §3 decision 26: a
-/// seal is filled in by whoever *submits* a `Study`, unconditionally, not
-/// trusted from the caller. Idempotent: a caller that already computed
-/// correct values is unaffected.
+/// Overwrites `study.steps_crc`, `study.streams_crc` and
+/// `study.protocols_crc` with freshly computed values over `study.steps`,
+/// `study.streams` and `study.protocols`, regardless of whatever values
+/// (including missing/zero ones) were already present in the submitted JSON
+/// — `embarch-study-designer/design.md` §3 decision 26: a seal is filled in
+/// by whoever *submits* a `Study`, unconditionally, not trusted from the
+/// caller. Idempotent: a caller that already computed correct values is
+/// unaffected.
 ///
-/// Both seals, since decision 39's 2026-08-25 amendment gave `streams` its
-/// own. They are recomputed independently, exactly as Core checks them
-/// independently — that is what lets a failure name which half is at fault.
+/// **All three seals.** `streams` got its own in decision 39's 2026-08-25
+/// amendment and `protocols` in decision 58 — and this function was not
+/// extended past the pair it was first written against, so until 2026-08-27
+/// every study carrying a non-empty `Study.protocols` was rejected `400` by
+/// Core unless the submitter computed the third seal by hand, which no
+/// documented authoring path does. Found by submitting the suite's first
+/// real protocol manifest ([embarch-decision-reversals.md] row 76). The
+/// lesson generalises past this function: a seal added as a deliberate
+/// *sibling* of existing ones has to be added everywhere the set is
+/// enumerated, and "both" in a doc comment is the kind of hardcoded arity
+/// that silently becomes false.
 ///
-/// Errors only if a single `Step`/`StreamTap`'s postcard encoding doesn't
-/// fit the corresponding scratch buffer — should be unreachable given
-/// `embarch-study-designer`'s configured `limits`, but surfaced as an error
-/// rather than assumed impossible.
+/// They are recomputed independently, exactly as Core checks them
+/// independently — that is what lets a failure name which third is at fault.
+///
+/// Errors only if a single `Step`/`StreamTap`/`ProtocolDef`'s postcard
+/// encoding doesn't fit the corresponding scratch buffer — should be
+/// unreachable given `embarch-study-designer`'s configured `limits`, but
+/// surfaced as an error rather than assumed impossible.
 pub fn reseal_study(study: &mut Study) -> Result<(), ResealError> {
     study.steps_crc = steps_crc(&study.steps).map_err(ResealError::Step)?;
     study.streams_crc = streams_crc(&study.streams).map_err(ResealError::StreamTap)?;
+    study.protocols_crc = protocols_crc(&study.protocols).map_err(ResealError::Protocol)?;
     Ok(())
 }
 
@@ -95,7 +110,7 @@ mod tests {
         assert_eq!(study.steps_crc, steps_crc(&study.steps).unwrap());
     }
 
-    /// Both seals are overwritten, not just `steps_crc` — and a study with
+    /// `streams_crc` is overwritten too, not just `steps_crc` — and a study with
     /// no taps reseals to 0, which is the genuine CRC of an empty list
     /// rather than a value left untouched.
     #[test]
@@ -170,9 +185,40 @@ mod tests {
             other => panic!("expected BleAdvertise, got {other:?}"),
         }
 
-        reseal_study(&mut study).expect("both seals should compute cleanly");
+        reseal_study(&mut study).expect("all three seals should compute cleanly");
         assert_ne!(study.steps_crc, 0);
         assert_eq!(study.steps_crc, steps_crc(&study.steps).unwrap());
         assert_eq!(study.streams_crc, streams_crc(&study.streams).unwrap());
+        assert_eq!(study.protocols_crc, protocols_crc(&study.protocols).unwrap());
+    }
+
+    /// The third seal is recomputed over a **non-empty** `protocols` list.
+    ///
+    /// This is the case [embarch-decision-reversals.md] row 76 is about, and
+    /// the reason it is asserted against a real `ProtocolDef` rather than the
+    /// empty default: `protocols_crc(&[])` is 0, and `protocols_crc` was
+    /// missing from `reseal_study` entirely — so every test that only ever
+    /// resealed a protocol-free study passed against a function that never
+    /// touched the field. An empty list cannot distinguish "recomputed to 0"
+    /// from "never written", which is exactly how this went unnoticed until
+    /// the first study carrying a real manifest was rejected `400` by Core.
+    #[test]
+    fn overwrites_a_stale_protocols_crc_over_a_real_protocol() {
+        let mut study = study_with_crc(0);
+        let protocol = embarch_study_designer::eap::ProtocolDef {
+            name: heapless::String::try_from("drain").unwrap(),
+            sources: heapless::Vec::new(),
+            frames: heapless::Vec::new(),
+            session: heapless::Vec::new(),
+            states: Default::default(),
+        };
+        study.protocols.push(protocol).unwrap();
+        study.protocols_crc = 0xDEAD_BEEF;
+
+        reseal_study(&mut study).unwrap();
+
+        let expected = protocols_crc(&study.protocols).unwrap();
+        assert_ne!(expected, 0, "a real protocol must not seal to the empty-list CRC");
+        assert_eq!(study.protocols_crc, expected);
     }
 }

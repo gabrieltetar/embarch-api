@@ -143,8 +143,9 @@ pub enum Commands {
     },
     /// Submit a Study (embarch-study-designer's schema) for embarch-core to
     /// run against whatever DUT is connected through its dev-bench serial
-    /// link. Both seals (steps_crc over steps, streams_crc over streams) are
-    /// recomputed and overwritten regardless of what's in the file.
+    /// link. All three seals (steps_crc over steps, streams_crc over
+    /// streams, protocols_crc over protocols) are recomputed and overwritten
+    /// regardless of what's in the file.
     ///
     /// The study's `requires` names the dev-bench and DUT builds it is meant
     /// to run against ("any" if it genuinely doesn't matter); --reflash says

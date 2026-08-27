@@ -197,9 +197,9 @@ pub struct RunStudyParams {
     /// Untyped here (rather than a typed Study field) since
     /// embarch-study-designer is a #![no_std] crate that doesn't depend on
     /// schemars; the object is validated by deserializing it into Study
-    /// server-side, immediately on receipt. Both seals — steps_crc over
-    /// steps and streams_crc over streams — are recomputed and overwritten
-    /// regardless of what's given.
+    /// server-side, immediately on receipt. All three seals — steps_crc over
+    /// steps, streams_crc over streams and protocols_crc over protocols —
+    /// are recomputed and overwritten regardless of what's given.
     ///
     /// Real MCP-path gap found running `embarch-doc/embarch-api/milestone-8.md`
     /// §3.8 against a live MCP client: `serde_json::Value`'s own `JsonSchema`
@@ -860,7 +860,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Submit a Study (embarch-study-designer's schema: name, requires, steps, streams, steps_crc, streams_crc) for embarch-core to run against whatever DUT is connected through its dev-bench serial link. Both seals (steps_crc over steps, streams_crc over streams) are recomputed and overwritten regardless of what's submitted. Returns { study_id } immediately (async) — call study_status to poll progress. Errors if a study is already in-flight on Core.\n\nStudy.requires names the dev-bench and DUT firmware builds the study is meant to run against ('any' if it genuinely doesn't matter). reflash says what to do about it: 'none' (default), 'dev-bench', 'dut', or 'both' — build and flash from the working tree AS IT CURRENTLY STANDS, then verify. This never runs git checkout: if the tree isn't at the revision the study wants, the call fails naming both revisions and leaves the tree, and the board, alone. Reflashing the DUT needs project (plus the usual board/variant/revision/app/snippets/extra_args), since a study isn't project-shaped but a firmware build is. allow_version_mismatch proceeds anyway and the override is recorded in the result's provenance.overrides — never silently honoured.")]
+    #[tool(description = "Submit a Study (embarch-study-designer's schema: name, requires, steps, streams, steps_crc, streams_crc) for embarch-core to run against whatever DUT is connected through its dev-bench serial link. All three seals (steps_crc over steps, streams_crc over streams, protocols_crc over protocols) are recomputed and overwritten regardless of what's submitted. Returns { study_id } immediately (async) — call study_status to poll progress. Errors if a study is already in-flight on Core.\n\nStudy.requires names the dev-bench and DUT firmware builds the study is meant to run against ('any' if it genuinely doesn't matter). reflash says what to do about it: 'none' (default), 'dev-bench', 'dut', or 'both' — build and flash from the working tree AS IT CURRENTLY STANDS, then verify. This never runs git checkout: if the tree isn't at the revision the study wants, the call fails naming both revisions and leaves the tree, and the board, alone. Reflashing the DUT needs project (plus the usual board/variant/revision/app/snippets/extra_args), since a study isn't project-shaped but a firmware build is. allow_version_mismatch proceeds anyway and the override is recorded in the result's provenance.overrides — never silently honoured.")]
     async fn run_study(
         &self,
         Parameters(params): Parameters<RunStudyParams>,
@@ -888,7 +888,7 @@ impl EmbarchApi {
             }
         };
 
-        // design.md §3 decision 26: recompute and overwrite both of a
+        // design.md §3 decision 26: recompute and overwrite all three of a
         // study's seals unconditionally, regardless of whatever values
         // (including missing/zero ones) were in the submitted JSON.
         if let Err(e) = crate::study::reseal_study(&mut study) {

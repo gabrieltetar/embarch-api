@@ -310,6 +310,19 @@ pub async fn run_study(
         )
         .await
         .with_context(|| format!("flash failed for '{}'", project.name))?;
+        // The DUT needs the same reset the bench got above, and for the same
+        // reason: `embarch-core`'s flash halts the core rather than starting
+        // it running, so a board that is never reset keeps executing the
+        // image that was there before. Missing here until 2026-08-27, which
+        // meant `reflash = "dut"` recorded a successful flash in provenance
+        // while the study then ran against the *old* firmware — the exact
+        // coupling `embarch-dev-workflow.md` §4a calls "Coupling 1a" and
+        // warns about for hand-driven flashing, sitting unfixed inside the
+        // one call whose whole purpose is to make flashing automatic
+        // (`embarch-decision-reversals.md` row 75).
+        core.reset(&resolved.chip, resolved.probe_serial.as_deref())
+            .await
+            .with_context(|| format!("reset after flash failed for '{}'", project.name))?;
 
         outcome.reflashed.push(serde_json::json!({
             "target": "dut",
