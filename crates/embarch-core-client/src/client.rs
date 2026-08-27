@@ -378,6 +378,44 @@ pub struct SerialPortResponse {
     pub interface: Option<u8>,
 }
 
+/// `GET /study/{study_id}/steps`' body — every step the study recorded, with
+/// the two edges of the window embarch-core waited for each across.
+///
+/// The stamps are **Core's own arrival times**, not the DUT's or dev-bench's:
+/// `StepResult` carries no timestamp, deliberately. Read off `events.json` on
+/// disk rather than out of Core's job registry, because a study outlives the
+/// Core process that ran it and a post-hoc reader is exactly the caller here.
+#[derive(Debug, Clone, Deserialize)]
+pub struct StudySteps {
+    #[serde(default)]
+    pub study_name: Option<String>,
+    /// Whether every step carries both of its stamps. False for a study run
+    /// before 2026-08-27, when Core recorded neither — the one thing a caller
+    /// has to branch on.
+    pub timed: bool,
+    pub steps: Vec<StudyStepEntry>,
+}
+
+/// One step, reduced to what a reader placing it on a timeline needs.
+#[derive(Debug, Clone, Deserialize)]
+pub struct StudyStepEntry {
+    pub index: usize,
+    pub step_name: String,
+    /// `"Pass"`, `"Fail"` or `"TimedOut"`. Core splits `Outcome`'s
+    /// externally-tagged JSON so a caller does not re-implement its wire
+    /// shape to find out which of the three it was.
+    pub outcome: String,
+    /// dev-bench's own words, on a `Fail` and never otherwise.
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub delay_before_ms: Option<u32>,
+    #[serde(default)]
+    pub started_utc_ms: Option<u64>,
+    #[serde(default)]
+    pub ended_utc_ms: Option<u64>,
+}
+
 /// `GET /study/{study_id}/streams`' body — what a study's taps captured, and
 /// **why a trace has no names when it has none**
 /// (`embarch-core/design.md` §3 decision 30(c)'s 2026-08-26 amendment).
@@ -1470,6 +1508,43 @@ impl CoreClient {
         if status.is_success() {
             return response
                 .json::<StudyStreamIndex>()
+                .await
+                .map(Some)
+                .context("failed to parse embarch-core's response as JSON");
+        }
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "<no response body>".to_string());
+        Err(anyhow!("embarch-core returned {status}: {body}"))
+    }
+
+    /// `GET /study/{study_id}/steps` — every step in a completed study's
+    /// `events.json`, with Core's own per-step arrival stamps.
+    ///
+    /// `Ok(None)` for a study with no `events.json`: one that never finished,
+    /// or one Core's retention sweep has since removed. An expected state, not
+    /// an error — same posture as [`CoreClient::study_streams`].
+    ///
+    /// Reuses `status_timeout`: this is one small file read, not a capture.
+    pub async fn study_steps(&self, study_id: &str) -> Result<Option<StudySteps>> {
+        let url = format!("{}/study/{}/steps", self.base_url().await?, urlencode(study_id));
+        let response = self
+            .client
+            .get(url)
+            .bearer_auth(&self.token)
+            .timeout(self.status_timeout)
+            .send()
+            .await
+            .context("request to embarch-core failed")?;
+
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if status.is_success() {
+            return response
+                .json::<StudySteps>()
                 .await
                 .map(Some)
                 .context("failed to parse embarch-core's response as JSON");
