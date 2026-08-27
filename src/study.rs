@@ -67,6 +67,8 @@ mod tests {
             .unwrap();
 
         Study {
+
+            decoders: Default::default(),
             name: heapless::String::try_from("t").unwrap(),
             // `embarch-study-designer/design.md` §3 decision 40: mandatory,
             // with "any" an explicit legal value. These cases are about

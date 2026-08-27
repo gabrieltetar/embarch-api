@@ -963,7 +963,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Alias for study_stream_data, kept for one release: fetches whichever declared tap answers the 'gatt' alias (a GattTranscript-encoded tap), as rendered CSV text. This is the exhaustive record — every notification, indication, read, write, subscribe and connect/disconnect event across every step, with each payload in both hex and printable-ASCII columns — as opposed to study_status's per-step gatt_activity, which is a capped inbound-only summary. Prefer study_stream_data { study_id, name }, and call list_study_streams to see what a study captured and whether it was truncated. A study with no GATT transcript tap has none; that's a clear error naming study_id, not empty output.")]
+    #[tool(description = "Alias for study_stream_data, kept for one release: fetches whichever declared tap answers the 'gatt' alias (a GattTranscript-encoded tap), as rendered CSV text. This is the exhaustive record — every notification, indication, read, write, subscribe and connect/disconnect event across every step, with each payload in both hex and printable-ASCII columns — Every study with a monitor step gets one automatically as of schema v14 (embarch-study-designer/design.md decision 54, which retired the capped per-step gatt_activity that used to be the only inline record). Prefer study_stream_data { study_id, name }, and call list_study_streams to see what a study captured and whether it was truncated. A study with no GATT transcript tap has none; that's a clear error naming study_id, not empty output.")]
     async fn study_gatt_data(
         &self,
         Parameters(StudyIdParams { study_id }): Parameters<StudyIdParams>,

@@ -208,9 +208,11 @@ pub enum Commands {
     /// declared tap answers the "gatt" alias (a GattTranscript-encoded tap)
     /// — every notification, indication, read, write, subscribe and connect
     /// event across every step, uncapped, with each payload rendered as both
-    /// hex and printable ASCII. This is the exhaustive record; study-status's
-    /// per-step gatt_activity is a capped, inbound-only summary. Same
-    /// stdout/--out behavior as study-power-data.
+    /// hex and printable ASCII. This is the exhaustive record, and every
+    /// study with a monitor step now declares this tap automatically —
+    /// `StepResult.gatt_activity`, the capped per-step summary this used to
+    /// be contrasted with, is retired at schema v14. Same stdout/--out
+    /// behavior as study-power-data.
     StudyGattData {
         study_id: String,
         /// Write the CSV to this file instead of stdout.
