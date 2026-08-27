@@ -79,6 +79,10 @@ mod tests {
             streams: heapless::Vec::new(),
             steps_crc: crc,
             streams_crc: crc,
+            // `embarch-study-designer/design.md` §3 decision 58: these cases
+            // are about `steps_crc` and run no protocol.
+            protocols: Default::default(),
+            protocols_crc: 0,
             dev_bench_log_level: Default::default(),
         }
     }
