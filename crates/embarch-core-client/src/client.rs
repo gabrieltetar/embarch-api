@@ -414,13 +414,26 @@ pub struct StudyStreamEntry {
     /// that predates the field, or on a tap where the question is meaningless.
     #[serde(default)]
     pub named: Option<bool>,
-    /// Whether this trace's frames carry Core's own receipt time — the only
-    /// clock an outpost trace has, since a record carries none
-    /// (`embarch-outpost/design.md` §3 decisions 4, 17). `Some(false)` is an
-    /// ordered, untimed trace: real, and to be drawn as such rather than
-    /// against an axis of milliseconds it does not have.
+    /// Whether this trace's frames carry Core's own receipt time — the clock
+    /// that **places** a trace against the study's other streams, alongside
+    /// the DUT's own per-record `cycles` that measures it
+    /// (`embarch-outpost/design.md` §3 decisions 4, 17). `Some(false)` is a
+    /// trace with no placement: real, and still fully measurable on the DUT's
+    /// clock.
     #[serde(default)]
     pub timed: Option<bool>,
+    /// Whether the firmware kept **itself** out of this trace — no record of
+    /// the outpost's own drain thread or its own UART's interrupt
+    /// (`embarch-outpost/design.md` §3 decision 19,
+    /// `CONFIG_EMBARCH_OUTPOST_TRACE_SELF=n`, the default).
+    ///
+    /// A third independent fact beside `named`/`timed`, and the only one the
+    /// *firmware* decides. `Some(true)` means intervals covered by no lane are
+    /// the instrument's own rather than unexplained, and a caller must say so
+    /// rather than presenting the timeline as an account of everything the CPU
+    /// did. `None` from a Core that predates the field.
+    #[serde(default)]
+    pub self_excluded: Option<bool>,
 }
 
 impl StudyStreamEntry {
@@ -1547,6 +1560,7 @@ mod tests {
     #[test]
     fn named_and_timed_are_independent_and_neither_is_read_off_the_note() {
         let entry = |rendered: bool, note: Option<&str>, named, timed| StudyStreamEntry {
+            self_excluded: None,
             id: 0,
             name: "outpost".to_string(),
             encoding: StreamEncoding::OutpostTrace,
