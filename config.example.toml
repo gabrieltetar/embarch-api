@@ -118,14 +118,36 @@ build_timeout_secs = 900
 
 # embarch-dev-bench's own firmware — deliberately NOT a [[projects]] entry
 # (design.md's dev-bench-flashing-pipeline decision): dev-bench isn't a DUT a
-# firmware engineer or an agent configures/discovers, it's EmbArch's own
-# fixed test rig. Board/chip/flash_format/base_address are constants
-# dev_bench.rs already knows, not config fields — only the two genuinely
-# machine-specific facts (where the sibling repo is checked out, where west
-# actually lives) are declared here. Enables build_dev_bench/flash_dev_bench/
-# build_and_flash_dev_bench; omit this table entirely if you don't run
-# embarch-dev-bench firmware from this machine.
+# firmware engineer or an agent configures/discovers, it's EmbArch's own test
+# rig, one board at a time, addressed by no project name. Enables
+# build_dev_bench/flash_dev_bench/build_and_flash_dev_bench; omit this table
+# entirely if you don't run embarch-dev-bench firmware from this machine.
+#
+# board/chip/flash_format/artifact_path used to be constants in dev_bench.rs
+# rather than fields here, on the premise that there was one dev-bench board
+# forever. There isn't: the bench has been an nRF54L15DK, then an ESP32-C5
+# when the DK broke, then an nRF54L15DK again (2026-08-31), and those two
+# boards disagree about every one of the four. None of them is defaulted —
+# a default has to pick one of the two, and picking wrong flashes the wrong
+# image through the wrong debug interface at the wrong chip.
+#
+# --- the nRF54L15DK bench (NCS workspace: sysbuild, so build/app/..., hex) ---
+# [dev_bench]
+# source_path = "/path/to/embarch-dev-bench/workspaces/nordic"
+# west_binary = "/path/to/venv/bin/west"
+# board = "nrf54l15dk/nrf54l15/cpuapp"
+# chip = "nRF54L15"
+# flash_format = "hex"
+# artifact_path = "build/app/zephyr/zephyr.hex"   # relative to source_path
+# build_timeout_secs = 900
+#
+# --- the ESP32-C5 bench (vanilla Zephyr: no sysbuild, bin + base_address) ---
 # [dev_bench]
 # source_path = "/path/to/embarch-dev-bench/workspaces/espressif"
-# west_binary = "/path/to/embarch-dev-bench/workspaces/espressif/.venv/bin/west"
+# west_binary = "/path/to/venv/bin/west"
+# board = "esp32c5_devkitc/esp32c5/hpcore"
+# chip = "esp32c5"
+# flash_format = "bin"
+# artifact_path = "build/zephyr/zephyr.bin"
+# base_address = 0x2000    # required for bin, rejected for hex
 # build_timeout_secs = 900

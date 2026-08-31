@@ -250,10 +250,10 @@ pub enum Commands {
     /// declared and captured nothing, which is a different fact from a tap
     /// that was never declared.
     ListStudyStreams { study_id: String },
-    /// Build embarch-dev-bench's own firmware (the ESP32-C5 espressif
-    /// workspace) by running `west build`. No project — dev-bench isn't a
-    /// `[[projects]]` entry, see config.rs's `DevBenchConfig`. Requires
-    /// [dev_bench] to be configured.
+    /// Build embarch-dev-bench's own firmware by running `west build`.
+    /// No project — dev-bench isn't a `[[projects]]` entry, see config.rs's
+    /// `DevBenchConfig`. Which board gets built comes from [dev_bench]
+    /// config (board/chip/flash_format/artifact_path), not from a constant.
     BuildDevBench,
     /// Flash embarch-dev-bench's own firmware via embarch-core.
     FlashDevBench {

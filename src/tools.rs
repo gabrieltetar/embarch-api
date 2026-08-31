@@ -596,7 +596,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Build embarch-dev-bench's own firmware (the ESP32-C5 espressif workspace) by running west build. No project param — dev-bench isn't a configured project, it's EmbArch's one fixed test rig (board/chip/flash format are constants, not config). Requires [dev_bench] to be configured (source_path, west_binary). Does not touch hardware — use build_and_flash_dev_bench to build and then flash in one call.")]
+    #[tool(description = "Build embarch-dev-bench's own firmware by running west build. No project param — dev-bench isn't a configured project, it's EmbArch's own test rig, one board at a time. Which board that is comes from [dev_bench] config (source_path, west_binary, board, chip, flash_format, artifact_path), not from a constant: this bench has been an nRF54L15DK and an ESP32-C5 and is an nRF54L15DK again, and the two disagree about every one of those. Does not touch hardware — use build_and_flash_dev_bench to build and then flash in one call.")]
     async fn build_dev_bench(&self) -> Result<CallToolResult, McpError> {
         let dev_bench = match self.dev_bench_config() {
             Ok(c) => c,

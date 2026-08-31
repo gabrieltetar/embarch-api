@@ -189,27 +189,72 @@ impl ProjectConfig {
     }
 }
 
-/// The one dev-bench build target this suite knows about — deliberately not
-/// a `[[projects]]` entry (`design.md`'s dev-bench-flashing-pipeline
-/// decision): a DUT project is something a firmware engineer or an agent
-/// adds/discovers per repo, but dev-bench is EmbArch's own fixed test rig —
-/// there's exactly one, and its board/chip/flash format/flash base address
-/// are facts this suite already knows (`dev_bench.rs`'s own constants), not
-/// per-project knobs. Only `source_path`/`west_binary` are genuinely
-/// machine-specific (where the sibling repo is checked out, and where
-/// `west` actually lives, since it's often not on bare `PATH` — see
-/// `config.example.toml`), so those are the only fields this table declares.
+/// The dev-bench build target this machine's bench is wired to —
+/// deliberately still not a `[[projects]]` entry (`design.md`'s dev-bench-
+/// flashing-pipeline decision): a DUT project is something a firmware
+/// engineer or an agent adds/discovers per repo, and dev-bench remains
+/// EmbArch's own test rig, one at a time, addressed by no project name.
+///
+/// **What changed 2026-08-31: which board it is stopped being a constant.**
+/// `board`/`chip`/`flash_format`/`artifact_path` used to live in
+/// `dev_bench.rs` as hardcoded ESP32-C5 values, on the premise that there
+/// was exactly one dev-bench board this suite would ever know about. That
+/// premise has now been falsified twice by the same physical bench: the
+/// nRF54L15DK was the original target, the ESP32-C5 replaced it when the DK
+/// broke (`embarch-decision-reversals.md` row 13), and an nRF54L15DK is the
+/// bench again as of this date. The two boards disagree about every one of
+/// those four facts — different west board target, different probe-rs chip,
+/// `hex` vs a `bin` needing a `base_address`, and (because NCS defaults to
+/// sysbuild and vanilla Zephyr doesn't) even a different artifact path
+/// under `build/`.
+///
+/// So they are declared here, and **none of them is optional or defaulted**.
+/// A default would have to pick one of the two boards, and picking wrong
+/// means flashing the wrong image through the wrong debug interface at the
+/// wrong chip — the exact class of silent-wrong-answer this suite refuses
+/// to guess at elsewhere (`embarch-core/design.md` §7's
+/// `artifact_path_for_core` retrospective). A missing field is a startup
+/// error naming it, which is cheap; a wrong default is not.
 #[derive(Debug, Deserialize)]
 pub struct DevBenchConfig {
-    /// Absolute path to the `embarch-dev-bench` workspace this suite builds
-    /// today (`workspaces/espressif` — `dev_bench.rs`'s own `BOARD` constant
-    /// names the exact board). Not auto-derived from a sibling-repo
-    /// convention at runtime: an explicit, declared fact, same posture every
-    /// DUT project's own `source_path` already has, deliberately not
-    /// guessed the way an earlier `artifact_path_for_core` UNC-guessing
-    /// scheme was (`embarch-core/design.md` §7's retrospective on exactly
-    /// that class of mistake).
+    /// Absolute path to the `embarch-dev-bench` workspace this bench builds
+    /// from — one of that repo's `workspaces/*` (per-vendor-family, see its
+    /// own `design.md` §2), matching `board` below. Not auto-derived from a
+    /// sibling-repo convention at runtime: an explicit, declared fact, same
+    /// posture every DUT project's own `source_path` already has,
+    /// deliberately not guessed the way an earlier `artifact_path_for_core`
+    /// UNC-guessing scheme was (`embarch-core/design.md` §7's retrospective
+    /// on exactly that class of mistake).
     pub source_path: PathBuf,
+    /// The west board target to build (e.g.
+    /// `"nrf54l15dk/nrf54l15/cpuapp"`, `"esp32c5_devkitc/esp32c5/hpcore"`).
+    /// Must be one `app/boards/` in `embarch-dev-bench` carries a `.conf`
+    /// fragment for — the shared `app/` builds for any board, but only a
+    /// board with that fragment gets the BLE/logging Kconfig this firmware
+    /// actually needs.
+    pub board: String,
+    /// The probe-rs chip target Core attaches as (e.g. `"nRF54L15"`,
+    /// `"esp32c5"`). Distinct from `board`: one names a Zephyr build target,
+    /// the other names silicon to a debug probe, and neither is derivable
+    /// from the other by anything this crate should be inventing.
+    pub chip: String,
+    /// `"hex"` or `"bin"` — what `artifact_path` below points at, and what
+    /// Core's `/flash` is told to expect.
+    pub flash_format: String,
+    /// Where the flashable artifact lands, **relative to `source_path`**.
+    /// Declared rather than derived because it genuinely varies by more
+    /// than `flash_format`: NCS turns sysbuild on by default, which moves
+    /// the image down a level (`build/app/zephyr/zephyr.hex`), while the
+    /// vanilla-Zephyr espressif workspace has no sysbuild and leaves it at
+    /// `build/zephyr/zephyr.bin`.
+    pub artifact_path: PathBuf,
+    /// Flash offset for the image, written as a TOML hex literal
+    /// (`base_address = 0x2000`). Only meaningful for `flash_format =
+    /// "bin"` (`embarch-core/design.md` §3 decision 18) — and
+    /// [`Config::validate`] *requires* it there, since a `bin` written at
+    /// the wrong offset is a bricked bench, not an error message.
+    #[serde(default)]
+    pub base_address: Option<u64>,
     /// The `west` binary to invoke — often not on bare `PATH` (see
     /// `config.example.toml`), same reasoning as a `discovery = "zephyr-west"`
     /// project's own `west_binary` field.
@@ -269,6 +314,35 @@ impl Config {
                     "[dev_bench] has source_path {} which does not exist",
                     dev_bench.source_path.display()
                 );
+            }
+            // Same pairing rule `[[projects]]` entries live under, applied
+            // here for the first time now that dev-bench's format is
+            // declared rather than a constant: a raw `bin` carries no
+            // addresses of its own, so an absent offset is not "flash it at
+            // 0", it is "nobody said where this goes". Refuse at startup
+            // rather than let Core pick.
+            match dev_bench.flash_format.as_str() {
+                "bin" => {
+                    if dev_bench.base_address.is_none() {
+                        bail!(
+                            "[dev_bench] has flash_format = \"bin\" but no base_address — a raw \
+                             binary has no load address in it, so the flash offset has to be \
+                             declared (e.g. base_address = 0x2000)"
+                        );
+                    }
+                }
+                "hex" => {
+                    if dev_bench.base_address.is_some() {
+                        bail!(
+                            "[dev_bench] has flash_format = \"hex\" and a base_address — a hex \
+                             image carries its own addresses, so an offset here would be \
+                             ignored rather than honoured; remove it"
+                        );
+                    }
+                }
+                other => bail!(
+                    "[dev_bench] has flash_format = \"{other}\", which is not one of \"hex\" or \"bin\""
+                ),
             }
         }
 
@@ -527,6 +601,10 @@ token_env = "EMBARCH_TOKEN"
 [dev_bench]
 source_path = "/definitely/does/not/exist/anywhere"
 west_binary = "/usr/bin/west"
+board = "nrf54l15dk/nrf54l15/cpuapp"
+chip = "nRF54L15"
+flash_format = "hex"
+artifact_path = "build/app/zephyr/zephyr.hex"
 "#,
         )
         .unwrap();
@@ -548,12 +626,111 @@ token_env = "EMBARCH_TOKEN"
 [dev_bench]
 source_path = "{}"
 west_binary = "/usr/bin/west"
+board = "nrf54l15dk/nrf54l15/cpuapp"
+chip = "nRF54L15"
+flash_format = "hex"
+artifact_path = "build/app/zephyr/zephyr.hex"
 "#,
                 dir.path().display()
             ),
         );
         let dev_bench = config.dev_bench.expect("dev_bench should be present");
         assert_eq!(dev_bench.build_timeout_secs, default_build_timeout_secs());
+        assert_eq!(dev_bench.board, "nrf54l15dk/nrf54l15/cpuapp");
+        assert_eq!(dev_bench.chip, "nRF54L15");
+        assert_eq!(dev_bench.base_address, None);
+    }
+
+    /// The four fields that used to be `dev_bench.rs` constants are
+    /// required, not defaulted — see `DevBenchConfig`'s own doc comment for
+    /// why a plausible default is worse here than a startup error. Pinned as
+    /// a test because "we deliberately did not add a default" is invisible
+    /// in the type otherwise, and the obvious "helpful" follow-up edit is to
+    /// add one back.
+    #[test]
+    fn dev_bench_board_and_chip_have_no_default() {
+        let dir = tempdir();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            format!(
+                r#"
+[core]
+base_url = "auto"
+token_env = "EMBARCH_TOKEN"
+
+[dev_bench]
+source_path = "{}"
+west_binary = "/usr/bin/west"
+"#,
+                dir.path().display()
+            ),
+        )
+        .unwrap();
+        let err = Config::load_from_path(&path).unwrap_err();
+        assert!(format!("{err:#}").contains("board"), "{err:#}");
+    }
+
+    /// A raw `bin` has no load address in it, so an absent offset is not
+    /// "flash it at 0" — it is nobody having said where the image goes.
+    #[test]
+    fn a_bin_dev_bench_without_a_base_address_is_rejected() {
+        let dir = tempdir();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            format!(
+                r#"
+[core]
+base_url = "auto"
+token_env = "EMBARCH_TOKEN"
+
+[dev_bench]
+source_path = "{}"
+west_binary = "/usr/bin/west"
+board = "esp32c5_devkitc/esp32c5/hpcore"
+chip = "esp32c5"
+flash_format = "bin"
+artifact_path = "build/zephyr/zephyr.bin"
+"#,
+                dir.path().display()
+            ),
+        )
+        .unwrap();
+        let err = Config::load_from_path(&path).unwrap_err();
+        assert!(format!("{err:#}").contains("base_address"), "{err:#}");
+    }
+
+    /// The mirror image: a `hex` carries its own addresses, so an offset
+    /// beside one would be silently ignored. Saying so beats honouring
+    /// nothing.
+    #[test]
+    fn a_hex_dev_bench_with_a_base_address_is_rejected() {
+        let dir = tempdir();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            format!(
+                r#"
+[core]
+base_url = "auto"
+token_env = "EMBARCH_TOKEN"
+
+[dev_bench]
+source_path = "{}"
+west_binary = "/usr/bin/west"
+board = "nrf54l15dk/nrf54l15/cpuapp"
+chip = "nRF54L15"
+flash_format = "hex"
+artifact_path = "build/app/zephyr/zephyr.hex"
+base_address = 0x2000
+"#,
+                dir.path().display()
+            ),
+        )
+        .unwrap();
+        let err = Config::load_from_path(&path).unwrap_err();
+        assert!(format!("{err:#}").contains("base_address"), "{err:#}");
     }
 
     #[test]
