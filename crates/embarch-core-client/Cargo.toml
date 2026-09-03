@@ -23,7 +23,10 @@ serde_json = "1.0.150"
 # `embarch-api`'s `reflash.rs` 2026-08-26): running a project-declared
 # version command is a read of a working tree, and both `embarch-api` and
 # `embarch-ui` need the same one.
-tokio = { version = "1.53.0", features = ["sync", "fs", "process"] }
+# `time` is for `study_events` (2026-09-02): the SSE stream deliberately sets
+# no `reqwest` request timeout, so its idle budget and its polling fallback's
+# cadence are `tokio::time::timeout`/`sleep` here instead.
+tokio = { version = "1.53.0", features = ["sync", "fs", "process", "time"] }
 tracing = "0.1.44"
 
 [dev-dependencies]

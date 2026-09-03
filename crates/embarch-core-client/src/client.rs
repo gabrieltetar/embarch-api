@@ -772,8 +772,22 @@ impl CoreClient {
             .await
     }
 
-    async fn base_url(&self) -> Result<&str> {
+    pub(crate) async fn base_url(&self) -> Result<&str> {
         Ok(&self.resolved_address().await?.0)
+    }
+
+    /// The shared `reqwest` client, for the one caller that cannot go
+    /// through [`CoreClient::send`]: `study_events`, which streams a body
+    /// instead of parsing one and must set no request timeout.
+    pub(crate) fn http(&self) -> &reqwest::Client {
+        &self.client
+    }
+
+    /// The resolved bearer token. `pub(crate)` for the same one caller —
+    /// every other route gets it applied for it by `send`/`send_no_content`,
+    /// and that stays the rule.
+    pub(crate) fn bearer_token(&self) -> &str {
+        &self.token
     }
 
     /// The winning topology class — `Local` for a declared address (no

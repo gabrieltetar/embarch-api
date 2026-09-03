@@ -1,9 +1,13 @@
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::build::BuildOutcome;
 use crate::config::{Config, ProjectConfig};
-use embarch_core_client::{CoreClient, StudyConflictError, TopologyMismatchError};
+use embarch_core_client::{
+    CoreClient, FollowItem, FollowOptions, StudyConflictError, StudyEvent, TopologyMismatchError,
+};
+use embarch_study_designer::Outcome;
 use crate::resolve::{self, Resolved, Selection};
 use crate::{Commands, TargetSelection};
 
@@ -50,7 +54,17 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
             )
             .await
         }
-        Commands::StudyStatus { study_id } => study_status(&core, &study_id, json).await,
+        Commands::StudyStatus {
+            study_id,
+            follow,
+            follow_timeout,
+        } => {
+            if follow {
+                study_follow(&core, &study_id, follow_timeout, json).await
+            } else {
+                study_status(&core, &study_id, json).await
+            }
+        }
         Commands::StudyPowerData { study_id, out } => {
             study_power_data(&core, &study_id, out.as_deref(), json).await
         }
@@ -883,6 +897,174 @@ async fn study_status(core: &CoreClient, study_id: &str, json: bool) -> i32 {
             )
         }
         Err(e) => error_result(json, format!("study-status failed for '{study_id}': {e:#}")),
+    }
+}
+
+/// `study-status --follow`: watch a study live.
+///
+/// # Why a flag on `study-status` rather than its own subcommand
+///
+/// "What is this study doing" is one question and it already has a name.
+/// A separate `study-events` would split it in two and force a caller to
+/// know which mechanism answers — which is precisely the thing this hides,
+/// since a follow that loses its stream keeps answering by polling. The flag
+/// also keeps the promise narrow: it says *watch until it is done*, not
+/// *use SSE*, so the fallback is not a broken promise.
+///
+/// # Output
+///
+/// Human mode prints one line per item, prefixed by what it is. `--json`
+/// prints **NDJSON** — one compact object per line, ending in a `summary`
+/// line. This is the only subcommand whose `--json` is not a single pretty
+/// object, and it has to be: a consumer of a live feed has to be able to
+/// read a record before the last one has happened.
+async fn study_follow(
+    core: &CoreClient,
+    study_id: &str,
+    follow_timeout_secs: Option<u64>,
+    json: bool,
+) -> i32 {
+    let options = FollowOptions {
+        deadline: follow_timeout_secs.map(Duration::from_secs),
+        ..FollowOptions::default()
+    };
+
+    let outcome = core
+        .follow_study(study_id, &options, |item| {
+            if json {
+                // Compact, one line, unbuffered-ish: the point of NDJSON here
+                // is that a reader sees a record when it happens.
+                println!("{}", item.to_json());
+            } else {
+                println!("{}", render_follow_item(&item));
+            }
+        })
+        .await;
+
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        // Reached only when there is no live stream *and* polling failed too
+        // — an unknown study_id, or Core down. Everything softer than that is
+        // already a `transport` item above.
+        Err(e) => return error_result(json, format!("study-status --follow failed for '{study_id}': {e:#}")),
+    };
+
+    let success = !outcome.timed_out;
+    let lagged_line = if outcome.lagged_events > 0 {
+        format!(
+            "\n{} event(s) were dropped from this live feed by embarch-core \
+             (it could not keep up); the study's own record is complete — \
+             re-read it with study-status or list-study-streams",
+            outcome.lagged_events
+        )
+    } else {
+        String::new()
+    };
+    let human = match (&outcome.terminal_status, outcome.timed_out) {
+        (Some(status), _) => format!(
+            "study {study_id}: {status}{}{lagged_line}",
+            outcome
+                .reason
+                .as_deref()
+                .map(|r| format!(" — {r}"))
+                .unwrap_or_default()
+        ),
+        (None, true) => format!(
+            "study {study_id}: still running after --follow-timeout {}s — stopped watching, \
+             the study was not touched{lagged_line}",
+            follow_timeout_secs.unwrap_or(0)
+        ),
+        (None, false) => format!("study {study_id}: stopped watching{lagged_line}"),
+    };
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "type": "summary",
+                "success": success,
+                "study_id": study_id,
+                "status": outcome.terminal_status,
+                "reason": outcome.reason,
+                "lagged_events": outcome.lagged_events,
+                "used_polling": outcome.used_polling,
+                "timed_out": outcome.timed_out,
+            })
+        );
+    } else if success {
+        println!("{human}");
+    } else {
+        eprintln!("{human}");
+    }
+
+    if success {
+        0
+    } else {
+        1
+    }
+}
+
+/// One [`FollowItem`] as a human-readable line.
+///
+/// Deliberately one line per item even for a `SampleBatch` of hundreds of
+/// samples: a follow of a study with a power tap is a firehose, and the
+/// useful human signal is that samples are arriving and roughly how fast,
+/// not their values — those are what `study-stream-data` is for.
+fn render_follow_item(item: &FollowItem) -> String {
+    match item {
+        FollowItem::Transport { mode, detail } => format!("[{}] {detail}", mode.as_str()),
+        FollowItem::Lagged { missed } => format!(
+            "[lagged] embarch-core dropped {missed} event(s) from this feed — not an error, \
+             and the study's own record is unaffected"
+        ),
+        FollowItem::Unrecognized { event, reason, .. } => {
+            format!("[?] frame '{event}': {reason}")
+        }
+        FollowItem::Polled {
+            status,
+            current_step,
+            total_steps,
+            reason,
+        } => format!(
+            "[poll] status={status} step={}/{}{}",
+            current_step.map(|n| n.to_string()).unwrap_or_else(|| "-".into()),
+            total_steps.map(|n| n.to_string()).unwrap_or_else(|| "-".into()),
+            reason.as_deref().map(|r| format!(" — {r}")).unwrap_or_default(),
+        ),
+        FollowItem::Event(StudyEvent::StepCompleted {
+            step_index, result, ..
+        }) => {
+            let outcome = match &result.outcome {
+                Outcome::Pass => "PASS".to_string(),
+                Outcome::Fail { reason } => format!("FAIL — {reason}"),
+                Outcome::TimedOut => "TIMED OUT".to_string(),
+            };
+            format!("[step {step_index}] {}: {outcome}", result.step_name)
+        }
+        FollowItem::Event(StudyEvent::SampleBatch {
+            stream_name,
+            samples,
+            ..
+        }) => format!(
+            "[samples] {stream_name}: {} sample(s){}",
+            samples.len(),
+            samples
+                .last()
+                .map(|s| format!(" (latest {} {:?})", s.value, s.unit))
+                .unwrap_or_default()
+        ),
+        FollowItem::Event(StudyEvent::GattTranscript {
+            step_index, entry, ..
+        }) => format!(
+            "[gatt step {step_index}] {} {} ({} byte payload)",
+            entry.direction.as_str(),
+            entry.kind.as_str(),
+            entry.payload.len()
+        ),
+        FollowItem::Event(StudyEvent::StatusChanged { status, reason, .. }) => format!(
+            "[status] {status}{}",
+            reason.as_deref().map(|r| format!(" — {r}")).unwrap_or_default()
+        ),
     }
 }
 

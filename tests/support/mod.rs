@@ -1,6 +1,11 @@
 //! A mock embarch-core, for the tests that pin `embarch-core-client`'s HTTP
 //! behaviour without a live Core.
 //!
+//! Each file under `tests/` compiles its own copy of this module, so any
+//! item only one of them needs looks unused to the others — hence the
+//! blanket `dead_code` allow rather than a per-item one. It is a shared
+//! harness, and a harness is allowed to offer more than one caller uses.
+//!
 //! # Why this is hand-rolled rather than `wiremock`/`httpmock`
 //!
 //! Two of the three invariants these tests exist for cannot be expressed
@@ -24,7 +29,11 @@
 //! `reqwest` handles that without complaint and without connection reuse,
 //! which keeps request/connection accounting one-to-one.
 
+#![allow(dead_code)]
+
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -80,6 +89,49 @@ pub enum Behavior {
     /// Accept the connection, read the request, record it, and then never
     /// answer — the fixture for "this endpoint's own timeout is what fires".
     BlackHole,
+    /// Answer differently per route. Added 2026-09-02 for the SSE suite,
+    /// which is the first thing here to make *two* kinds of request in one
+    /// call: `follow_study` opens `/study/{id}/events` and then polls
+    /// `/study/{id}`, and the whole point of those tests is what happens
+    /// when those two disagree.
+    ///
+    /// Matched by path suffix, first match wins.
+    Router {
+        routes: Vec<(String, Behavior)>,
+        otherwise: Box<Behavior>,
+    },
+    /// A `text/event-stream` response, written as real HTTP/1.1 chunked
+    /// framing: each entry in `chunks` is flushed as its own chunk with
+    /// `gap` between them, then the connection ends per `then`.
+    ///
+    /// Chunked rather than "no framing headers, terminated by close" so that
+    /// [`StreamTail::Cut`] is a *detectably* truncated body rather than a
+    /// clean end-of-stream — which is the difference the fallback path
+    /// reports and therefore the difference these tests need to be able to
+    /// stage.
+    EventStream {
+        chunks: Vec<Vec<u8>>,
+        gap: Duration,
+        then: StreamTail,
+    },
+    /// The n-th request *to this path* gets the n-th behavior; the last one
+    /// repeats forever. The fixture for a study that is still running the
+    /// first time it is polled and finished the third.
+    Sequence(Vec<Behavior>),
+}
+
+/// How a [`Behavior::EventStream`] ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamTail {
+    /// Write chunked's terminating `0\r\n\r\n` and close — a clean end of
+    /// body, which the client sees as "embarch-core closed the stream".
+    Close,
+    /// Drop the socket with no terminator — a real disconnect, which the
+    /// client sees as a transport error.
+    Cut,
+    /// Never end. What a healthy Core does, since its broadcast channel
+    /// outlives any one study.
+    Hold,
 }
 
 impl Behavior {
@@ -94,12 +146,54 @@ impl Behavior {
             body: body.to_string(),
         }
     }
+
+    /// A `200` with a JSON body — what `GET /study/{id}` answers.
+    pub fn json_ok(body: serde_json::Value) -> Behavior {
+        Behavior::Reply {
+            status: 200,
+            reason: "OK".to_string(),
+            content_type: "application/json".to_string(),
+            body: body.to_string(),
+        }
+    }
+}
+
+/// One SSE frame, byte-for-byte as `axum` writes it.
+///
+/// Reproduced from `axum::response::sse::Event::field` rather than invented:
+/// it emits `name`, `:`, one space, the value, `\n` per field, and one more
+/// `\n` to finalize. Getting this exactly right is the difference between a
+/// test that pins embarch-core's wire format and one that pins a guess about
+/// it — the guess would pass just as green.
+pub fn sse_frame(event: Option<&str>, data: &str) -> Vec<u8> {
+    let mut out = String::new();
+    if let Some(event) = event {
+        out.push_str(&format!("event: {event}\n"));
+    }
+    for line in data.split('\n') {
+        out.push_str(&format!("data: {line}\n"));
+    }
+    out.push('\n');
+    out.into_bytes()
+}
+
+/// `axum`'s `KeepAlive::default()` comment frame, verbatim
+/// (`axum::response::sse::KeepAlive::DEFAULT_KEEP_ALIVE` is `b":\n\n"`).
+pub fn sse_keep_alive() -> Vec<u8> {
+    b":\n\n".to_vec()
 }
 
 pub struct MockCore {
     base_url: String,
     requests: Arc<Mutex<Vec<RecordedRequest>>>,
 }
+
+/// How many requests each path has already had, so [`Behavior::Sequence`]
+/// can advance. Per path rather than per server: a `follow_study` test
+/// scripts `/study/{id}` as a sequence while `/study/{id}/events` is
+/// something else entirely, and a single counter would let one consume the
+/// other's turns.
+type SequenceCounters = Arc<Mutex<HashMap<String, usize>>>;
 
 impl MockCore {
     /// Binds an ephemeral loopback port and starts serving. The server task
@@ -114,14 +208,16 @@ impl MockCore {
         let requests: Arc<Mutex<Vec<RecordedRequest>>> = Arc::new(Mutex::new(Vec::new()));
 
         let sink = Arc::clone(&requests);
+        let counters: SequenceCounters = Arc::new(Mutex::new(HashMap::new()));
         tokio::spawn(async move {
             loop {
                 let Ok((stream, _)) = listener.accept().await else {
                     return;
                 };
                 let sink = Arc::clone(&sink);
+                let counters = Arc::clone(&counters);
                 let behavior = behavior.clone();
-                tokio::spawn(serve_one(stream, behavior, sink));
+                tokio::spawn(serve_one(stream, behavior, sink, counters));
             }
         });
 
@@ -147,13 +243,17 @@ async fn serve_one(
     mut stream: TcpStream,
     behavior: Behavior,
     sink: Arc<Mutex<Vec<RecordedRequest>>>,
+    counters: SequenceCounters,
 ) {
     let Ok(request) = read_request(&mut stream).await else {
         return;
     };
+    let path = request.path().to_string();
     sink.lock()
         .expect("mock Core request log poisoned")
         .push(request);
+
+    let behavior = resolve(behavior, &path, &counters);
 
     match behavior {
         Behavior::Reply {
@@ -179,6 +279,73 @@ async fn serve_one(
         // connection and the client would fail fast on a reset rather than
         // on its own timeout, which is the thing being measured.
         Behavior::BlackHole => std::future::pending::<()>().await,
+        Behavior::EventStream { chunks, gap, then } => {
+            let head = "HTTP/1.1 200 OK\r\n\
+                        Content-Type: text/event-stream\r\n\
+                        Cache-Control: no-cache\r\n\
+                        Transfer-Encoding: chunked\r\n\r\n";
+            if stream.write_all(head.as_bytes()).await.is_err() {
+                return;
+            }
+            for chunk in chunks {
+                if gap > Duration::ZERO {
+                    tokio::time::sleep(gap).await;
+                }
+                let framed = format!("{:x}\r\n", chunk.len());
+                if stream.write_all(framed.as_bytes()).await.is_err() {
+                    return;
+                }
+                if stream.write_all(&chunk).await.is_err() {
+                    return;
+                }
+                if stream.write_all(b"\r\n").await.is_err() {
+                    return;
+                }
+                let _ = stream.flush().await;
+            }
+            match then {
+                StreamTail::Close => {
+                    let _ = stream.write_all(b"0\r\n\r\n").await;
+                    let _ = stream.flush().await;
+                    let _ = stream.shutdown().await;
+                }
+                // Drop the socket without chunked's terminator. `hyper`
+                // surfaces that as an error on the body, not as a clean end
+                // — which is exactly the "the connection went away
+                // mid-study" case.
+                StreamTail::Cut => drop(stream),
+                StreamTail::Hold => std::future::pending::<()>().await,
+            }
+        }
+        // Both are containers; `resolve` has already reduced them.
+        Behavior::Router { .. } | Behavior::Sequence(..) => unreachable!(),
+    }
+}
+
+/// Reduce a possibly-nested [`Behavior`] to the leaf that answers this
+/// request.
+fn resolve(behavior: Behavior, path: &str, counters: &SequenceCounters) -> Behavior {
+    match behavior {
+        Behavior::Router { routes, otherwise } => {
+            let picked = routes
+                .into_iter()
+                .find(|(suffix, _)| path.ends_with(suffix.as_str()))
+                .map(|(_, behavior)| behavior)
+                .unwrap_or(*otherwise);
+            resolve(picked, path, counters)
+        }
+        Behavior::Sequence(steps) => {
+            assert!(!steps.is_empty(), "an empty Behavior::Sequence answers nothing");
+            let picked = {
+                let mut seen = counters.lock().expect("mock Core sequence counters poisoned");
+                let count = seen.entry(path.to_string()).or_insert(0);
+                let index = (*count).min(steps.len() - 1);
+                *count += 1;
+                steps[index].clone()
+            };
+            resolve(picked, path, counters)
+        }
+        leaf => leaf,
     }
 }
 

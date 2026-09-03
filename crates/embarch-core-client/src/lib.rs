@@ -11,11 +11,23 @@ use serde::Deserialize;
 
 pub mod api_log;
 pub mod client;
+pub mod sse;
+pub mod study_events;
 pub mod token_discovery;
 pub mod user_dirs;
 pub mod version;
 
 pub use client::*;
+// The SSE half is re-exported at the crate root alongside `client::*` so a
+// caller writes `embarch_core_client::FollowItem` next to
+// `embarch_core_client::CoreClient`, rather than having to know which of the
+// two modules a type happens to live in. `sse` itself is deliberately *not*
+// re-exported: it is the wire-format layer, and a caller consuming study
+// events should never need to name a raw `SseFrame`.
+pub use study_events::{
+    is_terminal_status, FollowItem, FollowMode, FollowOptions, FollowOutcome, StreamEnd,
+    StudyEvent, StudyEventStream, StudyStreamItem, StudyStreamNext, LAGGED_NOTE,
+};
 
 fn default_status_timeout_secs() -> u64 {
     10

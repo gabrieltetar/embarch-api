@@ -185,7 +185,36 @@ pub enum Commands {
         target: TargetSelection,
     },
     /// Get a submitted study's status via embarch-core.
-    StudyStatus { study_id: String },
+    ///
+    /// Without --follow this is a single snapshot, exactly as it has always
+    /// been. With --follow it subscribes to embarch-core's live event stream
+    /// (`GET /study/{id}/events`) and reports each step, sample batch and
+    /// status change as it happens, until the study finishes.
+    StudyStatus {
+        study_id: String,
+        /// Watch the study live instead of taking one snapshot.
+        ///
+        /// Subscribes to embarch-core's SSE event stream and prints one line
+        /// per event. If the stream will not open, or drops mid-study, this
+        /// falls back to polling the same endpoint the snapshot uses and says
+        /// so on its own line — a lost stream is never a failed command.
+        ///
+        /// Under --json the output is **NDJSON**: one compact JSON object per
+        /// line, ending with a `{"type": "summary", ...}` line. Every other
+        /// subcommand's --json prints a single pretty object; a stream cannot,
+        /// and line-delimited is what a reader of a stream can consume
+        /// incrementally.
+        #[arg(long, short = 'f')]
+        follow: bool,
+        /// Stop following after this many seconds even if the study has not
+        /// finished. Only meaningful with --follow; unset follows to the end.
+        ///
+        /// Hitting it exits 1 — "watch this to the end, but not longer than
+        /// N" was asked and the answer is no. A study that *fails* still
+        /// exits 0: reporting a failed study is a successful report.
+        #[arg(long = "follow-timeout")]
+        follow_timeout: Option<u64>,
+    },
     /// Alias for study-stream-data, kept for one release: fetches whichever
     /// declared tap answers the "power" alias (a Samples-encoded tap on a
     /// PowerFrontEnd source). Prefer `study-stream-data <study_id> --name

@@ -2,11 +2,16 @@ use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, ServerCapabilities, ServerInfo};
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
+use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::build::{BuildLocks, BuildOutcome};
 use crate::config::{Config, ProjectConfig};
-use embarch_core_client::{CoreClient, StudyConflictError, TopologyMismatchError};
+use embarch_core_client::{
+    CoreClient, FollowItem, FollowMode, FollowOptions, StudyConflictError, StudyEvent,
+    TopologyMismatchError,
+};
 use crate::resolve::{self, Selection};
 
 #[derive(Clone)]
@@ -328,6 +333,31 @@ pub struct FlashDevBenchParams {
 pub struct StudyIdParams {
     /// The study_id returned by run_study.
     pub study_id: String,
+}
+
+/// `study_watch`'s parameters — `study_id` plus the three bounds that make a
+/// live stream safe to hand to a request/response tool call.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct StudyWatchParams {
+    /// The study_id returned by run_study.
+    pub study_id: String,
+    /// Stop watching after this many seconds and return what happened so
+    /// far. Defaults to 60, capped at 600.
+    ///
+    /// An MCP call is request/response, so a watch that followed a study to
+    /// its end unconditionally would hang the caller for the study's whole
+    /// duration. The bound is the tool's contract, not a limitation: call it
+    /// again to keep watching.
+    pub wait_secs: Option<u64>,
+    /// At most this many events in the returned array. Defaults to 100,
+    /// capped at 1000. Anything past it is counted, not returned.
+    pub max_events: Option<u32>,
+    /// Return every SampleBatch and GattTranscript event individually
+    /// instead of counting them. Defaults to false, and false is almost
+    /// always right: a study with a power tap emits sample batches
+    /// continuously, and a list of them is bulk data this tool is the wrong
+    /// way to fetch — study_stream_data is the right one.
+    pub include_samples: Option<bool>,
 }
 
 /// `embarch-core/design.md` §3 decision 22's `POST /probes/enroll`, wrapped
@@ -933,6 +963,120 @@ impl EmbarchApi {
             })),
             Err(e) => Self::err_text(format!("study_status failed for '{study_id}': {e:#}")),
         }
+    }
+
+    #[tool(description = "Watch a running study live via embarch-core's SSE event stream (GET /study/{id}/events) instead of polling: returns every step completion, status change and (optionally) sample batch that happened while watching, in order, as they were pushed. Bounded by wait_secs (default 60) — this is a request/response call, so it returns what happened in that window and you call it again to keep watching; `complete: true` means the study reached a terminal status and there is nothing left to watch.\n\nThis is an addition to study_status, not a replacement: study_status is still the way to get one snapshot or the finished StudyResult, and this tool falls back to polling it automatically if the live stream will not open or drops mid-study (`transport` says which happened).\n\nTwo different kinds of incompleteness are reported separately and must not be confused. `lagged` is embarch-core telling you IT dropped events because this subscriber could not keep up — the study is unaffected and its own record on disk is complete, so re-read it with study_status/study_steps. `events_omitted` is this tool's own max_events cap. Neither is an error.")]
+    async fn study_watch(
+        &self,
+        Parameters(StudyWatchParams {
+            study_id,
+            wait_secs,
+            max_events,
+            include_samples,
+        }): Parameters<StudyWatchParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let wait = wait_secs.unwrap_or(60).min(600);
+        let max_events = max_events.unwrap_or(100).min(1000) as usize;
+        let include_samples = include_samples.unwrap_or(false);
+
+        let options = FollowOptions {
+            deadline: Some(Duration::from_secs(wait)),
+            ..FollowOptions::default()
+        };
+
+        let mut events: Vec<serde_json::Value> = Vec::new();
+        let mut omitted: u64 = 0;
+        // Bulk events, counted per tap rather than listed, when
+        // `include_samples` is false. Counting is what makes this tool's
+        // answer bounded in a way a study with a power tap does not break.
+        let mut sample_batches: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+        let mut gatt_entries: u64 = 0;
+        let mut saw_live = false;
+        let mut saw_polling = false;
+
+        let outcome = self
+            .core
+            .follow_study(&study_id, &options, |item| {
+                match &item {
+                    FollowItem::Transport { mode, .. } => match mode {
+                        FollowMode::Live => saw_live = true,
+                        FollowMode::Polling => saw_polling = true,
+                    },
+                    FollowItem::Event(StudyEvent::SampleBatch {
+                        stream_name,
+                        samples,
+                        ..
+                    }) if !include_samples => {
+                        let entry = sample_batches.entry(stream_name.clone()).or_insert((0, 0));
+                        entry.0 += 1;
+                        entry.1 += samples.len() as u64;
+                        return;
+                    }
+                    FollowItem::Event(StudyEvent::GattTranscript { .. }) if !include_samples => {
+                        gatt_entries += 1;
+                        return;
+                    }
+                    _ => {}
+                }
+                if events.len() < max_events {
+                    events.push(item.to_json());
+                } else {
+                    omitted += 1;
+                }
+            })
+            .await;
+
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                return Self::err_text(format!(
+                    "study_watch failed for '{study_id}': {e:#}"
+                ))
+            }
+        };
+
+        let transport = match (saw_live, saw_polling) {
+            (true, true) => "live+polling",
+            (true, false) => "live",
+            (false, true) => "polling",
+            // follow_study always announces its transport, so this is
+            // unreachable; named rather than unwrapped so a future change
+            // to that guarantee shows up as a string and not a panic.
+            (false, false) => "unknown",
+        };
+
+        Self::ok_json(serde_json::json!({
+            "study_id": study_id,
+            "status": outcome.terminal_status,
+            "reason": outcome.reason,
+            "complete": outcome.terminal_status.is_some(),
+            "timed_out": outcome.timed_out,
+            "watched_secs": wait,
+            "transport": transport,
+            "lagged": if outcome.lagged_events > 0 {
+                serde_json::json!({
+                    "events": outcome.lagged_events,
+                    "note": embarch_core_client::LAGGED_NOTE,
+                })
+            } else {
+                serde_json::Value::Null
+            },
+            "events": events,
+            "events_omitted": omitted,
+            "sample_batches": if include_samples {
+                serde_json::Value::Null
+            } else {
+                serde_json::Value::Object(
+                    sample_batches
+                        .into_iter()
+                        .map(|(name, (batches, samples))| {
+                            (name, serde_json::json!({ "batches": batches, "samples": samples }))
+                        })
+                        .collect(),
+                )
+            },
+            "gatt_entries": if include_samples { serde_json::Value::Null } else { serde_json::json!(gatt_entries) },
+        }))
     }
 
     #[tool(description = "Alias for study_stream_data, kept for one release: fetches whichever declared tap answers the 'power' alias (a Samples-encoded tap on a PowerFrontEnd source), as rendered CSV text. Prefer study_stream_data { study_id, name } — a study can declare several taps and only one of them can answer this alias. Call list_study_streams to see what a completed study actually captured, including whether a capture was truncated, which this tool cannot tell you. A study that declared no power tap has no power data, and that's a clear error naming study_id, not empty output.")]
