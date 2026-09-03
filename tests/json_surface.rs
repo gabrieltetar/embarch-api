@@ -62,6 +62,7 @@ const EVERY_SUBCOMMAND: &[&[&str]] = &[
     &["enroll-probe", "--role", "some-role", "--chip", "nRF54L15"],
     &["validate", "--role", "some-role"],
     &["alerts"],
+    &["versions"],
 ];
 
 struct TempDir(PathBuf);
@@ -230,6 +231,72 @@ fn a_startup_failure_is_a_json_object_on_stdout_not_a_rust_error_on_stderr() {
         "the failure object should name what went wrong: {}",
         values[0]
     );
+}
+
+/// Decision 52's load-bearing half: `versions` answers from compiled
+/// constants, so it must answer on a machine where config resolution is
+/// exactly what is broken.
+///
+/// `embarch doctor` runs the *installed* binary from wherever `embarch`
+/// happens to be invoked. If this reported the same startup failure every
+/// other subcommand does, the check that wants the number would get one
+/// precisely when a mismatched install is most likely — which is the whole
+/// failure this surface exists to make visible.
+#[test]
+fn versions_answers_without_a_loadable_config() {
+    let dir = TempDir::new();
+    let log_dir = dir.path().join("data");
+    let empty_cwd = dir.path().join("nowhere");
+    std::fs::create_dir_all(&empty_cwd).unwrap();
+
+    // Two ways to have no config: a path that does not exist (`status` in
+    // the test above turns this into a failure object), and no `--config`,
+    // no env var, and a cwd with no `embarch/embarch.toml` above it.
+    let with_absent_path = {
+        let (stdout, stderr) = run(&dir.path().join("absent.toml"), &log_dir, &["versions"]);
+        assert!(!stdout.is_empty(), "no stdout\n--- stderr ---\n{stderr}");
+        json_values(&stdout)
+    };
+
+    let output = Command::new(env!("CARGO_BIN_EXE_embarch-api"))
+        .arg("--json")
+        .arg("versions")
+        .current_dir(&empty_cwd)
+        .env_remove("EMBARCH_API_CONFIG")
+        .env("XDG_DATA_HOME", &log_dir)
+        .env("LOCALAPPDATA", &log_dir)
+        .output()
+        .expect("failed to run the binary for `versions` with no config at all");
+    assert!(
+        output.status.success(),
+        "`versions` with no config exited {:?}\n--- stderr ---\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let with_no_config = json_values(&String::from_utf8_lossy(&output.stdout));
+
+    for values in [&with_absent_path, &with_no_config] {
+        assert_eq!(values.len(), 1, "expected one object: {values:?}");
+        let value = &values[0];
+        assert_eq!(value["success"], serde_json::json!(true));
+        // The number `embarch doctor`'s schema-agreement check reads. Pinned
+        // against the constant itself rather than a literal: the point is
+        // that the surface reports *this binary's* compiled value, and a
+        // literal here would have to be edited on every schema bump.
+        assert_eq!(
+            value["host_type_schema_version"],
+            serde_json::json!(embarch_study_designer::HOST_TYPE_SCHEMA_VERSION),
+            "`versions` did not report the compiled host type schema version: {value}"
+        );
+        // Distinct from the stamp: one versions the study-designer host
+        // types, the other this crate's JSON shape. Conflating them is the
+        // mistake the key names exist to prevent.
+        assert_eq!(
+            value[SCHEMA_VERSION_FIELD],
+            serde_json::json!(SCHEMA_VERSION)
+        );
+        assert_eq!(value["api_version"], serde_json::json!(env!("CARGO_PKG_VERSION")));
+    }
 }
 
 #[test]

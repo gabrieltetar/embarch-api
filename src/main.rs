@@ -356,6 +356,16 @@ pub enum Commands {
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
+    /// Print the version numbers compiled into THIS binary: its crate
+    /// version, the `embarch-study-designer` host type schema version it
+    /// submits studies under, and its `--json` shape version.
+    ///
+    /// Loads no config and contacts no embarch-core — these are facts about
+    /// the installed binary, not about a running system, and the caller that
+    /// needs them most (`embarch doctor`'s schema-agreement check) is
+    /// diagnosing a machine where the config or Core may be exactly what is
+    /// broken. `--json` is the surface to read: `host_type_schema_version`.
+    Versions,
 }
 
 /// Walks up from `start` looking for `embarch/embarch.toml` at each level —
@@ -443,6 +453,16 @@ async fn async_main() -> Result<()> {
     } else {
         logging::Mode::Mcp
     });
+    // `versions` answers from compiled constants alone, so it is dispatched
+    // **before** config resolution rather than through `cli::run` (decision
+    // 52). Every other subcommand needs a `Config` and a `CoreClient`, and a
+    // missing or unreadable config exits 1 below — which would make the one
+    // subcommand whose whole job is "what is this binary" unreadable on a
+    // machine whose config is the thing being diagnosed. `cli::run` keeps a
+    // matching arm so the surface is exhaustive from either entry point.
+    if matches!(cli.command, Some(Commands::Versions)) {
+        std::process::exit(cli::versions(cli.json));
+    }
     // Grouped into one fallible step so a CLI run can report a startup
     // failure *through the surface it was asked for*. Returning these
     // straight out of `async_main` printed Rust's default `Err` rendering

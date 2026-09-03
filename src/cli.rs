@@ -94,6 +94,11 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         }
         Commands::Validate { role } => validate(&core, &role, json).await,
         Commands::Alerts { limit } => alerts(&core, limit, json).await,
+        // Normally intercepted by `main` before a config is even looked for
+        // (decision 52). Kept here so the subcommand surface is exhaustive
+        // from either entry point, and so it behaves identically if a future
+        // caller does route it through `run`.
+        Commands::Versions => versions(json),
     }
 }
 
@@ -176,6 +181,45 @@ fn error_result(json: bool, message: String) -> i32 {
 /// Found while building decision 50 and fixed with it.
 pub fn startup_failure(json: bool, message: String) -> i32 {
     error_result(json, message)
+}
+
+/// `versions`: the version numbers compiled into **this binary**, read from
+/// constants, touching neither the config file nor embarch-core.
+///
+/// The number that motivated it is `host_type_schema_version`
+/// ([`embarch_study_designer::HOST_TYPE_SCHEMA_VERSION`]) — the study-designer
+/// host type schema this binary submits studies under, and the one
+/// `embarch-core-client::post_study` refuses a submit over when Core's served
+/// copy differs. It was compiled in and readable from nowhere outside the
+/// process, so `embarch doctor`'s schema-agreement check substituted the
+/// `embarch` binary's own copy: exact when all three binaries came from one
+/// archive, wrong for the hand-built mixed install this suite is developed
+/// as (decision 52).
+///
+/// `schema_version` in the `--json` object is a *different* number — the
+/// version of this crate's JSON shape, stamped on every object it emits
+/// (decision 24) — which is why the payload key is spelled out in full
+/// rather than shortened to `schema_version`.
+///
+/// Always succeeds: there is nothing here that can fail.
+pub fn versions(json: bool) -> i32 {
+    let api_version = env!("CARGO_PKG_VERSION");
+    let host_type_schema_version = embarch_study_designer::HOST_TYPE_SCHEMA_VERSION;
+    let human = format!(
+        "embarch-api {api_version} (study-designer host type schema v{host_type_schema_version}, \
+         --json shape v{})",
+        json_out::SCHEMA_VERSION
+    );
+    finish(
+        json,
+        true,
+        serde_json::json!({
+            "success": true,
+            "api_version": api_version,
+            "host_type_schema_version": host_type_schema_version,
+        }),
+        human,
+    )
 }
 
 fn list_projects(config: &Config, json: bool) -> i32 {
@@ -1307,7 +1351,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 22,
+            arms, 23,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."
