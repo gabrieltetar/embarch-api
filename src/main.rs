@@ -1,4 +1,3 @@
-mod build;
 mod cli;
 mod config;
 mod dev_bench;
@@ -11,6 +10,11 @@ mod zephyr;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+// `build` is the one module that lives behind this package's `lib` target
+// rather than in the binary, so `tests/` can reach it at all (see `lib.rs`).
+// Re-imported at the crate root so the sibling modules' existing
+// `crate::build::…` paths keep resolving.
+pub(crate) use embarch_api::build;
 use embarch_core_client::CoreClient;
 use rmcp::ServiceExt;
 use std::path::{Path, PathBuf};

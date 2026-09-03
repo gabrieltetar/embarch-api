@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, SystemTime};
@@ -10,7 +10,10 @@ use tokio::sync::Mutex as AsyncMutex;
 
 /// Cap on captured stdout/stderr text handed back through MCP, so a runaway
 /// build log doesn't blow up the tool response.
-const OUTPUT_CAP_BYTES: usize = 64 * 1024;
+///
+/// `pub` so `tests/build_capture.rs` can size its fixtures against the real
+/// cap instead of restating 65536 and drifting from it.
+pub const OUTPUT_CAP_BYTES: usize = 64 * 1024;
 
 /// Everything a build actually needs to run, independent of whether it came
 /// from a `discovery = "static"` project (today's fully-static schema) or a
@@ -39,7 +42,7 @@ pub struct BuildPlan {
 /// between two reads taken microseconds apart, not mtime-resolution
 /// truncation). A build takes at least seconds, so this grace can't mask a
 /// genuinely stale artifact from a previous run.
-const FRESHNESS_CLOCK_GRACE: Duration = Duration::from_millis(500);
+pub const FRESHNESS_CLOCK_GRACE: Duration = Duration::from_millis(500);
 
 pub struct BuildOutcome {
     pub timed_out: bool,
@@ -89,7 +92,15 @@ impl BuildLocks {
     }
 }
 
-fn truncate_tail(mut s: String) -> String {
+/// Keeps the last [`OUTPUT_CAP_BYTES`] of a captured stream, cutting on a
+/// UTF-8 character boundary.
+///
+/// The boundary search is the whole point: `String::replace_range` **panics**
+/// on an index inside a codepoint, so a build whose log happens to cross the
+/// cap mid-`é` would take the MCP server down rather than return a truncated
+/// log. `pub` so `tests/build_capture.rs` can hold that boundary directly
+/// as well as through a real child process.
+pub fn truncate_tail(mut s: String) -> String {
     if s.len() <= OUTPUT_CAP_BYTES {
         return s;
     }
@@ -189,7 +200,10 @@ async fn run_build_locked(plan: &BuildPlan) -> Result<BuildOutcome> {
 /// through — or a misconfigured artifact_path pointing at a leftover file
 /// from a previous build — could silently "succeed" by flashing stale
 /// firmware, which is the worst failure mode for hardware bring-up.
-fn artifact_is_fresh(path: &PathBuf, existed_before: bool, build_start: SystemTime) -> bool {
+///
+/// `pub` so `tests/build_capture.rs` can pin the rule on every platform,
+/// not only where its end-to-end companion can spawn a shell.
+pub fn artifact_is_fresh(path: &Path, existed_before: bool, build_start: SystemTime) -> bool {
     if !existed_before {
         return true;
     }
