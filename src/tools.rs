@@ -99,34 +99,36 @@ pub struct ProjectParams {
 }
 
 /// The four `discovery = "zephyr-west"` selection params (`design.md` §3
-/// decision 12), shared by every tool that resolves a build target. Ignored
-/// entirely for a `discovery = "static"` project.
+/// decision 12), shared by every tool that resolves a build target. A
+/// `discovery = "static"` project **refuses** any of them, naming which were
+/// given (`design.md` §3 decision 51) — it builds its configured
+/// `build_command` verbatim and has nowhere to apply them.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct TargetParams {
     /// Name of a project from embarch-api's config file.
     pub project: String,
-    /// Zephyr board name. Only meaningful for a discovery = "zephyr-west"
-    /// project — see `list_targets`.
+    /// Zephyr board name. Only for a discovery = "zephyr-west" project — a
+    /// static project refuses it. See `list_targets`.
     pub board: Option<String>,
-    /// Board variant (e.g. a product LED configuration). Only meaningful for
-    /// a discovery = "zephyr-west" project.
+    /// Board variant (e.g. a product LED configuration). Only for a
+    /// discovery = "zephyr-west" project — a static project refuses it.
     pub variant: Option<String>,
-    /// Hardware revision. Only meaningful for a discovery = "zephyr-west"
-    /// project.
+    /// Hardware revision. Only for a discovery = "zephyr-west" project — a
+    /// static project refuses it rather than ignoring it.
     pub revision: Option<String>,
-    /// App directory name under app/. Only meaningful for a discovery =
-    /// "zephyr-west" project.
+    /// App directory name under app/. Only for a discovery = "zephyr-west"
+    /// project — a static project refuses it.
     pub app: Option<String>,
-    /// `-S` snippets to build with. Only meaningful for a discovery =
-    /// "zephyr-west" project — see `list_targets`'s `snippets_by_app`.
-    /// Omitted or empty falls back to the project's configured
-    /// default_snippets, not "no snippets".
+    /// `-S` snippets to build with. Only for a discovery = "zephyr-west"
+    /// project — a static project refuses them. See `list_targets`'s
+    /// `snippets_by_app`. Omitted or empty falls back to the project's
+    /// configured default_snippets, not "no snippets".
     pub snippets: Option<Vec<String>>,
-    /// Extra `west build` flags (e.g. `["-p", "always"]`). Only meaningful
-    /// for a discovery = "zephyr-west" project. Opaque passthrough, unlike
-    /// snippets — not validated against anything. Omitted or empty falls
-    /// back to the project's configured default_extra_args, not "no extra
-    /// args".
+    /// Extra `west build` flags (e.g. `["-p", "always"]`). Only for a
+    /// discovery = "zephyr-west" project — a static project refuses them.
+    /// Opaque passthrough, unlike snippets — not validated against anything.
+    /// Omitted or empty falls back to the project's configured
+    /// default_extra_args, not "no extra args".
     pub extra_args: Option<Vec<String>>,
     /// Fully erase the chip before writing, rather than erasing only the
     /// sectors the new image covers — the equivalent of `west flash --erase`.
@@ -154,23 +156,25 @@ impl TargetParams {
 pub struct FlashParams {
     /// Name of a project from embarch-api's config file.
     pub project: String,
-    /// Zephyr board name. Only meaningful for a discovery = "zephyr-west"
-    /// project.
+    /// Zephyr board name. Only for a discovery = "zephyr-west" project — a
+    /// static project refuses it rather than ignoring it.
     pub board: Option<String>,
-    /// Board variant. Only meaningful for a discovery = "zephyr-west" project.
+    /// Board variant. Only for a discovery = "zephyr-west" project — a
+    /// static project refuses it.
     pub variant: Option<String>,
-    /// Hardware revision. Only meaningful for a discovery = "zephyr-west" project.
+    /// Hardware revision. Only for a discovery = "zephyr-west" project — a
+    /// static project refuses it.
     pub revision: Option<String>,
-    /// App directory name under app/. Only meaningful for a discovery =
-    /// "zephyr-west" project.
+    /// App directory name under app/. Only for a discovery = "zephyr-west"
+    /// project — a static project refuses it.
     pub app: Option<String>,
-    /// `-S` snippets to build with. Only meaningful for a discovery =
-    /// "zephyr-west" project. Omitted or empty falls back to the project's
-    /// configured default_snippets, not "no snippets".
+    /// `-S` snippets to build with. Only for a discovery = "zephyr-west"
+    /// project — a static project refuses them. Omitted or empty falls back
+    /// to the project's configured default_snippets, not "no snippets".
     pub snippets: Option<Vec<String>>,
-    /// Extra `west build` flags. Only meaningful for a discovery =
-    /// "zephyr-west" project. Omitted or empty falls back to the project's
-    /// configured default_extra_args, not "no extra args".
+    /// Extra `west build` flags. Only for a discovery = "zephyr-west"
+    /// project — a static project refuses them. Omitted or empty falls back
+    /// to the project's configured default_extra_args, not "no extra args".
     pub extra_args: Option<Vec<String>>,
     /// Path to a firmware file to flash instead of the project's configured
     /// artifact_path — use this to flash an already-built file without
@@ -261,6 +265,8 @@ pub struct RunStudyParams {
     pub project: Option<String>,
     /// Zephyr board name for the DUT reflash. Only meaningful alongside
     /// project, for a discovery = "zephyr-west" project — see list_targets.
+    /// A static DUT project refuses this and every field below it rather
+    /// than ignoring it, which fails the run before anything is flashed.
     pub board: Option<String>,
     /// Board variant for the DUT reflash. Only meaningful alongside project.
     pub variant: Option<String>,
@@ -472,7 +478,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Build a configured project by running its build command (configured, or, for a discovery = \"zephyr-west\" project, assembled at call time from board/variant/revision/app/snippets/extra_args). snippets/extra_args, if omitted, fall back to the project's configured default_snippets/default_extra_args, not \"none\". extra_args is opaque passthrough (e.g. [\"-p\", \"always\"] for a pristine rebuild) — unlike snippets, not validated against anything. Does not touch hardware. Use build_and_flash to build and then flash in one call.")]
+    #[tool(description = "Build a configured project by running its build command (configured, or, for a discovery = \"zephyr-west\" project, assembled at call time from board/variant/revision/app/snippets/extra_args). snippets/extra_args, if omitted, fall back to the project's configured default_snippets/default_extra_args, not \"none\". extra_args is opaque passthrough (e.g. [\"-p\", \"always\"] for a pristine rebuild) — unlike snippets, not validated against anything. A discovery = \"static\" project builds its configured build_command verbatim and REJECTS board/variant/revision/app/snippets/extra_args, naming which were given, rather than accepting and discarding them. Does not touch hardware. Use build_and_flash to build and then flash in one call.")]
     async fn build(
         &self,
         Parameters(params): Parameters<TargetParams>,
@@ -507,7 +513,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Flash a firmware artifact via embarch-core. Defaults to the resolved artifact_path (configured, or computed at call time for a discovery = \"zephyr-west\" target), or pass firmware_path to flash a specific file without rebuilding — this bypasses target resolution entirely.")]
+    #[tool(description = "Flash a firmware artifact via embarch-core. Defaults to the resolved artifact_path (configured, or computed at call time for a discovery = \"zephyr-west\" target), or pass firmware_path to flash a specific file without rebuilding — this bypasses the artifact path, but still resolves the target for its chip, so a discovery = \"static\" project still rejects board/variant/revision/app/snippets/extra_args either way.")]
     async fn flash(
         &self,
         Parameters(params): Parameters<FlashParams>,
@@ -572,7 +578,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Build a project and, only if the build succeeds and produces a fresh artifact, flash it via embarch-core. Refuses to flash a stale or failed build.")]
+    #[tool(description = "Build a project and, only if the build succeeds and produces a fresh artifact, flash it via embarch-core. Refuses to flash a stale or failed build. A discovery = \"static\" project rejects board/variant/revision/app/snippets/extra_args rather than discarding them — see build.")]
     async fn build_and_flash(
         &self,
         Parameters(params): Parameters<TargetParams>,
@@ -778,7 +784,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Reset a project's target chip via embarch-core. For a discovery = \"zephyr-west\" project, board/variant/revision/app select which target's chip to reset (extends design.md §3 decision 12's params to reset, for the same reason build/flash need them: there's no single stored chip to fall back to).")]
+    #[tool(description = "Reset a project's target chip via embarch-core. For a discovery = \"zephyr-west\" project, board/variant/revision/app select which target's chip to reset (extends design.md §3 decision 12's params to reset, for the same reason build/flash need them: there's no single stored chip to fall back to). A discovery = \"static\" project has one stored chip and rejects those params rather than discarding them.")]
     async fn reset(
         &self,
         Parameters(params): Parameters<TargetParams>,
@@ -905,7 +911,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Submit a Study (embarch-study-designer's schema: name, requires, steps, streams, steps_crc, streams_crc) for embarch-core to run against whatever DUT is connected through its dev-bench serial link. All three seals (steps_crc over steps, streams_crc over streams, protocols_crc over protocols) are recomputed and overwritten regardless of what's submitted. Returns { study_id } immediately (async) — call study_status to poll progress. Errors if a study is already in-flight on Core.\n\nStudy.requires names the dev-bench and DUT firmware builds the study is meant to run against ('any' if it genuinely doesn't matter). reflash says what to do about it: 'none' (default), 'dev-bench', 'dut', or 'both' — build and flash from the working tree AS IT CURRENTLY STANDS, then verify. This never runs git checkout: if the tree isn't at the revision the study wants, the call fails naming both revisions and leaves the tree, and the board, alone. Reflashing the DUT needs project (plus the usual board/variant/revision/app/snippets/extra_args), since a study isn't project-shaped but a firmware build is. allow_version_mismatch proceeds anyway and the override is recorded in the result's provenance.overrides — never silently honoured.")]
+    #[tool(description = "Submit a Study (embarch-study-designer's schema: name, requires, steps, streams, steps_crc, streams_crc) for embarch-core to run against whatever DUT is connected through its dev-bench serial link. All three seals (steps_crc over steps, streams_crc over streams, protocols_crc over protocols) are recomputed and overwritten regardless of what's submitted. Returns { study_id } immediately (async) — call study_status to poll progress. Errors if a study is already in-flight on Core.\n\nStudy.requires names the dev-bench and DUT firmware builds the study is meant to run against ('any' if it genuinely doesn't matter). reflash says what to do about it: 'none' (default), 'dev-bench', 'dut', or 'both' — build and flash from the working tree AS IT CURRENTLY STANDS, then verify. This never runs git checkout: if the tree isn't at the revision the study wants, the call fails naming both revisions and leaves the tree, and the board, alone. Reflashing the DUT needs project (plus the usual board/variant/revision/app/snippets/extra_args, which a discovery = \"static\" DUT project rejects rather than discards — that failure happens before anything is built or flashed), since a study isn't project-shaped but a firmware build is. allow_version_mismatch proceeds anyway and the override is recorded in the result's provenance.overrides — never silently honoured.")]
     async fn run_study(
         &self,
         Parameters(params): Parameters<RunStudyParams>,

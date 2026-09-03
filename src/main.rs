@@ -43,37 +43,40 @@ struct Cli {
 
 /// The four `discovery = "zephyr-west"` selection flags (`design.md` §3
 /// decision 12), shared by every subcommand that runs a build or needs a
-/// chip. Ignored entirely for a `discovery = "static"` project.
+/// chip. A `discovery = "static"` project **refuses** any of them, naming
+/// which were given (`design.md` §3 decision 51) — it builds its configured
+/// `build_command` verbatim and has nowhere to apply them.
 #[derive(clap::Args, Debug)]
 pub struct TargetSelection {
-    /// Zephyr board name. Only meaningful for a discovery = "zephyr-west"
-    /// project; ignored otherwise.
+    /// Zephyr board name. Only for a discovery = "zephyr-west" project — a
+    /// static project refuses it rather than ignoring it.
     #[arg(long)]
     pub board: Option<String>,
-    /// Board variant (e.g. a product LED configuration). Only meaningful for
-    /// a discovery = "zephyr-west" project.
+    /// Board variant (e.g. a product LED configuration). Only for a
+    /// discovery = "zephyr-west" project — a static project refuses it.
     #[arg(long)]
     pub variant: Option<String>,
-    /// Hardware revision. Only meaningful for a discovery = "zephyr-west"
-    /// project.
+    /// Hardware revision. Only for a discovery = "zephyr-west" project — a
+    /// static project refuses it rather than ignoring it.
     #[arg(long)]
     pub revision: Option<String>,
-    /// App directory name under app/. Only meaningful for a discovery =
-    /// "zephyr-west" project.
+    /// App directory name under app/. Only for a discovery = "zephyr-west"
+    /// project — a static project refuses it.
     #[arg(long)]
     pub app: Option<String>,
-    /// A `-S` snippet to build with; may be given more than once. Only
-    /// meaningful for a discovery = "zephyr-west" project. Omitted entirely
-    /// falls back to the project's configured default_snippets, not "no
-    /// snippets" — see `list-targets` for what's available.
+    /// A `-S` snippet to build with; may be given more than once. Only for a
+    /// discovery = "zephyr-west" project — a static project refuses it.
+    /// Omitted entirely falls back to the project's configured
+    /// default_snippets, not "no snippets" — see `list-targets` for what's
+    /// available.
     #[arg(long = "snippet")]
     pub snippet: Vec<String>,
     /// An extra `west build` flag (e.g. `-p`, `always`, passed as two
     /// separate --extra-arg occurrences); may be given more than once. Only
-    /// meaningful for a discovery = "zephyr-west" project. Opaque passthrough
-    /// — unlike snippets, not validated against anything. Omitted entirely
-    /// falls back to the project's configured default_extra_args, not "no
-    /// extra args".
+    /// for a discovery = "zephyr-west" project — a static project refuses it.
+    /// Opaque passthrough — unlike snippets, not validated against anything.
+    /// Omitted entirely falls back to the project's configured
+    /// default_extra_args, not "no extra args".
     #[arg(long = "extra-arg")]
     pub extra_arg: Vec<String>,
 }

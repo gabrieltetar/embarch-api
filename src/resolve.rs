@@ -21,9 +21,13 @@ use crate::zephyr;
 /// variant, revision, app) tuple `zephyr::select` resolves, it's an
 /// independent, purely additive `-S` build flag list, validated against
 /// `zephyr::available_snippets` and folded into the build command/build dir
-/// name after target selection is already settled. Ignored entirely for a
-/// `discovery = "static"` project (its `-S` flags, if any, are already
-/// baked into its hand-authored `build_command`).
+/// name after target selection is already settled.
+///
+/// **Every field here is rejected, not ignored, for a `discovery =
+/// "static"` project** (`design.md` §3 decision 51): a hand-authored
+/// `build_command` is an opaque argv this crate did not assemble, so there
+/// is nowhere to put any of them, and an input that cannot be honoured
+/// fails rather than being accepted and dropped.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Selection<'a> {
     pub board: Option<&'a str>,
@@ -69,12 +73,66 @@ pub struct Resolved {
 
 pub async fn resolve(project: &ProjectConfig, selection: Selection<'_>, core: &CoreClient) -> Result<Resolved> {
     match project.discovery {
-        Discovery::Static => resolve_static(project),
+        Discovery::Static => resolve_static(project, selection),
         Discovery::ZephyrWest => resolve_zephyr(project, selection, core).await,
     }
 }
 
-fn resolve_static(project: &ProjectConfig) -> Result<Resolved> {
+/// Which of `Selection`'s fields the caller actually gave, in the order a
+/// caller reads them on the CLI. A `None` option and an empty slice are both
+/// "not given": for a `zephyr-west` project an empty `snippets`/`extra_args`
+/// means "fall back to the configured default" (see `resolve_zephyr`), so
+/// neither can mean "an explicit empty list" here either, and a call that
+/// passes nothing must keep resolving exactly as it did before decision 51.
+fn fields_given(selection: &Selection<'_>) -> Vec<&'static str> {
+    let mut given = Vec::new();
+    if selection.board.is_some() {
+        given.push("board");
+    }
+    if selection.variant.is_some() {
+        given.push("variant");
+    }
+    if selection.revision.is_some() {
+        given.push("revision");
+    }
+    if selection.app.is_some() {
+        given.push("app");
+    }
+    if !selection.snippets.is_empty() {
+        given.push("snippets");
+    }
+    if !selection.extra_args.is_empty() {
+        given.push("extra_args");
+    }
+    given
+}
+
+fn resolve_static(project: &ProjectConfig, selection: Selection<'_>) -> Result<Resolved> {
+    // `design.md` §3 decision 51. A static project builds by running its
+    // configured `build_command` verbatim, so there is no scan to narrow and
+    // no `-S` to append to an argv this crate did not assemble — the only
+    // honest answers were "reject" and "splice", and splicing into an opaque
+    // command is not something this crate can do correctly.
+    let given = fields_given(&selection);
+    if !given.is_empty() {
+        anyhow::bail!(
+            "project '{}' is discovery = \"static\", so it builds by running its configured \
+             build_command verbatim — there is no target scan to narrow and no `-S` to add to a \
+             command this crate did not assemble, so {} refused rather than silently dropped. \
+             Given: {}. Either re-run without {}, or put the equivalent into the project's \
+             build_command in config; a Zephyr/west repo can instead set discovery = \
+             \"zephyr-west\", which resolves these per call.",
+            project.name,
+            if given.len() == 1 {
+                "it cannot be honoured and is"
+            } else {
+                "they cannot be honoured and are"
+            },
+            given.join(", "),
+            if given.len() == 1 { "it" } else { "them" },
+        );
+    }
+
     Ok(Resolved {
         plan: BuildPlan {
             lock_key: project.name.clone(),
@@ -331,13 +389,87 @@ flash_format = "bin"
 
     #[test]
     fn resolve_static_passes_the_configured_base_address_through() {
-        let resolved = resolve_static(&static_project("base_address = 0x2000")).unwrap();
+        let resolved =
+            resolve_static(&static_project("base_address = 0x2000"), Selection::default()).unwrap();
         assert_eq!(resolved.base_address.as_deref(), Some("0x2000"));
     }
 
     #[test]
     fn resolve_static_leaves_base_address_unset_when_the_project_omits_it() {
-        let resolved = resolve_static(&static_project("")).unwrap();
+        let resolved = resolve_static(&static_project(""), Selection::default()).unwrap();
         assert_eq!(resolved.base_address, None);
+    }
+
+    /// Decision 51's other half: rejecting a selection must not disturb the
+    /// call that gives none. Asserted over the whole `Resolved`, not just the
+    /// error path, because "unchanged" is the claim the new check makes.
+    #[test]
+    fn resolve_static_with_no_selection_resolves_exactly_as_before() {
+        let resolved = resolve_static(&static_project(""), Selection::default()).unwrap();
+        assert_eq!(resolved.plan.lock_key, "p");
+        assert_eq!(resolved.plan.command, vec!["true".to_string()]);
+        assert_eq!(resolved.chip, "esp32c5");
+        assert_eq!(resolved.flash_format, "bin");
+        assert_eq!(resolved.descriptor, serde_json::json!({ "project": "p" }));
+        // An explicitly-constructed empty selection is indistinguishable from
+        // a default one, which is what makes "omitted" safe to treat as
+        // "nothing given" rather than as "an empty list".
+        let explicit = Selection {
+            board: None,
+            variant: None,
+            revision: None,
+            app: None,
+            snippets: &[],
+            extra_args: &[],
+        };
+        assert!(resolve_static(&static_project(""), explicit).is_ok());
+    }
+
+    #[test]
+    fn resolve_static_rejects_snippets_it_cannot_honour() {
+        let snippets = ["ble-shell".to_string(), "cdc-acm-console".to_string()];
+        let err = resolve_static(
+            &static_project(""),
+            Selection {
+                snippets: &snippets,
+                ..Selection::default()
+            },
+        )
+        .map(|_| ())
+        .expect_err("a static project cannot honour snippets and must say so");
+        let message = format!("{err:#}");
+        assert!(message.contains("snippets"), "{message}");
+        assert!(message.contains("project 'p'"), "{message}");
+        assert!(message.contains("static"), "{message}");
+        // One `bail!`, so a caller's `{e:#}` render is the message itself
+        // rather than a chain of contexts it has to read backwards.
+        assert_eq!(message, err.to_string());
+    }
+
+    #[test]
+    fn resolve_static_names_every_field_the_caller_gave() {
+        let extra_args = ["-p".to_string(), "always".to_string()];
+        let err = resolve_static(
+            &static_project(""),
+            Selection {
+                board: Some("nrf54l15dk"),
+                variant: Some("some-variant"),
+                revision: Some("0.9.0"),
+                app: Some("reference-dut"),
+                snippets: &[],
+                extra_args: &extra_args,
+            },
+        )
+        .map(|_| ())
+        .expect_err("every unhonourable field must be refused, not just snippets");
+        let message = format!("{err:#}");
+        for field in ["board", "variant", "revision", "app", "extra_args"] {
+            assert!(message.contains(field), "{field} missing from: {message}");
+        }
+    }
+
+    #[test]
+    fn fields_given_reports_nothing_for_an_empty_selection() {
+        assert!(fields_given(&Selection::default()).is_empty());
     }
 }

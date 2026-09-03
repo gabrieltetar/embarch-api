@@ -43,6 +43,12 @@ serial_timeout_secs = 15
 # real boards/variants/revisions worth selecting between at call time instead
 # of one hand-picked combination, see example project #3 below
 # (discovery = "zephyr-west", design.md §3 decision 12) instead.
+#
+# The consequence to know before picking this shape: a static project runs the
+# build_command below verbatim, so a call that passes board, variant, revision,
+# app, snippets or extra_args is **refused**, naming which of them were given
+# (design.md §3 decision 51). It is not that they are ignored — they used to
+# be, and a build with two snippets reported success having built without them.
 [[projects]]
 name = "my-nrf-project"
 source_path = "/path/to/my-nrf-project"
