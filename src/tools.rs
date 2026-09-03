@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::build::{BuildLocks, BuildOutcome};
+use embarch_api::json_out;
 use crate::config::{Config, ProjectConfig};
 use embarch_core_client::{
     CoreClient, FollowItem, FollowMode, FollowOptions, StudyConflictError, StudyEvent,
@@ -53,10 +54,24 @@ impl EmbarchApi {
         })
     }
 
+    /// A successful tool result whose content is a JSON object.
+    ///
+    /// Serialized through [`json_out`] rather than directly, so an MCP
+    /// result carries the same `schema_version` a CLI `--json` object does —
+    /// which is what keeps `interfaces/tools.md`'s "the same fields the MCP
+    /// result does" true in both directions (decision 50).
     fn ok_json(value: serde_json::Value) -> Result<CallToolResult, McpError> {
-        let text = serde_json::to_string_pretty(&value)
-            .unwrap_or_else(|e| format!("<failed to serialize result: {e}>"));
-        Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            json_out::pretty(value),
+        )]))
+    }
+
+    /// A tool **error** whose content is a JSON object rather than prose —
+    /// a failed build, a refused flash. Stamped like every other object
+    /// this crate emits: an agent parsing a failure is the last caller that
+    /// should be handed the one shape without the version field.
+    fn err_json(value: serde_json::Value) -> Result<CallToolResult, McpError> {
+        Self::err_text(json_out::pretty(value))
     }
 
     fn err_text(message: impl Into<String>) -> Result<CallToolResult, McpError> {
@@ -485,7 +500,7 @@ impl EmbarchApi {
                 if outcome.build_succeeded() {
                     Self::ok_json(value)
                 } else {
-                    Self::err_text(serde_json::to_string_pretty(&value).unwrap_or_default())
+                    Self::err_json(value)
                 }
             }
             Err(e) => Self::err_text(format!("failed to run build for '{}': {e:#}", project.name)),
@@ -595,7 +610,7 @@ impl EmbarchApi {
             } else {
                 "build succeeded but no fresh artifact was found — refusing to flash".into()
             });
-            return Self::err_text(serde_json::to_string_pretty(&value).unwrap_or_default());
+            return Self::err_json(value);
         }
 
         // Always the WSL2-local path — see the sibling `flash` fn above.
@@ -645,7 +660,7 @@ impl EmbarchApi {
                 if outcome.build_succeeded() {
                     Self::ok_json(value)
                 } else {
-                    Self::err_text(serde_json::to_string_pretty(&value).unwrap_or_default())
+                    Self::err_json(value)
                 }
             }
             Err(e) => Self::err_text(format!("failed to run build for dev_bench: {e:#}")),
@@ -712,7 +727,7 @@ impl EmbarchApi {
             } else {
                 "build succeeded but no fresh artifact was found — refusing to flash".into()
             });
-            return Self::err_text(serde_json::to_string_pretty(&value).unwrap_or_default());
+            return Self::err_json(value);
         }
 
         let core_firmware_path = outcome.artifact_path.display().to_string();

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::build::BuildOutcome;
+use embarch_api::json_out;
 use crate::config::{Config, ProjectConfig};
 use embarch_core_client::{
     CoreClient, FollowItem, FollowOptions, StudyConflictError, StudyEvent, TopologyMismatchError,
@@ -133,14 +134,14 @@ async fn resolve_or_exit(
 /// stream and returns the process exit code, per design.md §5a: `0` on
 /// success, `1` on any operation failure, distinguished only by the
 /// message/JSON text, never a per-failure-kind code.
+///
+/// Every `--json` object this subcommand surface emits goes through here or
+/// through [`study_follow`]'s two NDJSON sites, and all three serialize via
+/// [`json_out`] — which is what makes decision 24's `schema_version`
+/// unconditional rather than a thing each emitter remembers (decision 50).
 fn finish(json: bool, success: bool, value: serde_json::Value, human: String) -> i32 {
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&value).unwrap_or_else(|e| format!(
-                "{{\"success\": false, \"error\": \"failed to serialize result: {e}\"}}"
-            ))
-        );
+        println!("{}", json_out::pretty(value));
     } else if success {
         println!("{human}");
     } else {
@@ -160,6 +161,21 @@ fn error_result(json: bool, message: String) -> i32 {
         serde_json::json!({ "success": false, "error": message }),
         message,
     )
+}
+
+/// A failure that happened **before** any subcommand ran — an unreadable or
+/// invalid config file, a bearer token that will not resolve.
+///
+/// `main` used to return these as an `anyhow::Error`, so the process printed
+/// Rust's default `Err` rendering to stderr and `--json` emitted nothing at
+/// all. That contradicted the `--json` contract in
+/// `embarch-doc/embarch-api/interfaces/tools.md` — "on failure the error
+/// goes into that same object on stdout ... so a script only has to check
+/// the exit code, not which stream carried the result" — for exactly the
+/// class of failure a script is most likely to hit on a fresh machine.
+/// Found while building decision 50 and fixed with it.
+pub fn startup_failure(json: bool, message: String) -> i32 {
+    error_result(json, message)
 }
 
 fn list_projects(config: &Config, json: bool) -> i32 {
@@ -222,7 +238,7 @@ fn list_targets(config: &Config, project_name: &str, json: bool) -> i32 {
 
     match resolve::list_targets(project) {
         Ok(mut value) => {
-            let human = serde_json::to_string_pretty(&value).unwrap_or_default();
+            let human = json_out::human_render(&value);
             // Merge "success" into the full value rather than rebuilding a
             // "targets"-only object — for a zephyr-west project, value also
             // carries snippets_by_app/default_snippets/default_extra_args
@@ -933,10 +949,14 @@ async fn study_follow(
         .follow_study(study_id, &options, |item| {
             if json {
                 // Compact, one line, unbuffered-ish: the point of NDJSON here
-                // is that a reader sees a record when it happens.
-                println!("{}", item.to_json());
+                // is that a reader sees a record when it happens — stamped
+                // with `schema_version` like every other object, on *every*
+                // line rather than only the `summary` one, because a reader
+                // of a live feed has to know the shape from the first record.
+                println!("{}", json_out::line(item.to_json()));
             } else {
-                println!("{}", render_follow_item(&item));
+                let rendered = render_follow_item(&item);
+                println!("{rendered}");
             }
         })
         .await;
@@ -978,19 +998,17 @@ async fn study_follow(
     };
 
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "type": "summary",
-                "success": success,
-                "study_id": study_id,
-                "status": outcome.terminal_status,
-                "reason": outcome.reason,
-                "lagged_events": outcome.lagged_events,
-                "used_polling": outcome.used_polling,
-                "timed_out": outcome.timed_out,
-            })
-        );
+        let summary = serde_json::json!({
+            "type": "summary",
+            "success": success,
+            "study_id": study_id,
+            "status": outcome.terminal_status,
+            "reason": outcome.reason,
+            "lagged_events": outcome.lagged_events,
+            "used_polling": outcome.used_polling,
+            "timed_out": outcome.timed_out,
+        });
+        println!("{}", json_out::line(summary));
     } else if success {
         println!("{human}");
     } else {
@@ -1197,5 +1215,102 @@ async fn list_study_streams(core: &CoreClient, study_id: &str, json: bool) -> i3
             ),
         },
         Err(e) => error_result(json, format!("list-study-streams failed for '{study_id}': {e:#}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The two source files that make up this crate's machine-readable
+    /// surface. Both are `main.rs` modules, so no integration test can
+    /// reach them — the guard below reads them as text instead.
+    const SURFACE_SOURCES: [(&str, &str); 2] = [
+        ("src/cli.rs", include_str!("cli.rs")),
+        ("src/tools.rs", include_str!("tools.rs")),
+    ];
+
+    /// Split so that this file's own source does not contain the literals
+    /// it bans — otherwise the guard reports itself.
+    fn banned_serializers() -> [String; 2] {
+        [
+            format!("serde_json::to_{}", "string_pretty"),
+            format!("serde_json::to_{}(", "string"),
+        ]
+    }
+
+    fn code_lines(src: &str) -> impl Iterator<Item = (usize, &str)> {
+        src.lines()
+            .enumerate()
+            .map(|(n, l)| (n + 1, l.trim()))
+            .filter(|(_, l)| !l.starts_with("//"))
+    }
+
+    /// The structural half of decision 50.
+    ///
+    /// `finish` and `json_out` make `schema_version` unconditional for
+    /// every emitter that routes through them. Nothing in Rust stops a new
+    /// emitter from serializing its own object and `println!`-ing it
+    /// instead — which is how the field stayed missing for the whole life
+    /// of the crate the first time, while the docs told callers to read it.
+    /// So the guard is a grep over this surface's own two source files,
+    /// asserting the serializer lives in one module: `json_out` is the only
+    /// place a `serde_json` value may be turned into text, and the only
+    /// thing a bare `println!("{}", …)` may print.
+    ///
+    /// A false positive is cheap — route the new emitter through
+    /// `json_out`, which is what it should do anyway. A false negative is a
+    /// caller told to read a field that is not there.
+    #[test]
+    fn no_json_reaches_stdout_except_through_json_out() {
+        for (name, src) in SURFACE_SOURCES {
+            for banned in banned_serializers() {
+                for (n, code) in code_lines(src) {
+                    assert!(
+                        !code.contains(&banned),
+                        "{name}:{n} serializes a JSON value itself ({banned}). This \
+                         surface has exactly one serializer, \
+                         `embarch_api::json_out`, so decision 24's `schema_version` \
+                         cannot be forgotten by a new emitter. Route it through \
+                         `json_out::pretty` / `json_out::line`, or \
+                         `json_out::human_render` if the text is for a person."
+                    );
+                }
+            }
+
+            for (n, code) in code_lines(src) {
+                let printed = code
+                    .strip_prefix(&format!("print{}!(\"{{}}\", ", "ln"))
+                    .or_else(|| code.strip_prefix(&format!("print{}!(\"{{}}\", ", "")));
+                if let Some(printed) = printed {
+                    assert!(
+                        printed.starts_with("json_out::"),
+                        "{name}:{n} prints `{printed}` to stdout. Anything \
+                         machine-readable on stdout is the `--json` surface and must \
+                         go through `json_out`; anything human should be printed via \
+                         an inline-captured binding so this guard can tell the two \
+                         apart."
+                    );
+                }
+            }
+        }
+    }
+
+    /// A tripwire, not a truth: `tests/json_surface.rs` drives every
+    /// subcommand through the real binary and asserts the stamp on whatever
+    /// each one printed, and it cannot enumerate the subcommand enum itself
+    /// (a binary crate has no importable surface — see `lib.rs`). So a new
+    /// subcommand has to be added there by hand, and this is what says so
+    /// rather than letting the new one go unchecked.
+    #[test]
+    fn every_subcommand_is_covered_by_the_json_surface_test() {
+        let arms = include_str!("cli.rs")
+            .lines()
+            .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
+            .count();
+        assert_eq!(
+            arms, 22,
+            "the subcommand surface changed. Add the new subcommand to \
+             `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
+             is checked for `schema_version`) and update this count."
+        );
     }
 }

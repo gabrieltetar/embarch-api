@@ -1,9 +1,9 @@
-//! `embarch-api`'s library face — deliberately one module wide.
+//! `embarch-api`'s library face — deliberately two modules wide.
 //!
 //! This crate is a binary: an MCP server plus the mirroring CLI, and
-//! everything in `main.rs` stays in `main.rs`. The single module lifted
-//! behind a `lib` target is [`build`], and the reason is testability rather
-//! than reuse.
+//! everything in `main.rs` stays in `main.rs`. The modules lifted behind a
+//! `lib` target are [`build`] and [`json_out`], and in both cases the
+//! reason is testability rather than reuse.
 //!
 //! A Rust binary crate has no importable surface at all — each file under
 //! `tests/` compiles as its own crate and can reach a package's `lib` and
@@ -20,3 +20,10 @@
 //! exercise the same code.
 
 pub mod build;
+
+/// The `--json` surface's single serializer, lifted here for the same
+/// reason [`build`] was: `tests/` cannot reach a binary crate's modules, and
+/// `tests/json_surface.rs` has to compare what the binary printed against
+/// [`json_out::SCHEMA_VERSION`] rather than against a second copy of the
+/// number. See `embarch-doc/embarch-api/decisions.md` decision 50.
+pub mod json_out;

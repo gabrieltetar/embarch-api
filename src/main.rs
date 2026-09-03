@@ -440,18 +440,41 @@ async fn async_main() -> Result<()> {
     } else {
         logging::Mode::Mcp
     });
-    let config_path = cli
-        .config
-        .or_else(|| std::env::var_os("EMBARCH_API_CONFIG").map(PathBuf::from))
-        .or_else(|| std::env::current_dir().ok().and_then(|cwd| find_config_upward(&cwd)))
-        .context(
-            "no config path given: pass --config <path>, set EMBARCH_API_CONFIG, \
-             or run from within (or under) a firmware repo containing embarch/embarch.toml",
-        )?;
+    // Grouped into one fallible step so a CLI run can report a startup
+    // failure *through the surface it was asked for*. Returning these
+    // straight out of `async_main` printed Rust's default `Err` rendering
+    // to stderr and left `--json` with no object at all — see
+    // `cli::startup_failure`. MCP mode still returns the error: there is no
+    // JSON surface to put it on, and a protocol-level failure to start is
+    // what `interfaces/tools.md` already says an unloadable config is.
+    let startup = (|| -> Result<(PathBuf, Config, CoreClient)> {
+        let config_path = cli
+            .config
+            .clone()
+            .or_else(|| std::env::var_os("EMBARCH_API_CONFIG").map(PathBuf::from))
+            .or_else(|| std::env::current_dir().ok().and_then(|cwd| find_config_upward(&cwd)))
+            .context(
+                "no config path given: pass --config <path>, set EMBARCH_API_CONFIG, \
+                 or run from within (or under) a firmware repo containing embarch/embarch.toml",
+            )?;
 
-    let config = Config::load_from_path(&config_path)
-        .with_context(|| format!("failed to load config from {}", config_path.display()))?;
-    let core = CoreClient::new(&config.core).context("failed to build embarch-core client")?;
+        let config = Config::load_from_path(&config_path)
+            .with_context(|| format!("failed to load config from {}", config_path.display()))?;
+        let core = CoreClient::new(&config.core).context("failed to build embarch-core client")?;
+        Ok((config_path, config, core))
+    })();
+
+    let (config_path, config, core) = match startup {
+        Ok(started) => started,
+        Err(e) => {
+            if cli.command.is_some() {
+                let message = format!("{e:#}");
+                tracing::error!("cli invocation failed before it started: {message}");
+                std::process::exit(cli::startup_failure(cli.json, message));
+            }
+            return Err(e);
+        }
+    };
 
     if let Some(command) = cli.command {
         // A one-shot CLI run would otherwise leave nothing in the logfile at
