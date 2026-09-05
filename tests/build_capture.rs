@@ -3,7 +3,8 @@
 //!
 //! 4. the two-pipe drain invariant — a child writing heavily to one of
 //!    stdout/stderr while barely touching the other must not hang,
-//! 5. truncation on a UTF-8 character boundary, never mid-codepoint,
+//! 5. truncation on a UTF-8 character boundary, never mid-codepoint — now at
+//!    **both** cuts, since the log is kept head-and-tail (decision 18),
 //! 6. an untouched pre-existing artifact **not** counted as fresh.
 //!
 //! The other three live in `tests/core_client_http.rs`.
@@ -11,7 +12,7 @@
 //! # Two levels, on purpose
 //!
 //! Criteria 5 and 6 are pinned twice: once directly against
-//! [`truncate_tail`]/[`artifact_is_fresh`], and once end-to-end through
+//! [`truncate_log`]/[`artifact_is_fresh`], and once end-to-end through
 //! [`BuildLocks::run_build`] with a real child process. The direct tests are
 //! exact (a byte offset chosen so that removing the boundary search
 //! *panics*) and run on every platform; the end-to-end tests prove the rules
@@ -28,83 +29,155 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
-use embarch_api::build::{artifact_is_fresh, truncate_tail, OUTPUT_CAP_BYTES};
+use embarch_api::build::{artifact_is_fresh, truncate_log, OUTPUT_CAP_BYTES, OUTPUT_HEAD_BYTES};
 
 // ---------------------------------------------------------------------------
 // Criterion 5, exactly — truncation on a UTF-8 character boundary
 // ---------------------------------------------------------------------------
 
-/// `truncate_tail` keeps the last `OUTPUT_CAP_BYTES`, which means it cuts at
-/// an offset it did not choose. `String::replace_range` **panics** on an
-/// offset inside a codepoint, so "cut on a character boundary" is not a
-/// tidiness rule — it is what stops a large build log from taking the MCP
-/// server down.
+/// Splits a truncated log at its marker. The marker's own text carries
+/// numbers that depend on the input, so tests match its fixed delimiters and
+/// then read the numbers back out of it rather than restating a whole line
+/// that would have to be recomputed per fixture.
+fn split_at_marker(out: &str) -> (&str, &str, &str) {
+    let (head, rest) = out.split_once("\n...[").unwrap_or_else(|| {
+        // Char-wise, not a byte slice: a multibyte fixture would panic here
+        // instead of reporting the failure it was written to report.
+        let start: String = out.chars().take(40).collect();
+        panic!("truncation marker missing; log starts {start:?}")
+    });
+    let (marker, tail) = rest
+        .split_once("]...\n")
+        .expect("truncation marker was never closed");
+    (head, marker, tail)
+}
+
+/// The one invariant every over-cap case must satisfy, asserted from the
+/// output alone: the retained halves fit the cap (the split does **not**
+/// double it), and the marker's arithmetic is true rather than decorative.
+fn assert_within_cap_and_marker_is_honest(out: &str, original_len: usize) {
+    let (head, marker, tail) = split_at_marker(out);
+    assert!(
+        head.len() + tail.len() <= OUTPUT_CAP_BYTES,
+        "kept {} + {} bytes, over the {OUTPUT_CAP_BYTES}-byte cap",
+        head.len(),
+        tail.len()
+    );
+    let dropped: usize = marker
+        .split_whitespace()
+        .next()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("marker does not start with a byte count: {marker:?}"));
+    assert_eq!(
+        head.len() + dropped + tail.len(),
+        original_len,
+        "the marker's counts do not add back up to the original log"
+    );
+    assert!(
+        marker.contains(&format!("first {}", head.len()))
+            && marker.contains(&format!("last {}", tail.len())),
+        "the marker does not say what was actually kept: {marker:?}"
+    );
+}
+
+/// `truncate_log` cuts at two offsets it did not choose. Slicing a `str` at
+/// an offset inside a codepoint **panics**, so "cut on a character boundary"
+/// is not a tidiness rule — it is what stops a large build log from taking
+/// the MCP server down.
 ///
-/// The fixture is chosen so the naive offset is genuinely mid-codepoint.
-/// `OUTPUT_CAP_BYTES` is 65536 and 65536 ≡ 1 (mod 3), so in a run of 3-byte
-/// characters the offset `len - 65536` can never land on a boundary — which
-/// makes `"€"` the character that exposes a missing guard, and makes a run of
-/// 4-byte emoji (65536 ≡ 0 mod 4) useless for it. Removing the
-/// `is_char_boundary` search from `build.rs` turns this test into a panic.
+/// The fixture puts **both** naive offsets mid-`€`, which takes some care
+/// because the two constants are congruent differently. In a run of 3-byte
+/// characters starting at offset 0: the head offset is `OUTPUT_HEAD_BYTES` =
+/// 16384 ≡ 1 (mod 3), so it is always mid-character — good. The tail offset
+/// is `len - 49152` and 49152 ≡ 0 (mod 3), so against a pure `'€'` run it
+/// would always land *on* a boundary and prove nothing. The trailing ASCII
+/// `'X'` is what shifts it: `len` becomes 120001, the naive tail offset 70849
+/// ≡ 1 (mod 3), and the guard has to advance to 70851. Removing either
+/// `is_char_boundary` walk from `build.rs` turns this test into a panic.
 #[test]
-fn truncation_cuts_on_a_character_boundary_not_mid_codepoint() {
-    // 40000 × 3 bytes = 120000. 120000 − 65536 = 54464, and 54464 ≡ 2 (mod 3):
-    // inside a '€'. The guard advances to 54465, keeping 65535 bytes.
-    let truncated = truncate_tail("€".repeat(40_000));
+fn truncation_cuts_on_a_character_boundary_at_both_ends() {
+    let original = format!("{}X", "€".repeat(40_000));
+    let original_len = original.len();
+    assert_eq!(original_len, 120_001);
 
-    let marker = format!("...[truncated to last {OUTPUT_CAP_BYTES} bytes]...\n");
-    let tail = truncated
-        .strip_prefix(&marker)
-        .unwrap_or_else(|| panic!("truncation marker missing; got {:?}", &truncated[..80]));
+    let out = truncate_log(original);
+    let (head, _, tail) = split_at_marker(&out);
 
+    // Head: rounded down from 16384 to 16383, three whole '€' short of the
+    // budget by one byte.
+    assert_eq!(head.len(), 16_383, "the head cut moved to the wrong boundary");
+    assert!(
+        head.chars().all(|c| c == '€'),
+        "the retained head is not a clean run of whole characters"
+    );
+
+    // Tail: rounded up from 70849 to 70851, so it starts on a whole '€' and
+    // still reaches the real end of the log.
     assert_eq!(
         tail.len(),
-        OUTPUT_CAP_BYTES - 1,
-        "the cut moved to the wrong boundary"
+        original_len - 70_851,
+        "the tail cut moved to the wrong boundary"
     );
-    assert!(
-        tail.chars().all(|c| c == '€'),
-        "the retained tail is not a clean run of whole characters"
-    );
+    assert!(tail.starts_with('€'), "the tail begins mid-character");
+    assert!(tail.ends_with('X'), "the end of the log was lost");
+
+    assert_within_cap_and_marker_is_honest(&out, original_len);
 }
 
-/// The same, with a mixed-width string, so the pin does not depend on the
-/// whole buffer being one character wide.
+/// The point of the split, stated as a test: a build that fails immediately
+/// and then emits megabytes of cascade still hands back its **first** error.
+/// A tail-only cap fails this outright, which is what makes it the pin for
+/// decision 18 rather than for the boundary arithmetic.
 #[test]
-fn truncation_cuts_on_a_character_boundary_in_mixed_width_text() {
-    // 4 bytes of emoji, then 120000 bytes of '€': len 120004, naive offset
-    // 54468, which is 54464 bytes into the '€' run — again ≡ 2 (mod 3).
-    let truncated = truncate_tail(format!("🛰{}", "€".repeat(40_000)));
-
-    let marker = format!("...[truncated to last {OUTPUT_CAP_BYTES} bytes]...\n");
-    let tail = truncated
-        .strip_prefix(&marker)
-        .expect("truncation marker missing");
+fn the_first_error_survives_a_log_that_is_mostly_cascade() {
+    let first_error = "app/src/main.c:12:5: error: 'sensor_channel' undeclared\n";
+    let out = truncate_log(format!("{first_error}{}", "cascade noise\n".repeat(30_000)));
 
     assert!(
-        tail.chars().all(|c| c == '€'),
-        "the retained tail is not a clean run of whole characters"
+        out.starts_with(first_error),
+        "the first error was scrolled off the top; log starts {:?}",
+        &out[..80]
     );
 }
 
-/// Where the offset already is a boundary, nothing moves: exactly the cap is
-/// kept. Without this the test above could be satisfied by a version that
-/// over-trimmed on every input.
+/// Where both offsets already are boundaries, neither moves: exactly the cap
+/// is kept, split 16 KB / 48 KB. Without this the tests above could be
+/// satisfied by a version that over-trimmed on every input.
 #[test]
 fn an_ascii_log_keeps_exactly_the_cap() {
-    let truncated = truncate_tail("a".repeat(100_000));
-    let marker = format!("...[truncated to last {OUTPUT_CAP_BYTES} bytes]...\n");
-    let tail = truncated
-        .strip_prefix(&marker)
-        .expect("truncation marker missing");
-    assert_eq!(tail.len(), OUTPUT_CAP_BYTES);
+    let out = truncate_log("a".repeat(100_000));
+    let (head, _, tail) = split_at_marker(&out);
+    assert_eq!(head.len(), OUTPUT_HEAD_BYTES);
+    assert_eq!(tail.len(), OUTPUT_CAP_BYTES - OUTPUT_HEAD_BYTES);
+    assert_eq!(head.len() + tail.len(), OUTPUT_CAP_BYTES);
+    assert_within_cap_and_marker_is_honest(&out, 100_000);
+}
+
+/// One byte over the cap is still a cut, and still an honest one — the kept
+/// halves must not overlap and re-report a byte twice. This is the edge where
+/// a head budget and a tail budget summing to the cap could collide.
+#[test]
+fn a_log_one_byte_over_the_cap_drops_exactly_one_byte() {
+    let original_len = OUTPUT_CAP_BYTES + 1;
+    let out = truncate_log("a".repeat(original_len));
+    let (head, _, tail) = split_at_marker(&out);
+    assert_eq!(head.len() + tail.len(), OUTPUT_CAP_BYTES);
+    assert_within_cap_and_marker_is_honest(&out, original_len);
 }
 
 /// Under the cap, the text is returned untouched and unmarked.
 #[test]
 fn a_short_log_is_not_touched() {
     let short = "west build: ok\n".to_string();
-    assert_eq!(truncate_tail(short.clone()), short);
+    assert_eq!(truncate_log(short.clone()), short);
+}
+
+/// Exactly at the cap is still untouched — the boundary of "not touched" is
+/// `<=`, and an off-by-one here would mark a log that lost nothing.
+#[test]
+fn a_log_exactly_at_the_cap_is_not_touched() {
+    let exact = "a".repeat(OUTPUT_CAP_BYTES);
+    assert_eq!(truncate_log(exact.clone()), exact);
 }
 
 // ---------------------------------------------------------------------------
@@ -251,17 +324,19 @@ async fn a_child_that_floods_one_pipe_and_trickles_the_other_does_not_hang() {
 }
 
 /// Criterion 5, wired in: a build whose log is multibyte and over the cap
-/// comes back truncated and intact rather than panicking the task that
-/// captured it.
+/// comes back cut at both ends and intact rather than panicking the task
+/// that captured it — and the head the split exists to keep is really there
+/// after a real child process, not only in the direct test.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_multibyte_build_log_survives_the_cap_end_to_end() {
     let dir = TempDir::new("multibyte");
     let big = dir.path().join("big.txt");
     // A trailing newline matters: `drain_stream` re-adds one per line, and
-    // the byte arithmetic that puts the naive cut inside a '€' depends on
-    // the total length. 120000 bytes of '€' + "\n" + "end" + "\n" = 120005,
-    // and 120005 − 65536 = 54469 ≡ 1 (mod 3).
+    // the byte arithmetic that puts both naive cuts inside a '€' depends on
+    // the total length. 120000 bytes of '€' + "\n" + "end" + "\n" = 120005.
+    // Head: 16384 ≡ 1 (mod 3), rounded down to 16383. Tail: 120005 − 49152 =
+    // 70853 ≡ 2 (mod 3), rounded up to 70854. Neither guard is a no-op here.
     std::fs::write(&big, format!("{}\n", "€".repeat(40_000))).expect("could not write fixture");
 
     let plan = shell_plan(
@@ -278,16 +353,18 @@ async fn a_multibyte_build_log_survives_the_cap_end_to_end() {
     .expect("run_build never returned")
     .expect("run_build failed");
 
-    let marker = format!("...[truncated to last {OUTPUT_CAP_BYTES} bytes]...\n");
-    let tail = outcome
-        .stdout
-        .strip_prefix(&marker)
-        .expect("a 120 KB log came back untruncated");
+    let (head, _, tail) = split_at_marker(&outcome.stdout);
+    assert_eq!(head.len(), 16_383, "the head cut moved to the wrong boundary");
+    assert!(
+        head.starts_with('€') && head.chars().all(|c| c == '€'),
+        "the retained head is not a clean run of whole characters"
+    );
     assert!(
         tail.starts_with('€'),
         "the retained tail does not begin on a whole character"
     );
     assert!(tail.ends_with("end\n"), "the end of the log was lost");
+    assert_within_cap_and_marker_is_honest(&outcome.stdout, 120_005);
 }
 
 /// Criterion 6, wired in. The build succeeds, exits 0, and leaves the

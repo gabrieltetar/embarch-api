@@ -11,9 +11,23 @@ use tokio::sync::Mutex as AsyncMutex;
 /// Cap on captured stdout/stderr text handed back through MCP, so a runaway
 /// build log doesn't blow up the tool response.
 ///
+/// This bounds the **retained log bytes**: head plus tail together never
+/// exceed it. The one marker line describing the cut sits on top of it, as
+/// it always has — the cap is not doubled by the split.
+///
 /// `pub` so `tests/build_capture.rs` can size its fixtures against the real
 /// cap instead of restating 65536 and drifting from it.
 pub const OUTPUT_CAP_BYTES: usize = 64 * 1024;
+
+/// The share of [`OUTPUT_CAP_BYTES`] spent on the *head* of an over-cap log;
+/// the rest goes to the tail.
+///
+/// A Zephyr build's first error is usually the actionable one and everything
+/// after it is cascade, so the head has to survive — but the tail carries the
+/// failing recipe and the final summary, which is where a reader looks first.
+/// 16 KB is far more than one compiler diagnostic plus the `cmake`/Kconfig
+/// preamble it follows, and cheap against the 48 KB left for the tail.
+pub const OUTPUT_HEAD_BYTES: usize = 16 * 1024;
 
 /// Everything a build actually needs to run, independent of whether it came
 /// from a `discovery = "static"` project (today's fully-static schema) or a
@@ -92,25 +106,60 @@ impl BuildLocks {
     }
 }
 
-/// Keeps the last [`OUTPUT_CAP_BYTES`] of a captured stream, cutting on a
-/// UTF-8 character boundary.
+/// Keeps the first [`OUTPUT_HEAD_BYTES`] and the last
+/// `OUTPUT_CAP_BYTES - OUTPUT_HEAD_BYTES` of a captured stream, dropping the
+/// middle behind a marker that says how much went and what was kept. Under
+/// the cap the text is returned untouched and unmarked.
 ///
-/// The boundary search is the whole point: `String::replace_range` **panics**
-/// on an index inside a codepoint, so a build whose log happens to cross the
-/// cap mid-`é` would take the MCP server down rather than return a truncated
-/// log. `pub` so `tests/build_capture.rs` can hold that boundary directly
-/// as well as through a real child process.
-pub fn truncate_tail(mut s: String) -> String {
+/// **Both cuts land on a UTF-8 character boundary, and that is the whole
+/// point**: slicing a `str` at an index inside a codepoint **panics**, so a
+/// build whose log happens to cross either offset mid-`é` would take the MCP
+/// server down rather than return a truncated log. The head cut rounds
+/// *down* to a boundary and the tail cut rounds *up*, so an adjustment can
+/// only ever drop bytes — head plus tail stays within the cap by
+/// construction.
+///
+/// `pub` so `tests/build_capture.rs` can hold both boundaries directly as
+/// well as through a real child process.
+pub fn truncate_log(s: String) -> String {
     if s.len() <= OUTPUT_CAP_BYTES {
         return s;
     }
-    let start = s.len() - OUTPUT_CAP_BYTES;
-    // Avoid splitting in the middle of a UTF-8 codepoint.
-    let start = (start..s.len())
-        .find(|&i| s.is_char_boundary(i))
-        .unwrap_or(s.len());
-    s.replace_range(0..start, "");
-    format!("...[truncated to last {OUTPUT_CAP_BYTES} bytes]...\n{s}")
+    let original_len = s.len();
+    let head_end = floor_char_boundary(&s, OUTPUT_HEAD_BYTES);
+    let tail_start = ceil_char_boundary(&s, original_len - (OUTPUT_CAP_BYTES - OUTPUT_HEAD_BYTES));
+    // `tail_start` starts strictly above `OUTPUT_HEAD_BYTES` whenever the log
+    // is over the cap, and rounding only moves the two further apart, so the
+    // kept halves never overlap and something is always dropped.
+    let dropped = tail_start - head_end;
+    let head_len = head_end;
+    let tail_len = original_len - tail_start;
+    format!(
+        "{head}\n...[{dropped} bytes dropped from the middle of a {original_len}-byte log; \
+         kept the first {head_len} and last {tail_len}, cap {OUTPUT_CAP_BYTES}]...\n{tail}",
+        head = &s[..head_end],
+        tail = &s[tail_start..],
+    )
+}
+
+/// The largest character boundary at or below `i`. `str::floor_char_boundary`
+/// is still unstable, and a UTF-8 codepoint is at most 4 bytes, so this walks
+/// at most 3 steps.
+fn floor_char_boundary(s: &str, i: usize) -> usize {
+    if i >= s.len() {
+        return s.len();
+    }
+    (0..=i)
+        .rev()
+        .find(|&j| s.is_char_boundary(j))
+        .expect("index 0 is always a character boundary")
+}
+
+/// The smallest character boundary at or above `i`.
+fn ceil_char_boundary(s: &str, i: usize) -> usize {
+    (i..=s.len())
+        .find(|&j| s.is_char_boundary(j))
+        .unwrap_or(s.len())
 }
 
 async fn drain_stream<R: tokio::io::AsyncRead + Unpin>(reader: R) -> String {
@@ -176,8 +225,8 @@ async fn run_build_locked(plan: &BuildPlan) -> Result<BuildOutcome> {
         Ok(Err(_)) | Err(_) => None,
     };
 
-    let stdout_text = truncate_tail(stdout_task.await.unwrap_or_default());
-    let stderr_text = truncate_tail(stderr_task.await.unwrap_or_default());
+    let stdout_text = truncate_log(stdout_task.await.unwrap_or_default());
+    let stderr_text = truncate_log(stderr_task.await.unwrap_or_default());
 
     let artifact_fresh = !timed_out
         && exit_code == Some(0)
