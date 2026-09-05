@@ -398,16 +398,39 @@ impl Config {
             // Decision 53: `[[projects.targets]]` is retired, and a config
             // that still carries rows fails here naming it rather than
             // loading into a field nothing reads. Checked for both
-            // discovery kinds — the menu was never honourable for either.
+            // discovery kinds — the menu was never honourable for either —
+            // and deliberately *above* the `match` below, so the one
+            // invariant lives in one place and a config carrying both rows
+            // and a per-kind field error hears about the retired menu
+            // first. Only the remediation branches, because the two kinds
+            // migrate off the menu in opposite directions: decision 12
+            // forbids a `zephyr-west` project the very fields a `static`
+            // project must move its rows into, so a shared tail is
+            // guaranteed to misadvise one of them (task `api/015`).
             if !project.retired_targets.is_empty() {
+                let advice = match project.discovery {
+                    Discovery::Static => {
+                        "A build runs the project's own build_command regardless, and a static \
+                         project refuses board/variant/revision/app/snippets/extra_args outright, \
+                         so the menu advertised a choice that did not exist. Declare one \
+                         [[projects]] entry per target instead, each with its own \
+                         name/build_command/chip/artifact_path; a Zephyr/west repo can set \
+                         discovery = \"zephyr-west\" and have its targets discovered live per call"
+                    }
+                    Discovery::ZephyrWest => {
+                        "This project already discovers its targets live from the repo on every \
+                         call, so the rows were a second, stale copy of what west reports. Delete \
+                         them: a caller picks a target with board/variant/revision/app on the call \
+                         itself, and [projects.default_target] sets the one used when a call names \
+                         none. Do not move them into build_command/chip/artifact_path — a \
+                         discovery = \"zephyr-west\" project is refused those three fields \
+                         outright, because caching them is the staleness this discovery kind \
+                         exists to eliminate"
+                    }
+                };
                 bail!(
                     "project '{}' declares [[projects.targets]], which is retired. Nothing ever \
-                     selected a row — a build runs the project's own build_command, and a static \
-                     project refuses board/variant/revision/app/snippets/extra_args outright — so \
-                     the menu advertised a choice that did not exist. Declare one [[projects]] \
-                     entry per target instead, each with its own name/build_command/chip/\
-                     artifact_path; a Zephyr/west repo can set discovery = \"zephyr-west\" and \
-                     have its targets discovered live per call",
+                     selected a row. {advice}",
                     project.name
                 );
             }
@@ -953,10 +976,30 @@ build_command = ["make", "TARGET=a"]
         assert!(message.contains("[[projects.targets]]"), "{message}");
         assert!(message.contains("retired"), "{message}");
         assert!(message.contains("project 'p'"), "{message}");
+        // Assert the *advice*, not only the refusal. A static project's
+        // remedy is one `[[projects]]` entry per target, and that remedy is
+        // exactly what a `zephyr-west` project must never be told (see
+        // `a_zephyr_west_project_is_refused_the_retired_menu_too`), so
+        // pinning it here is half of what keeps the two branches apart.
+        assert!(
+            message.contains("Declare one [[projects]] entry per target"),
+            "{message}"
+        );
+        assert!(
+            message.contains("name/build_command/chip/artifact_path"),
+            "{message}"
+        );
     }
 
     /// The refusal is not scoped to `static`: a `zephyr-west` project could
     /// always declare rows too, and they were every bit as unread there.
+    ///
+    /// **What it is advised to do matters as much as that it is refused**
+    /// (task `api/015`). Until then this test asserted only
+    /// `contains("retired")`, so it stayed green while the shared message
+    /// told a `zephyr-west` operator to store the three fields decision 12
+    /// removed — advice the very next branch of this same `validate()`
+    /// refuses. The assertions below are deliberately about the remedy.
     #[test]
     fn a_zephyr_west_project_is_refused_the_retired_menu_too() {
         let dir = tempdir();
@@ -985,7 +1028,37 @@ name = "target-a"
         )
         .unwrap();
         let err = Config::load_from_path(&path).unwrap_err();
-        assert!(format!("{err:#}").contains("retired"), "{err:#}");
+        let message = format!("{err:#}");
+        assert!(message.contains("[[projects.targets]]"), "{message}");
+        assert!(message.contains("retired"), "{message}");
+        assert!(message.contains("project 'z'"), "{message}");
+        // The remedy it is given is one it can actually carry out: the rows
+        // go away, and a target is named per call or defaulted in config.
+        assert!(message.contains("discovers its targets live"), "{message}");
+        assert!(
+            message.contains("board/variant/revision/app on the call itself"),
+            "{message}"
+        );
+        assert!(message.contains("[projects.default_target]"), "{message}");
+        // And it is *not* given the static project's remedy, which is the
+        // defect this test exists to hold shut. Asserted as the absence of
+        // the static branch's own pinned phrase, so the two cannot converge
+        // back onto one shared tail without one of the two tests failing.
+        assert!(
+            !message.contains("Declare one [[projects]] entry per target"),
+            "zephyr-west was handed the static project's remedy: {message}"
+        );
+        // Stronger than a phrase check: whatever this message says, the
+        // fields it names must be ones a `zephyr-west` project may set.
+        // `build_command`/`chip`/`artifact_path` may appear only under an
+        // explicit prohibition, never as an instruction.
+        if message.contains("build_command") {
+            assert!(
+                message.contains("Do not move them into build_command/chip/artifact_path"),
+                "build_command is named to a zephyr-west caller as something other than a \
+                 prohibition; the next branch of validate() refuses it: {message}"
+            );
+        }
     }
 
     /// A raw `bin` has no load address in it, so an absent offset is not
