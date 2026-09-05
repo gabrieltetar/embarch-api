@@ -46,6 +46,42 @@ pub struct StaticTarget {
     pub artifact_path: Option<PathBuf>,
 }
 
+/// A per-project **base** target selection for a `discovery =
+/// "zephyr-west"` project (`design.md` §3 decision 20). Every field is
+/// optional: what is set here fills in the corresponding call-time param
+/// when the call omits it, and a call that names a field wins over this one
+/// for that field alone.
+///
+/// **Why it exists**, stated rather than left implicit: decision 12's
+/// narrowing resolves a selection against a *live* scan, so a repo with
+/// exactly one board resolves a bare `build` today and starts erroring
+/// `Ambiguous` the moment a second board lands — the behaviour of an
+/// unchanged call changing because somebody else's commit grew the repo.
+/// Pinning the common case here makes that growth a non-event.
+#[derive(Debug, Default, Deserialize)]
+pub struct DefaultTarget {
+    #[serde(default)]
+    pub board: Option<String>,
+    #[serde(default)]
+    pub variant: Option<String>,
+    #[serde(default)]
+    pub revision: Option<String>,
+    #[serde(default)]
+    pub app: Option<String>,
+}
+
+impl DefaultTarget {
+    /// True when the table was written but says nothing — `validate()`
+    /// refuses that rather than accepting a no-op an operator plainly meant
+    /// to fill in.
+    fn is_empty(&self) -> bool {
+        self.board.is_none()
+            && self.variant.is_none()
+            && self.revision.is_none()
+            && self.app.is_none()
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ProjectConfig {
     pub name: String,
@@ -127,6 +163,13 @@ pub struct ProjectConfig {
     /// remembered to pass `snippets` by hand every time.
     #[serde(default)]
     pub default_snippets: Vec<String>,
+    /// Only meaningful for `discovery = "zephyr-west"`: the base
+    /// (board, variant, revision, app) selection a call narrows from
+    /// (`design.md` §3 decision 20). See `DefaultTarget`; refused outright
+    /// for a `static` project, which honours no selection at all
+    /// (decision 51).
+    #[serde(default)]
+    pub default_target: Option<DefaultTarget>,
     /// Only meaningful for `discovery = "zephyr-west"`: extra `west build`
     /// flags (e.g. `-p always` for a pristine rebuild) applied when a call
     /// omits `extra_args` entirely (`resolve::Selection`). Opaque, unlike
@@ -379,6 +422,21 @@ impl Config {
                             project.name
                         );
                     }
+                    // Decision 51: a static project refuses every selection
+                    // field on a *call*, so a default one is refused here
+                    // rather than accepted and then rejected at every use —
+                    // a config that cannot ever be honoured fails at load,
+                    // which is the cheapest place to learn it.
+                    if project.default_target.is_some() {
+                        bail!(
+                            "project '{}' (discovery = \"static\") sets default_target, which only \
+                             a discovery = \"zephyr-west\" project can honour — a static project \
+                             builds its configured build_command verbatim and refuses \
+                             board/variant/revision/app outright. Remove it, or set discovery = \
+                             \"zephyr-west\"",
+                            project.name
+                        );
+                    }
                 }
                 Discovery::ZephyrWest => {
                     if project.west_binary.is_none() {
@@ -400,6 +458,33 @@ impl Config {
                         bail!(
                             "project '{}' (discovery = \"zephyr-west\") must not set build_command/chip/artifact_path — these are resolved per call instead",
                             project.name
+                        );
+                    }
+                    if project.default_target.as_ref().is_some_and(|d| d.is_empty()) {
+                        bail!(
+                            "project '{}' has an empty [projects.default_target] — it sets none of \
+                             board/variant/revision/app, so it changes nothing. Fill in the \
+                             field(s) that pin this repo's common target, or remove the table",
+                            project.name
+                        );
+                    }
+                    // Decision 21's sentinel is a *call-time* override of
+                    // this list; as the list itself it would mean "default
+                    // to no snippets", which is what omitting the field
+                    // already means. Refuse rather than leave a config that
+                    // reads as meaningful and is not.
+                    if project
+                        .default_snippets
+                        .iter()
+                        .any(|s| s == crate::resolve::NO_SNIPPETS)
+                    {
+                        bail!(
+                            "project '{}' has default_snippets containing the reserved literal \
+                             \"{}\" — that literal is a call-time override meaning \"build with no \
+                             snippets despite the configured default\", so it says nothing as a \
+                             default. Omit default_snippets entirely for that",
+                            project.name,
+                            crate::resolve::NO_SNIPPETS,
                         );
                     }
                 }
@@ -571,6 +656,155 @@ flash_format = "hex"
         .unwrap();
         let err = Config::load_from_path(&path).unwrap_err();
         assert!(err.to_string().contains("must not set"), "{err}");
+    }
+
+    /// Decision 20. Per-field, and a `zephyr-west` project without the table
+    /// keeps loading exactly as before it existed.
+    #[test]
+    fn zephyr_west_project_reads_a_default_target_and_defaults_it_absent() {
+        let dir = tempdir();
+        let config = write_config(
+            dir.path(),
+            &format!(
+                r#"
+[core]
+base_url = "auto"
+token_env = "EMBARCH_TOKEN"
+
+[[projects]]
+name = "unpinned"
+source_path = "{dir}"
+discovery = "zephyr-west"
+west_binary = "west"
+build_dir_root = "{dir}"
+flash_format = "hex"
+
+[[projects]]
+name = "pinned"
+source_path = "{dir}"
+discovery = "zephyr-west"
+west_binary = "west"
+build_dir_root = "{dir}"
+flash_format = "hex"
+
+[projects.default_target]
+board = "my_board"
+app = "my-app"
+"#,
+                dir = dir.path().display()
+            ),
+        );
+        assert!(config.project("unpinned").unwrap().default_target.is_none());
+        let pinned = config.project("pinned").unwrap();
+        let default_target = pinned
+            .default_target
+            .as_ref()
+            .expect("the configured table should have been read");
+        assert_eq!(default_target.board.as_deref(), Some("my_board"));
+        assert_eq!(default_target.app.as_deref(), Some("my-app"));
+        // Every axis is independently optional — a repo pinning board+app
+        // while leaving revision free is the case decision 20 is for.
+        assert_eq!(default_target.variant, None);
+        assert_eq!(default_target.revision, None);
+    }
+
+    /// Decision 51 refuses every selection field on a *call* to a static
+    /// project, so a configured default one can never be honoured — refused
+    /// at load rather than at every use.
+    #[test]
+    fn static_project_setting_default_target_fails_validation() {
+        let dir = tempdir();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            format!(
+                r#"
+[core]
+base_url = "auto"
+token_env = "EMBARCH_TOKEN"
+
+[[projects]]
+name = "p"
+source_path = "{dir}"
+build_command = ["true"]
+chip = "nRF54L15"
+artifact_path = "out.hex"
+flash_format = "hex"
+
+[projects.default_target]
+board = "my_board"
+"#,
+                dir = dir.path().display()
+            ),
+        )
+        .unwrap();
+        let err = Config::load_from_path(&path).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("default_target"), "{message}");
+        assert!(message.contains("static"), "{message}");
+    }
+
+    #[test]
+    fn an_empty_default_target_table_fails_validation_rather_than_doing_nothing() {
+        let dir = tempdir();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            format!(
+                r#"
+[core]
+base_url = "auto"
+token_env = "EMBARCH_TOKEN"
+
+[[projects]]
+name = "p"
+source_path = "{dir}"
+discovery = "zephyr-west"
+west_binary = "west"
+build_dir_root = "{dir}"
+flash_format = "hex"
+
+[projects.default_target]
+"#,
+                dir = dir.path().display()
+            ),
+        )
+        .unwrap();
+        let err = Config::load_from_path(&path).unwrap_err();
+        assert!(err.to_string().contains("empty"), "{err}");
+    }
+
+    /// Decision 21's literal is a call-time override; as a configured
+    /// default it would mean what omitting the field already means.
+    #[test]
+    fn default_snippets_containing_the_reserved_literal_fails_validation() {
+        let dir = tempdir();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            format!(
+                r#"
+[core]
+base_url = "auto"
+token_env = "EMBARCH_TOKEN"
+
+[[projects]]
+name = "p"
+source_path = "{dir}"
+discovery = "zephyr-west"
+west_binary = "west"
+build_dir_root = "{dir}"
+flash_format = "hex"
+default_snippets = ["none"]
+"#,
+                dir = dir.path().display()
+            ),
+        )
+        .unwrap();
+        let err = Config::load_from_path(&path).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("default_snippets"), "{message}");
+        assert!(message.contains("none"), "{message}");
     }
 
     #[test]

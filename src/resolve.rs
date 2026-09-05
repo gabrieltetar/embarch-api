@@ -9,9 +9,24 @@
 use anyhow::{Context, Result};
 
 use crate::build::BuildPlan;
-use crate::config::{Discovery, ProjectConfig};
+use crate::config::{DefaultTarget, Discovery, ProjectConfig};
 use embarch_core_client::CoreClient;
 use crate::zephyr;
+
+/// The reserved snippet literal that forces a build with **no** snippets
+/// over a project's configured `default_snippets` (`design.md` §3
+/// decision 21). Reserved rather than escaped because there was no third
+/// state between "omit `snippets` and take the default" and "pass an
+/// explicit list": an empty list is indistinguishable from an omitted one
+/// through the plain slice `Selection` carries, and decision 51 depends on
+/// that staying true.
+///
+/// **It shadows a real snippet of the same name**, and that is checked
+/// rather than assumed: `resolve_zephyr` refuses `["none"]` outright for an
+/// app that really declares a `none` snippet, naming the collision, instead
+/// of silently building the wrong one of the two things the caller could
+/// have meant.
+pub const NO_SNIPPETS: &str = "none";
 
 /// The four optional call-time params `design.md` §3 decision 12 adds to
 /// `build`/`flash`/`build_and_flash` (and, as an extension beyond the
@@ -36,8 +51,9 @@ pub struct Selection<'a> {
     pub app: Option<&'a str>,
     /// Empty means "use the project's configured `default_snippets`", not
     /// "build with no snippets" — see `resolve_zephyr`. To force a build
-    /// with genuinely no snippets despite a configured default, there is
-    /// currently no override; add one if that need actually arises.
+    /// with genuinely no snippets despite a configured default, pass the
+    /// reserved literal `["none"]` (`NO_SNIPPETS`, decision 21); a list
+    /// mixing it with real names is refused rather than guessed at.
     pub snippets: &'a [String],
     /// Extra `west build` flags (e.g. `-p always`), opaque passthrough — see
     /// `zephyr::build_command`. Same "empty means use the configured
@@ -156,25 +172,191 @@ fn resolve_static(project: &ProjectConfig, selection: Selection<'_>) -> Result<R
     })
 }
 
+/// The (board, variant, revision, app) `zephyr::select` actually narrows
+/// with, once the project's configured `default_target` has filled in
+/// whatever the call left out (`design.md` §3 decision 20).
+///
+/// **Per field, not all-or-nothing.** A call naming `board` overrides the
+/// default's `board` and nothing else, which is what "a base selection a
+/// call narrows further" means — and which is also why the error path below
+/// has to say a default contributed: a caller who passed one field can
+/// otherwise read "no target matches the given board/variant/revision/app"
+/// about three values it never supplied.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct EffectiveSelection<'a> {
+    board: Option<&'a str>,
+    variant: Option<&'a str>,
+    revision: Option<&'a str>,
+    app: Option<&'a str>,
+    /// Which axes came from `default_target` rather than from the call, in
+    /// the order a caller reads them. Empty when the project configures no
+    /// default, or when the call named every axis the default did.
+    from_default: Vec<&'static str>,
+}
+
+fn effective_selection<'a>(
+    default_target: Option<&'a DefaultTarget>,
+    selection: &Selection<'a>,
+) -> EffectiveSelection<'a> {
+    fn axis<'a>(
+        call: Option<&'a str>,
+        configured: Option<&'a String>,
+        name: &'static str,
+        from_default: &mut Vec<&'static str>,
+    ) -> Option<&'a str> {
+        match (call, configured) {
+            (Some(given), _) => Some(given),
+            (None, Some(base)) => {
+                from_default.push(name);
+                Some(base.as_str())
+            }
+            (None, None) => None,
+        }
+    }
+
+    let mut from_default = Vec::new();
+    EffectiveSelection {
+        board: axis(
+            selection.board,
+            default_target.and_then(|d| d.board.as_ref()),
+            "board",
+            &mut from_default,
+        ),
+        variant: axis(
+            selection.variant,
+            default_target.and_then(|d| d.variant.as_ref()),
+            "variant",
+            &mut from_default,
+        ),
+        revision: axis(
+            selection.revision,
+            default_target.and_then(|d| d.revision.as_ref()),
+            "revision",
+            &mut from_default,
+        ),
+        app: axis(
+            selection.app,
+            default_target.and_then(|d| d.app.as_ref()),
+            "app",
+            &mut from_default,
+        ),
+        from_default,
+    }
+}
+
+/// A sentence naming what `default_target` contributed, appended to a
+/// selection error so the values in it are attributable. Empty when it
+/// contributed nothing.
+fn default_target_note(effective: &EffectiveSelection<'_>) -> String {
+    if effective.from_default.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n(the project's configured default_target supplied {}; a call-time param overrides it \
+         per field)",
+        effective.from_default.join(", ")
+    )
+}
+
+/// Which snippets a build actually gets, given what the call passed and what
+/// the project configures (`design.md` §3 decision 21).
+///
+/// Three states, which is the whole point: an omitted list takes
+/// `default_snippets`, an explicit list replaces it, and the reserved
+/// literal `["none"]` forces zero snippets over a configured default. A list
+/// mixing the literal with real names is **refused naming the ambiguity**
+/// rather than resolved one way — both readings ("no snippets" and "these
+/// snippets plus one called none") are things a caller could plausibly have
+/// meant, and picking silently is how decision 44c's build reported success
+/// having produced the wrong image.
+///
+/// `available` is the app's real snippet list, consulted only to catch the
+/// one case the literal cannot cover: a repo that really does declare a
+/// snippet named `none`.
+fn resolve_snippets(
+    project_name: &str,
+    app: &str,
+    call: &[String],
+    default_snippets: &[String],
+    available: &[String],
+) -> Result<Vec<String>> {
+    let mut snippets: Vec<String> = if call.iter().any(|s| s == NO_SNIPPETS) {
+        let real: Vec<&str> = call
+            .iter()
+            .filter(|s| *s != NO_SNIPPETS)
+            .map(String::as_str)
+            .collect();
+        if !real.is_empty() {
+            anyhow::bail!(
+                "snippets for project '{project_name}' mixes the reserved literal \"{NO_SNIPPETS}\" \
+                 with real snippet name(s) {real:?}, which could mean either \"build with no \
+                 snippets\" or \"build with those\" — refused rather than guessed at. Pass \
+                 [\"{NO_SNIPPETS}\"] alone to force no snippets over the project's configured \
+                 default_snippets, or pass just the names you want."
+            );
+        }
+        if available.iter().any(|s| s == NO_SNIPPETS) {
+            anyhow::bail!(
+                "project '{project_name}' app '{app}' declares a real snippet named \
+                 \"{NO_SNIPPETS}\", which collides with the reserved literal meaning \"build with \
+                 no snippets\" — refused rather than guessed at. Rename that snippet, or omit \
+                 `snippets` to take the project's configured default_snippets."
+            );
+        }
+        Vec::new()
+    } else if call.is_empty() {
+        // An explicit, even if empty in effect, call-time selection isn't
+        // distinguishable from "nothing was passed" through a plain slice
+        // (decision 51 depends on that), so the fallback always applies when
+        // the caller passes none — and the literal above is what gives a
+        // caller the third state that costs.
+        default_snippets.to_vec()
+    } else {
+        call.to_vec()
+    };
+    // Sorted + deduped so the build dir name and assembled `-S` order are
+    // stable regardless of caller-supplied order.
+    snippets.sort();
+    snippets.dedup();
+
+    let unknown: Vec<&String> = snippets.iter().filter(|s| !available.contains(s)).collect();
+    if !unknown.is_empty() {
+        anyhow::bail!(
+            "unknown snippet(s) {unknown:?} for project '{project_name}' app '{app}'. Available snippets: {}",
+            if available.is_empty() {
+                "(none)".to_string()
+            } else {
+                available.join(", ")
+            }
+        );
+    }
+
+    Ok(snippets)
+}
+
 async fn resolve_zephyr(project: &ProjectConfig, selection: Selection<'_>, core: &CoreClient) -> Result<Resolved> {
     let targets = zephyr::scan_or_err(&project.source_path)?;
 
+    let effective = effective_selection(project.default_target.as_ref(), &selection);
+
     let target = zephyr::select(
         &targets,
-        selection.board,
-        selection.variant,
-        selection.revision,
-        selection.app,
+        effective.board,
+        effective.variant,
+        effective.revision,
+        effective.app,
     )
     .map_err(|e| match e {
         zephyr::Selection::NoMatch => anyhow::anyhow!(
-            "no target matches the given board/variant/revision/app for project '{}'. Available targets:\n{}",
+            "no target matches the given board/variant/revision/app for project '{}'.{} Available targets:\n{}",
             project.name,
+            default_target_note(&effective),
             describe_targets(&targets)
         ),
         zephyr::Selection::Ambiguous(remaining) => anyhow::anyhow!(
-            "ambiguous target for project '{}' — narrow with board/variant/revision/app. Matching targets:\n{}",
+            "ambiguous target for project '{}' — narrow with board/variant/revision/app.{} Matching targets:\n{}",
             project.name,
+            default_target_note(&effective),
             describe_targets(&remaining)
         ),
     })?;
@@ -188,36 +370,18 @@ async fn resolve_zephyr(project: &ProjectConfig, selection: Selection<'_>, core:
         .clone()
         .expect("validate() enforces west_binary for a zephyr-west project");
 
-    // Empty selection.snippets means "use the project's configured
-    // default_snippets" (e.g. a repo that always wants `-S ble-shell` for a
-    // normal dev build), not "build with no snippets at all" — an explicit,
-    // even if empty in effect, call-time selection isn't distinguishable
-    // from "nothing was passed" through a plain slice, so the fallback
-    // always applies when the caller passes none. Sorted + deduped so the
-    // build dir name and assembled `-S` order are stable regardless of
-    // caller-supplied order.
-    let mut snippets: Vec<String> = if selection.snippets.is_empty() {
-        project.default_snippets.clone()
-    } else {
-        selection.snippets.to_vec()
-    };
-    snippets.sort();
-    snippets.dedup();
-
+    // Three states, not two: omitted takes `default_snippets`, an explicit
+    // list replaces it, and the reserved `["none"]` literal forces zero
+    // snippets over a configured default (decision 21). See
+    // `resolve_snippets`, which also validates against the app's real list.
     let available = zephyr::available_snippets(&project.source_path, &target.app);
-    let unknown: Vec<&String> = snippets.iter().filter(|s| !available.contains(s)).collect();
-    if !unknown.is_empty() {
-        anyhow::bail!(
-            "unknown snippet(s) {unknown:?} for project '{}' app '{}'. Available snippets: {}",
-            project.name,
-            target.app,
-            if available.is_empty() {
-                "(none)".to_string()
-            } else {
-                available.join(", ")
-            }
-        );
-    }
+    let snippets = resolve_snippets(
+        &project.name,
+        &target.app,
+        selection.snippets,
+        &project.default_snippets,
+        &available,
+    )?;
 
     // Same "empty means use the configured default" fallback as snippets,
     // but no validation — see `Selection::extra_args`. Caller-given order is
@@ -294,11 +458,26 @@ pub fn list_targets(project: &ProjectConfig) -> Result<serde_json::Value> {
                 })
                 .collect();
 
+            // `default_target` is reported alongside the menu for the same
+            // reason `default_snippets` is: a caller reading this list has
+            // to know which of these rows a bare call already resolves to,
+            // or the pinning decision 20 adds is invisible from the surface
+            // that exists to answer "what can I build?".
+            let default_target = project.default_target.as_ref().map(|d| {
+                serde_json::json!({
+                    "board": d.board,
+                    "variant": d.variant,
+                    "revision": d.revision,
+                    "app": d.app,
+                })
+            });
+
             Ok(serde_json::json!({
                 "targets": targets,
                 "snippets_by_app": snippets_by_app,
                 "default_snippets": project.default_snippets,
                 "default_extra_args": project.default_extra_args,
+                "default_target": default_target,
             }))
         }
         Discovery::Static => {
@@ -471,5 +650,179 @@ flash_format = "bin"
     #[test]
     fn fields_given_reports_nothing_for_an_empty_selection() {
         assert!(fields_given(&Selection::default()).is_empty());
+    }
+
+    // ---- decision 20: `default_target` as a base selection ----
+
+    fn default_target(board: Option<&str>, variant: Option<&str>, revision: Option<&str>, app: Option<&str>) -> DefaultTarget {
+        DefaultTarget {
+            board: board.map(str::to_string),
+            variant: variant.map(str::to_string),
+            revision: revision.map(str::to_string),
+            app: app.map(str::to_string),
+        }
+    }
+
+    /// The property that keeps every project predating decision 20 resolving
+    /// byte-for-byte as before: no configured default means the effective
+    /// selection *is* the call's.
+    #[test]
+    fn no_default_target_leaves_the_selection_exactly_as_the_caller_gave_it() {
+        let effective = effective_selection(
+            None,
+            &Selection {
+                board: Some("board_a"),
+                app: Some("widget"),
+                ..Selection::default()
+            },
+        );
+        assert_eq!(effective.board, Some("board_a"));
+        assert_eq!(effective.app, Some("widget"));
+        assert_eq!(effective.variant, None);
+        assert_eq!(effective.revision, None);
+        assert!(effective.from_default.is_empty());
+    }
+
+    #[test]
+    fn a_default_target_fills_in_only_the_axes_the_call_omitted() {
+        let configured = default_target(Some("board_a"), None, Some("evt1"), Some("widget"));
+        let effective = effective_selection(
+            Some(&configured),
+            &Selection {
+                app: Some("gadget"),
+                ..Selection::default()
+            },
+        );
+        // The call wins for `app`, and only for `app`.
+        assert_eq!(effective.app, Some("gadget"));
+        assert_eq!(effective.board, Some("board_a"));
+        assert_eq!(effective.revision, Some("evt1"));
+        assert_eq!(effective.variant, None);
+        assert_eq!(effective.from_default, vec!["board", "revision"]);
+    }
+
+    #[test]
+    fn a_call_naming_every_configured_axis_takes_nothing_from_the_default() {
+        let configured = default_target(Some("board_a"), None, None, Some("widget"));
+        let effective = effective_selection(
+            Some(&configured),
+            &Selection {
+                board: Some("board_b"),
+                app: Some("gadget"),
+                ..Selection::default()
+            },
+        );
+        assert_eq!(effective.board, Some("board_b"));
+        assert_eq!(effective.app, Some("gadget"));
+        assert!(effective.from_default.is_empty());
+    }
+
+    /// A selection error has to be attributable, or a caller who passed one
+    /// field reads a complaint about three values it never supplied — the
+    /// surprise decision 20 exists to remove, reintroduced in the error text.
+    #[test]
+    fn a_selection_error_names_what_the_default_target_contributed() {
+        let configured = default_target(Some("board_a"), None, None, Some("widget"));
+        let effective = effective_selection(Some(&configured), &Selection::default());
+        let note = default_target_note(&effective);
+        assert!(note.contains("default_target"), "{note}");
+        assert!(note.contains("board"), "{note}");
+        assert!(note.contains("app"), "{note}");
+        // And says nothing at all when it contributed nothing.
+        assert_eq!(
+            default_target_note(&effective_selection(None, &Selection::default())),
+            ""
+        );
+    }
+
+    // ---- decision 21: the `["none"]` snippet sentinel ----
+
+    fn available() -> Vec<String> {
+        vec!["ble-shell".to_string(), "wdt31".to_string()]
+    }
+
+    #[test]
+    fn omitted_snippets_still_take_the_configured_default() {
+        let configured = vec!["ble-shell".to_string()];
+        let resolved = resolve_snippets("p", "widget", &[], &configured, &available()).unwrap();
+        assert_eq!(resolved, vec!["ble-shell".to_string()]);
+    }
+
+    #[test]
+    fn the_reserved_literal_forces_no_snippets_over_a_configured_default() {
+        let configured = vec!["ble-shell".to_string()];
+        let resolved = resolve_snippets(
+            "p",
+            "widget",
+            &[NO_SNIPPETS.to_string()],
+            &configured,
+            &available(),
+        )
+        .unwrap();
+        assert!(
+            resolved.is_empty(),
+            "[\"none\"] must override the default, not be looked up as a snippet: {resolved:?}"
+        );
+    }
+
+    /// The literal is not itself a snippet name, so it must not be validated
+    /// against the app's real list — a repo with no snippets at all can still
+    /// use it, and does not get "unknown snippet(s)".
+    #[test]
+    fn the_reserved_literal_works_for_an_app_that_declares_no_snippets() {
+        let resolved =
+            resolve_snippets("p", "widget", &[NO_SNIPPETS.to_string()], &[], &[]).unwrap();
+        assert!(resolved.is_empty());
+    }
+
+    #[test]
+    fn mixing_the_reserved_literal_with_real_names_is_refused_naming_both_readings() {
+        let call = vec![NO_SNIPPETS.to_string(), "ble-shell".to_string()];
+        let err = resolve_snippets("p", "widget", &call, &[], &available())
+            .map(|_| ())
+            .expect_err("a mixed list is ambiguous and must not be resolved one way");
+        let message = format!("{err:#}");
+        assert!(message.contains("ble-shell"), "{message}");
+        assert!(message.contains("reserved"), "{message}");
+        // One `bail!`, so a caller's `{e:#}` render is the message itself.
+        assert_eq!(message, err.to_string());
+    }
+
+    /// The one case the reserved literal genuinely cannot cover, checked
+    /// rather than assumed away: a repo that really declares a `none`
+    /// snippet. Refused naming the collision instead of silently picking one
+    /// of the two things the caller could have meant.
+    #[test]
+    fn a_real_snippet_named_none_collides_with_the_literal_and_is_refused() {
+        let real = vec!["none".to_string(), "ble-shell".to_string()];
+        let err = resolve_snippets("p", "widget", &[NO_SNIPPETS.to_string()], &[], &real)
+            .map(|_| ())
+            .expect_err("a real snippet named none makes the literal ambiguous");
+        let message = format!("{err:#}");
+        assert!(message.contains("collides"), "{message}");
+        assert!(message.contains("widget"), "{message}");
+    }
+
+    #[test]
+    fn an_explicit_list_still_replaces_the_default_and_is_sorted_and_deduped() {
+        let configured = vec!["ble-shell".to_string()];
+        let call = vec![
+            "wdt31".to_string(),
+            "ble-shell".to_string(),
+            "wdt31".to_string(),
+        ];
+        let resolved = resolve_snippets("p", "widget", &call, &configured, &available()).unwrap();
+        assert_eq!(resolved, vec!["ble-shell".to_string(), "wdt31".to_string()]);
+    }
+
+    #[test]
+    fn an_unknown_snippet_is_still_rejected_against_the_apps_real_list() {
+        let call = vec!["nope".to_string()];
+        let err = resolve_snippets("p", "widget", &call, &[], &available())
+            .map(|_| ())
+            .expect_err("an unknown snippet must still fail");
+        let message = format!("{err:#}");
+        assert!(message.contains("unknown snippet"), "{message}");
+        assert!(message.contains("ble-shell"), "{message}");
     }
 }

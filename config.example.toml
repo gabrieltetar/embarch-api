@@ -115,12 +115,29 @@ build_timeout_secs = 900
 # app/<app>/snippets/*/snippet.yml the same way board/variant/revision are
 # validated against boards/*/*.yml — see list_targets' snippets_by_app.
 # default_snippets = ["ble-shell"]
+# A call that wants a build with NO snippets despite this default passes the
+# reserved literal ["none"] (--snippet none on the CLI), alone: an empty list
+# is indistinguishable from an omitted one, so there'd otherwise be no way to
+# say it. A list mixing "none" with real snippet names is refused naming the
+# ambiguity rather than resolved one way. The literal cannot be written here:
+# as a default it would just mean what omitting this field already means.
 # Optional: extra west build flags applied whenever a call omits `extra_args`
 # entirely — e.g. a repo that always wants a pristine rebuild. Same
 # override-not-additive semantics as default_snippets, but opaque: unlike
 # snippets, there's no real-file list to validate arbitrary flags against, so
 # these are passed straight through to west build unchanged.
 # default_extra_args = ["-p", "always"]
+# Optional: the BASE (board, variant, revision, app) selection a call narrows
+# from. Set what pins this repo's common target; a call naming one of these
+# overrides it for that field alone, and list_targets reports it so the
+# pinning is visible from the menu. Without it, a bare `build` against a repo
+# with exactly one target resolves today and starts erroring "ambiguous" the
+# moment a second board lands — behaviour changing because somebody else's
+# commit grew the repo. Rejected outright for a discovery = "static" project,
+# which honours no selection at all.
+# [projects.default_target]
+# board = "my_board"
+# app = "my-app"
 
 # embarch-dev-bench's own firmware — deliberately NOT a [[projects]] entry
 # (design.md's dev-bench-flashing-pipeline decision): dev-bench isn't a DUT a

@@ -68,7 +68,9 @@ pub struct TargetSelection {
     /// discovery = "zephyr-west" project — a static project refuses it.
     /// Omitted entirely falls back to the project's configured
     /// default_snippets, not "no snippets" — see `list-targets` for what's
-    /// available.
+    /// available. `--snippet none` (the reserved literal, alone) forces a
+    /// build with no snippets despite that default; mixed with real names it
+    /// is refused rather than guessed at.
     #[arg(long = "snippet")]
     pub snippet: Vec<String>,
     /// An extra `west build` flag (e.g. `-p`, `always`, passed as two

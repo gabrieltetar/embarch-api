@@ -122,7 +122,9 @@ pub struct TargetParams {
     /// `-S` snippets to build with. Only for a discovery = "zephyr-west"
     /// project — a static project refuses them. See `list_targets`'s
     /// `snippets_by_app`. Omitted or empty falls back to the project's
-    /// configured default_snippets, not "no snippets".
+    /// configured default_snippets, not "no snippets"; pass the reserved
+    /// literal ["none"] to force no snippets despite that default. Mixing
+    /// "none" with real names is refused, not guessed at.
     pub snippets: Option<Vec<String>>,
     /// Extra `west build` flags (e.g. `["-p", "always"]`). Only for a
     /// discovery = "zephyr-west" project — a static project refuses them.
@@ -170,7 +172,9 @@ pub struct FlashParams {
     pub app: Option<String>,
     /// `-S` snippets to build with. Only for a discovery = "zephyr-west"
     /// project — a static project refuses them. Omitted or empty falls back
-    /// to the project's configured default_snippets, not "no snippets".
+    /// to the project's configured default_snippets, not "no snippets"; pass
+    /// the reserved literal ["none"] to force no snippets despite that
+    /// default. Mixing "none" with real names is refused, not guessed at.
     pub snippets: Option<Vec<String>>,
     /// Extra `west build` flags. Only for a discovery = "zephyr-west"
     /// project — a static project refuses them. Omitted or empty falls back
@@ -275,7 +279,8 @@ pub struct RunStudyParams {
     /// App directory name for the DUT reflash. Only meaningful alongside project.
     pub app: Option<String>,
     /// `-S` snippets for the DUT reflash. Omitted or empty falls back to the
-    /// project's configured default_snippets, not "no snippets".
+    /// project's configured default_snippets, not "no snippets"; the reserved
+    /// literal ["none"] forces no snippets despite that default.
     pub snippets: Option<Vec<String>>,
     /// Extra `west build` flags for the DUT reflash. Opaque passthrough.
     /// Omitted or empty falls back to the project's default_extra_args.
@@ -444,7 +449,7 @@ impl EmbarchApi {
         Self::ok_json(serde_json::json!({ "projects": projects }))
     }
 
-    #[tool(description = "List a project's buildable targets. For a discovery = \"zephyr-west\" project: live-scans boards/ and app/ and returns every file-backing-validated (board, soc, cpucluster, variant, revision, app) tuple, plus snippets_by_app (every real -S snippet available per app), default_snippets, and default_extra_args. For a discovery = \"static\" project with [[projects.targets]] rows: returns those verbatim. Otherwise errors with the TOML shape needed to populate [[projects.targets]] by hand.")]
+    #[tool(description = "List a project's buildable targets. For a discovery = \"zephyr-west\" project: live-scans boards/ and app/ and returns every file-backing-validated (board, soc, cpucluster, variant, revision, app) tuple, plus snippets_by_app (every real -S snippet available per app), default_snippets, and default_extra_args. For a discovery = \"static\" project with [[projects.targets]] rows: returns those verbatim. Otherwise errors with the TOML shape needed to populate [[projects.targets]] by hand. For a zephyr-west project it also returns default_target: the configured base (board, variant, revision, app) a call narrows from, i.e. which of these rows a call that names nothing already resolves to.")]
     async fn list_targets(
         &self,
         Parameters(ProjectParams { project }): Parameters<ProjectParams>,
@@ -478,7 +483,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Build a configured project by running its build command (configured, or, for a discovery = \"zephyr-west\" project, assembled at call time from board/variant/revision/app/snippets/extra_args). snippets/extra_args, if omitted, fall back to the project's configured default_snippets/default_extra_args, not \"none\". extra_args is opaque passthrough (e.g. [\"-p\", \"always\"] for a pristine rebuild) — unlike snippets, not validated against anything. A discovery = \"static\" project builds its configured build_command verbatim and REJECTS board/variant/revision/app/snippets/extra_args, naming which were given, rather than accepting and discarding them. Does not touch hardware. Use build_and_flash to build and then flash in one call.")]
+    #[tool(description = "Build a configured project by running its build command (configured, or, for a discovery = \"zephyr-west\" project, assembled at call time from board/variant/revision/app/snippets/extra_args). snippets/extra_args, if omitted, fall back to the project's configured default_snippets/default_extra_args, not \"none\" — pass snippets = [\"none\"], the reserved literal alone, to force a build with no snippets despite a configured default (mixing it with real names is refused, not guessed at). board/variant/revision/app, if omitted, fall back per field to the project's configured default_target before narrowing the live scan. extra_args is opaque passthrough (e.g. [\"-p\", \"always\"] for a pristine rebuild) — unlike snippets, not validated against anything. A discovery = \"static\" project builds its configured build_command verbatim and REJECTS board/variant/revision/app/snippets/extra_args, naming which were given, rather than accepting and discarding them. Does not touch hardware. Use build_and_flash to build and then flash in one call.")]
     async fn build(
         &self,
         Parameters(params): Parameters<TargetParams>,
