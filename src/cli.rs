@@ -880,13 +880,25 @@ async fn run_study(
     let mut study: embarch_study_designer::Study = match serde_json::from_str(&raw) {
         Ok(s) => s,
         Err(e) => {
+            // decision 27: name the field and the limit when the refusal was
+            // a capacity overflow. Re-parsing to a `Value` here costs nothing
+            // on the path that matters, since we are already failing.
+            let capacity = serde_json::from_str::<serde_json::Value>(&raw)
+                .ok()
+                .as_ref()
+                .and_then(crate::capacity::explain);
             return error_result(
                 json,
-                format!(
-                    "study file {} did not match the expected Study schema: {e}",
-                    study_file.display()
-                ),
-            )
+                match capacity {
+                    Some(detail) => {
+                        format!("study file {}: {detail}", study_file.display())
+                    }
+                    None => format!(
+                        "study file {} did not match the expected Study schema: {e}",
+                        study_file.display()
+                    ),
+                },
+            );
         }
     };
 

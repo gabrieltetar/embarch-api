@@ -1,3 +1,4 @@
+mod capacity;
 mod cli;
 mod config;
 mod dev_bench;

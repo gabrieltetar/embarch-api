@@ -937,12 +937,21 @@ impl EmbarchApi {
                 ))
             }
         };
-        let mut study: embarch_study_designer::Study = match serde_json::from_value(study) {
-            Ok(s) => s,
-            Err(e) => {
-                return Self::err_text(format!("study did not match the expected Study schema: {e}"))
-            }
-        };
+        // Deserialized from `&study` rather than by value so the `Value`
+        // survives a failure: decision 27's capacity message is built from it,
+        // and only on the error path.
+        let mut study: embarch_study_designer::Study =
+            match serde::Deserialize::deserialize(&study) {
+                Ok(s) => s,
+                Err(e) => {
+                    return match crate::capacity::explain(&study) {
+                        Some(detail) => Self::err_text(format!("study {detail}")),
+                        None => Self::err_text(format!(
+                            "study did not match the expected Study schema: {e}"
+                        )),
+                    }
+                }
+            };
 
         // design.md §3 decision 26: recompute and overwrite all three of a
         // study's seals unconditionally, regardless of whatever values
