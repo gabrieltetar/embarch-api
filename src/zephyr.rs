@@ -48,7 +48,7 @@ struct BoardSection {
     #[serde(default)]
     socs: Vec<SocSection>,
     /// Nested under `board:`, not a sibling top-level key — confirmed
-    /// against the real reference-dut repo's `board.yml` files (`roadrunner`,
+    /// against the real reference-dut repo's `board.yml` files (`ref_board`,
     /// `dut_dev`, `ref_nrf54dk`, `dut_demo`), all four of which nest it here.
     /// An earlier version of this module assumed a top-level `revision:`
     /// key instead, which silently discarded every real board's revision
@@ -243,11 +243,11 @@ pub fn scan(source_path: &Path) -> Result<Vec<Target>, NotZephyrWest> {
 ///
 /// A SoC that *does* declare named product variants can still have a real,
 /// separately-buildable variant-less build for the same cpucluster —
-/// confirmed against `roadrunner`: `board.yml` declares three named variants
+/// confirmed against `ref_board`: `board.yml` declares three named variants
 /// (`os`, `max_3led`, `max_5led`) under `nrf54l15`/`cpuapp`, but
-/// `roadrunner_nrf54l15_cpuapp.dts` (no variant suffix) also exists, and is
+/// `ref_board_nrf54l15_cpuapp.dts` (no variant suffix) also exists, and is
 /// exactly what the real day-to-day static config builds
-/// (`roadrunner@2/nrf54l15/cpuapp`, no variant at all) — Zephyr's
+/// (`ref_board@2/nrf54l15/cpuapp`, no variant at all) — Zephyr's
 /// board-qualifier variant component is always optional, declaring named
 /// variants doesn't make selecting one mandatory. Without offering this
 /// candidate too, `list_targets` would never surface the one target this
@@ -378,7 +378,7 @@ fn candidate_revisions(revision: &Option<RevisionSection>) -> Vec<Option<String>
 /// never just because `board.yml` lists the revision's name.
 ///
 /// **The "default revision is automatically backed" shortcut only applies
-/// when `variant` is `None`.** Confirmed necessary against `roadrunner`'s
+/// when `variant` is `None`.** Confirmed necessary against `ref_board`'s
 /// real `revision.cmake`: it declares default revision `"1"`, but its own
 /// custom logic hard-errors if a named product variant (`os`, `max_3led`,
 /// `max_5led`) is built at any revision *other than* `evt1` — variants there
@@ -637,8 +637,8 @@ mod tests {
     use super::*;
     use std::fs;
 
-    /// Builds a synthetic repo tree modeling `roadrunner`'s real current
-    /// shape (checked directly against `boards/nordic/roadrunner/board.yml`
+    /// Builds a synthetic repo tree modeling `ref_board`'s real current
+    /// shape (checked directly against `boards/nordic/ref_board/board.yml`
     /// and its sibling files, not reconstructed from memory — an earlier
     /// version of this fixture modeled a since-stale shape with four
     /// variants and default revision `"2"`; both this fixture and the
@@ -646,15 +646,15 @@ mod tests {
     /// files): one SoC/cpucluster, three named product variants (`os`,
     /// `max_3led`, `max_5led`), default revision `"1"`, and a real,
     /// separately-buildable variant-less ("bare") build for the same
-    /// cpucluster — `roadrunner_nrf54l15_cpuapp.dts` exists alongside each
+    /// cpucluster — `ref_board_nrf54l15_cpuapp.dts` exists alongside each
     /// variant's own `.dts`, and the real day-to-day static config builds
-    /// exactly this bare target (`roadrunner@2/nrf54l15/cpuapp`, no
+    /// exactly this bare target (`ref_board@2/nrf54l15/cpuapp`, no
     /// variant).
     ///
     /// The revision-backing shape mirrors a real, verified finding
-    /// (`roadrunner`'s own `revision.cmake`): the bare target is backed at
+    /// (`ref_board`'s own `revision.cmake`): the bare target is backed at
     /// its default revision `"1"` (no override needed) and explicitly at
-    /// `"2"` (`roadrunner_nrf54l15_cpuapp_2.overlay`), but *not* at `"evt1"`
+    /// `"2"` (`ref_board_nrf54l15_cpuapp_2.overlay`), but *not* at `"evt1"`
     /// — that revision has no board behind it without a product variant
     /// selected. Named variants are the opposite: `revision.cmake` hard-
     /// errors unless a named variant is built at exactly `"evt1"`, so **the
@@ -665,13 +665,13 @@ mod tests {
     /// actually backed at any revision — the same "don't trust the
     /// declared list" lesson the original fixture's `os_5led` taught).
     fn write_synthetic_repo(root: &Path) {
-        let board_dir = root.join("boards/acme/roadrunner");
+        let board_dir = root.join("boards/acme/ref_board");
         fs::create_dir_all(&board_dir).unwrap();
         fs::write(
-            board_dir.join("roadrunner.yml"),
+            board_dir.join("ref_board.yml"),
             r#"
 board:
-  name: roadrunner
+  name: ref_board
   socs:
     - name: nrf54l15
       variants:
@@ -696,10 +696,10 @@ board:
         // named variants each have real .dts files — every one of these
         // four combinations is buildable at all, just not at every revision.
         for stem in [
-            "roadrunner_nrf54l15_cpuapp",
-            "roadrunner_nrf54l15_cpuapp_os",
-            "roadrunner_nrf54l15_cpuapp_max_3led",
-            "roadrunner_nrf54l15_cpuapp_max_5led",
+            "ref_board_nrf54l15_cpuapp",
+            "ref_board_nrf54l15_cpuapp_os",
+            "ref_board_nrf54l15_cpuapp_max_3led",
+            "ref_board_nrf54l15_cpuapp_max_5led",
         ] {
             fs::write(board_dir.join(format!("{stem}.dts")), "").unwrap();
         }
@@ -707,11 +707,11 @@ board:
         // Bare + revision "2" is explicitly backed (matches the real static
         // config's actual day-to-day build). Bare has no "evt1" overlay —
         // that revision only exists as a product-tier variant.
-        fs::write(board_dir.join("roadrunner_nrf54l15_cpuapp_2.overlay"), "").unwrap();
+        fs::write(board_dir.join("ref_board_nrf54l15_cpuapp_2.overlay"), "").unwrap();
         // Only "os" actually has a real evt1 overlay — matches the real
         // finding: not every variant board.yml declares is really backed at
         // any revision. "max_3led"/"max_5led" get none at all, deliberately.
-        fs::write(board_dir.join("roadrunner_nrf54l15_cpuapp_os_evt1.overlay"), "").unwrap();
+        fs::write(board_dir.join("ref_board_nrf54l15_cpuapp_os_evt1.overlay"), "").unwrap();
 
         let app_dir = root.join("app/reference-dut");
         fs::create_dir_all(&app_dir).unwrap();
@@ -961,14 +961,14 @@ board:
     #[test]
     fn board_qualifier_formats_correctly() {
         let t = Target {
-            board: "roadrunner".into(),
+            board: "ref_board".into(),
             soc: "nrf54l15".into(),
             cpucluster: Some("cpuapp".into()),
             variant: Some("os_5led".into()),
             revision: Some("evt1".into()),
             app: "reference-dut".into(),
         };
-        assert_eq!(t.board_qualifier(), "roadrunner@evt1/nrf54l15/cpuapp/os_5led");
+        assert_eq!(t.board_qualifier(), "ref_board@evt1/nrf54l15/cpuapp/os_5led");
     }
 
     #[test]
@@ -987,20 +987,20 @@ board:
     #[test]
     fn build_dir_name_is_stable_and_unique_per_target() {
         let a = Target {
-            board: "roadrunner".into(),
+            board: "ref_board".into(),
             soc: "nrf54l15".into(),
             cpucluster: Some("cpuapp".into()),
             variant: Some("os_5led".into()),
             revision: Some("evt1".into()),
             app: "widget".into(),
         };
-        assert_eq!(a.build_dir_name(&[], &[]), "roadrunner-os_5led-evt1-widget");
+        assert_eq!(a.build_dir_name(&[], &[]), "ref_board-os_5led-evt1-widget");
     }
 
     #[test]
     fn build_dir_name_folds_in_snippets_so_they_dont_share_a_build_dir() {
         let a = Target {
-            board: "roadrunner".into(),
+            board: "ref_board".into(),
             soc: "nrf54l15".into(),
             cpucluster: Some("cpuapp".into()),
             variant: Some("os_5led".into()),
@@ -1010,7 +1010,7 @@ board:
         let snippets = vec!["ble-shell".to_string(), "wdt31".to_string()];
         assert_eq!(
             a.build_dir_name(&snippets, &[]),
-            "roadrunner-os_5led-evt1-widget-ble-shell_wdt31"
+            "ref_board-os_5led-evt1-widget-ble-shell_wdt31"
         );
         assert_ne!(a.build_dir_name(&snippets, &[]), a.build_dir_name(&[], &[]));
     }
@@ -1018,7 +1018,7 @@ board:
     #[test]
     fn build_dir_name_folds_in_extra_args_so_they_dont_share_a_build_dir() {
         let a = Target {
-            board: "roadrunner".into(),
+            board: "ref_board".into(),
             soc: "nrf54l15".into(),
             cpucluster: Some("cpuapp".into()),
             variant: None,
