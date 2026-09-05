@@ -28,24 +28,6 @@ pub enum Discovery {
     ZephyrWest,
 }
 
-/// A hand-authored target row for a `discovery = "static"` project that
-/// wants a selectable menu (`design.md` §3 decision 12's escape hatch) —
-/// `list_targets` returns these verbatim. Each field overrides the
-/// project-level field of the same name when this target is selected;
-/// selection itself is not yet wired into `build`/`flash` (§3's own
-/// `build`/`flash` rows: the four new params are ignored for a `static`
-/// project), so today this only changes what `list_targets` reports.
-#[derive(Debug, Deserialize)]
-pub struct StaticTarget {
-    pub name: String,
-    #[serde(default)]
-    pub build_command: Option<Vec<String>>,
-    #[serde(default)]
-    pub chip: Option<String>,
-    #[serde(default)]
-    pub artifact_path: Option<PathBuf>,
-}
-
 /// A per-project **base** target selection for a `discovery =
 /// "zephyr-west"` project (`design.md` §3 decision 20). Every field is
 /// optional: what is set here fills in the corresponding call-time param
@@ -150,10 +132,21 @@ pub struct ProjectConfig {
     /// rule), named by `zephyr::Target::build_dir_name`.
     #[serde(default)]
     pub build_dir_root: Option<PathBuf>,
-    /// Only meaningful for `discovery = "static"`: a hand-authored menu
-    /// `list_targets` can return verbatim (see `StaticTarget`).
+    /// `[[projects.targets]]`, **retired** (`design.md` §3 decision 53).
+    /// Decision 12 added it as a selectable menu for a `static` project and
+    /// nothing was ever wired to select from it: a build runs the
+    /// project-level `build_command` regardless, and decision 51 made every
+    /// selection param a `static` project takes an outright refusal — so
+    /// the config advertised a menu whose every entry was rejected.
+    ///
+    /// The field survives **only so a config that still declares one is
+    /// refused by name** rather than parsed into something nothing reads:
+    /// decision 51's reject-rather-than-ignore posture, applied at load
+    /// instead of per call. `toml::Value` because this crate no longer has
+    /// an opinion about a row's shape — every shape of it is equally
+    /// retired.
     #[serde(default, rename = "targets")]
-    pub static_targets: Vec<StaticTarget>,
+    pub retired_targets: Vec<toml::Value>,
     /// Only meaningful for `discovery = "zephyr-west"`: the `-S` snippets a
     /// build uses when a call omits `snippets` entirely (`resolve::Selection`).
     /// Exists because a repo's normal dev build often always wants the same
@@ -399,6 +392,23 @@ impl Config {
                     "project '{}' has source_path {} which does not exist",
                     project.name,
                     project.source_path.display()
+                );
+            }
+
+            // Decision 53: `[[projects.targets]]` is retired, and a config
+            // that still carries rows fails here naming it rather than
+            // loading into a field nothing reads. Checked for both
+            // discovery kinds — the menu was never honourable for either.
+            if !project.retired_targets.is_empty() {
+                bail!(
+                    "project '{}' declares [[projects.targets]], which is retired. Nothing ever \
+                     selected a row — a build runs the project's own build_command, and a static \
+                     project refuses board/variant/revision/app/snippets/extra_args outright — so \
+                     the menu advertised a choice that did not exist. Declare one [[projects]] \
+                     entry per target instead, each with its own name/build_command/chip/\
+                     artifact_path; a Zephyr/west repo can set discovery = \"zephyr-west\" and \
+                     have its targets discovered live per call",
+                    project.name
                 );
             }
 
@@ -903,6 +913,79 @@ west_binary = "/usr/bin/west"
         .unwrap();
         let err = Config::load_from_path(&path).unwrap_err();
         assert!(format!("{err:#}").contains("board"), "{err:#}");
+    }
+
+    /// Decision 53: the retired `[[projects.targets]]` menu is refused by
+    /// name at load, not dropped. A config carrying rows was written by
+    /// somebody who believed they selected something, and the whole reason
+    /// the menu is going is that a thing that reads as meaningful and is not
+    /// is worse than an error.
+    #[test]
+    fn a_retired_projects_targets_menu_is_refused_by_name() {
+        let dir = tempdir();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            format!(
+                r#"
+[core]
+base_url = "auto"
+token_env = "EMBARCH_TOKEN"
+
+[[projects]]
+name = "p"
+source_path = "{}"
+build_command = ["true"]
+chip = "nRF54L15"
+artifact_path = "out.hex"
+flash_format = "hex"
+
+[[projects.targets]]
+name = "target-a"
+build_command = ["make", "TARGET=a"]
+"#,
+                dir.path().display()
+            ),
+        )
+        .unwrap();
+        let err = Config::load_from_path(&path).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("[[projects.targets]]"), "{message}");
+        assert!(message.contains("retired"), "{message}");
+        assert!(message.contains("project 'p'"), "{message}");
+    }
+
+    /// The refusal is not scoped to `static`: a `zephyr-west` project could
+    /// always declare rows too, and they were every bit as unread there.
+    #[test]
+    fn a_zephyr_west_project_is_refused_the_retired_menu_too() {
+        let dir = tempdir();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            format!(
+                r#"
+[core]
+base_url = "auto"
+token_env = "EMBARCH_TOKEN"
+
+[[projects]]
+name = "z"
+source_path = "{dir}"
+discovery = "zephyr-west"
+west_binary = "/usr/bin/west"
+build_dir_root = "{dir}"
+flash_format = "hex"
+
+[[projects.targets]]
+name = "target-a"
+"#,
+                dir = dir.path().display()
+            ),
+        )
+        .unwrap();
+        let err = Config::load_from_path(&path).unwrap_err();
+        assert!(format!("{err:#}").contains("retired"), "{err:#}");
     }
 
     /// A raw `bin` has no load address in it, so an absent offset is not

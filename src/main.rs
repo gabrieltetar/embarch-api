@@ -91,7 +91,7 @@ pub enum Commands {
     /// List every project configured in embarch-api's config file.
     ListProjects,
     /// List live-discovered build targets for a discovery = "zephyr-west"
-    /// project, or the hand-authored [[projects.targets]] menu for a
+    /// project, or the single configured target — the project itself — for a
     /// discovery = "static" one.
     ListTargets { project: String },
     /// Get embarch-core's status: reachability and connected debug probes.

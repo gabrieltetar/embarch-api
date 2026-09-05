@@ -449,7 +449,7 @@ impl EmbarchApi {
         Self::ok_json(serde_json::json!({ "projects": projects }))
     }
 
-    #[tool(description = "List a project's buildable targets. For a discovery = \"zephyr-west\" project: live-scans boards/ and app/ and returns every file-backing-validated (board, soc, cpucluster, variant, revision, app) tuple, plus snippets_by_app (every real -S snippet available per app), default_snippets, and default_extra_args. For a discovery = \"static\" project with [[projects.targets]] rows: returns those verbatim. Otherwise errors with the TOML shape needed to populate [[projects.targets]] by hand. For a zephyr-west project it also returns default_target: the configured base (board, variant, revision, app) a call narrows from, i.e. which of these rows a call that names nothing already resolves to.")]
+    #[tool(description = "List a project's buildable targets. For a discovery = \"zephyr-west\" project: live-scans boards/ and app/ and returns every file-backing-validated (board, soc, cpucluster, variant, revision, app) tuple, plus snippets_by_app (every real -S snippet available per app), default_snippets, and default_extra_args. For a discovery = \"static\" project: returns exactly one row — the project itself, with its configured build_command, chip and resolved artifact_path — because a static project has one target and no selection params it can honour (build/flash refuse them). For a zephyr-west project it also returns default_target: the configured base (board, variant, revision, app) a call narrows from, i.e. which of these rows a call that names nothing already resolves to.")]
     async fn list_targets(
         &self,
         Parameters(ProjectParams { project }): Parameters<ProjectParams>,

@@ -435,7 +435,8 @@ async fn resolve_zephyr(project: &ProjectConfig, selection: Selection<'_>, core:
 
 /// `list_targets` (MCP tool + CLI subcommand), independent of `resolve`
 /// above: this never needs Core (no chip resolution), just a live scan (for
-/// `zephyr-west`) or the hand-authored menu (for `static`).
+/// `zephyr-west`) or the project's own single configured target (for
+/// `static` — decision 53).
 pub fn list_targets(project: &ProjectConfig) -> Result<serde_json::Value> {
     match project.discovery {
         Discovery::ZephyrWest => {
@@ -481,31 +482,26 @@ pub fn list_targets(project: &ProjectConfig) -> Result<serde_json::Value> {
             }))
         }
         Discovery::Static => {
-            if project.static_targets.is_empty() {
-                anyhow::bail!(
-                    "project '{}' (discovery = \"static\") has no [[projects.targets]] declared. \
-                     Add one per selectable target, e.g.:\n\n\
-                     [[projects.targets]]\n\
-                     name = \"target-a\"\n\
-                     build_command = [\"make\", \"TARGET=a\"]\n\
-                     chip = \"...\"\n\
-                     artifact_path = \"...\"",
-                    project.name
-                );
-            }
-            let rows: Vec<_> = project
-                .static_targets
-                .iter()
-                .map(|t| {
-                    serde_json::json!({
-                        "name": t.name,
-                        "build_command": t.build_command,
-                        "chip": t.chip,
-                        "artifact_path": t.artifact_path.as_ref().map(|p| p.display().to_string()),
-                    })
-                })
-                .collect();
-            Ok(serde_json::json!({ "targets": rows }))
+            // **A static project has exactly one target: itself**
+            // (`design.md` §3 decision 53). It used to return the
+            // hand-authored `[[projects.targets]]` menu, and error demanding
+            // one when a project had none — a menu nothing selected from,
+            // since a build runs the project-level `build_command` and
+            // decision 51 refuses every selection param outright. Reporting
+            // the one real target instead is what makes retiring the menu
+            // lossless: this tool now answers "what can I build?" for every
+            // project kind rather than erroring for half of them, and the
+            // row it returns *is* the build a bare `build` runs. The name is
+            // the project's own, because there is nothing else to call it
+            // and nothing to pass it to.
+            Ok(serde_json::json!({
+                "targets": [{
+                    "name": project.name,
+                    "build_command": project.build_command,
+                    "chip": project.chip,
+                    "artifact_path": project.resolved_artifact_path().display().to_string(),
+                }],
+            }))
         }
     }
 }
@@ -645,6 +641,32 @@ flash_format = "bin"
         for field in ["board", "variant", "revision", "app", "extra_args"] {
             assert!(message.contains(field), "{field} missing from: {message}");
         }
+    }
+
+    /// Decision 53: `list_targets` for a `static` project reports the one
+    /// target it has — itself — instead of a hand-authored menu nothing
+    /// could pick from, and instead of erroring when there was none. The
+    /// row has to *be* the build a bare `build` runs, or the tool that
+    /// answers "what can I build?" is describing something else.
+    #[test]
+    fn list_targets_reports_a_static_project_as_its_own_single_target() {
+        let project = static_project("");
+        let value = list_targets(&project).expect("a static project always has one target");
+        let targets = value["targets"].as_array().expect("targets is an array");
+        assert_eq!(targets.len(), 1, "{value:#}");
+        assert_eq!(targets[0]["name"], serde_json::json!("p"));
+        assert_eq!(targets[0]["build_command"], serde_json::json!(["true"]));
+        assert_eq!(targets[0]["chip"], serde_json::json!("esp32c5"));
+        // The resolved path, not the configured relative one — the same
+        // string a flash of this project would send.
+        let resolved = resolve_static(&project, Selection::default()).unwrap();
+        assert_eq!(
+            targets[0]["artifact_path"],
+            serde_json::json!(resolved.plan.artifact_path.display().to_string())
+        );
+        // Nothing else is advertised: no menu, and no selection axes a
+        // `static` project would only refuse (decision 51).
+        assert_eq!(value.as_object().unwrap().len(), 1, "{value:#}");
     }
 
     #[test]

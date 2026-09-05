@@ -124,10 +124,6 @@ build_command = ["true"]
 artifact_path = "build/zephyr/zephyr.hex"
 chip = "nRF54L15"
 flash_format = "hex"
-
-[[projects.targets]]
-name = "demo-board"
-chip = "nRF54L15"
 "#,
             source = source_path.display().to_string().replace('\\', "\\\\"),
         ),
