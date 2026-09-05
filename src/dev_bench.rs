@@ -55,6 +55,10 @@ pub fn resolve(config: &DevBenchConfig) -> Result<Resolved> {
             artifact_path,
             timeout_secs: config.build_timeout_secs,
             env: config.env.clone(),
+            // No `-d`: the bench builds into west's default `build/` under
+            // one workspace per board, so the directory is already
+            // self-describing and has nothing to disambiguate.
+            manifest: None,
         },
         chip: config.chip.clone(),
         flash_format: config.flash_format.clone(),

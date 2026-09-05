@@ -8,7 +8,7 @@
 
 use anyhow::{Context, Result};
 
-use crate::build::BuildPlan;
+use crate::build::{BuildPlan, TargetManifest};
 use crate::config::{DefaultTarget, Discovery, ProjectConfig};
 use embarch_core_client::CoreClient;
 use crate::zephyr;
@@ -160,6 +160,10 @@ fn resolve_static(project: &ProjectConfig, selection: Selection<'_>) -> Result<R
             artifact_path: project.resolved_artifact_path(),
             timeout_secs: project.build_timeout_secs,
             env: project.env.clone(),
+            // A `static` project resolves no selection (decision 51) and
+            // builds wherever its own `build_command` says, so there is
+            // nothing a `target.json` beside it could record.
+            manifest: None,
         },
         chip: project
             .chip
@@ -403,6 +407,22 @@ async fn resolve_zephyr(project: &ProjectConfig, selection: Selection<'_>, core:
         .await
         .with_context(|| format!("failed to resolve a probe-rs chip for SoC '{}'", target.soc))?;
 
+    // Built once and used twice on purpose: this is both what the tool
+    // response echoes back and what `build.rs` writes into the build
+    // directory as `target.json` (decision 19), so the directory's
+    // provenance is the caller's answer rather than a restatement of it.
+    let descriptor = serde_json::json!({
+        "project": project.name,
+        "board": target.board,
+        "soc": target.soc,
+        "cpucluster": target.cpucluster,
+        "variant": target.variant,
+        "revision": target.revision,
+        "app": target.app,
+        "snippets": snippets,
+        "extra_args": extra_args,
+    });
+
     Ok(Resolved {
         plan: BuildPlan {
             lock_key: format!("{}::{}", project.name, target.build_dir_name(&snippets, &extra_args)),
@@ -414,22 +434,16 @@ async fn resolve_zephyr(project: &ProjectConfig, selection: Selection<'_>, core:
             artifact_path,
             timeout_secs: project.build_timeout_secs,
             env: project.env.clone(),
+            manifest: Some(TargetManifest {
+                dir: build_dir,
+                target: descriptor.clone(),
+            }),
         },
         chip,
         flash_format: project.flash_format.clone(),
         base_address: format_base_address(project.base_address),
         probe_serial: project.probe_serial.clone(),
-        descriptor: serde_json::json!({
-            "project": project.name,
-            "board": target.board,
-            "soc": target.soc,
-            "cpucluster": target.cpucluster,
-            "variant": target.variant,
-            "revision": target.revision,
-            "app": target.app,
-            "snippets": snippets,
-            "extra_args": extra_args,
-        }),
+        descriptor,
     })
 }
 

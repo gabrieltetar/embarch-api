@@ -47,7 +47,33 @@ pub struct BuildPlan {
     pub artifact_path: PathBuf,
     pub timeout_secs: u64,
     pub env: HashMap<String, String>,
+    /// The provenance file dropped beside the build output, or `None` where
+    /// the directory is already self-describing (`design.md` §3 decision
+    /// 19). `Some` only for a `zephyr-west` target, whose directory *name*
+    /// is lossy: `extra_args` is folded into it as a hash, and `-` is legal
+    /// inside a board, app and snippet name, so the name cannot be parsed
+    /// back into the selection that produced it. A `static` project resolves
+    /// no selection at all and dev-bench builds into west's default `build/`.
+    pub manifest: Option<TargetManifest>,
 }
+
+/// The resolved selection, and the per-target build directory it is written
+/// into as [`TARGET_MANIFEST_NAME`].
+pub struct TargetManifest {
+    /// The build directory itself — `BuildPlan::cwd` is the *source* tree
+    /// for a `zephyr-west` build (`west build -d` is absolute), and
+    /// `artifact_path` is a file well inside the output, so neither of them
+    /// names this.
+    pub dir: PathBuf,
+    /// **The same `serde_json::Value` the tool response echoes back as its
+    /// descriptor**, not a second serialization of the same facts: a
+    /// directory's provenance and the answer the caller was given cannot
+    /// then drift apart.
+    pub target: serde_json::Value,
+}
+
+/// What a build directory's provenance file is called.
+pub const TARGET_MANIFEST_NAME: &str = "target.json";
 
 /// Tolerance absorbing wall-clock read jitter between the parent's
 /// pre-spawn `SystemTime::now()` and whatever clock stamped the child's
@@ -233,6 +259,20 @@ async fn run_build_locked(plan: &BuildPlan) -> Result<BuildOutcome> {
         && artifact_path.exists()
         && artifact_is_fresh(&artifact_path, artifact_existed_before, build_start);
 
+    // Regardless of exit code: a failed build still leaves a directory, and
+    // an unattributable one is exactly what decision 19 exists to prevent.
+    // Best-effort — provenance losing a build that would otherwise have
+    // succeeded is the wrong trade, and the file's absence is already
+    // defined as "unattributable" rather than as any positive claim.
+    if let Some(manifest) = &plan.manifest {
+        if let Err(e) = write_target_manifest(manifest) {
+            tracing::warn!(
+                "build {} produced no {TARGET_MANIFEST_NAME}: {e:#}",
+                plan.lock_key
+            );
+        }
+    }
+
     Ok(BuildOutcome {
         timed_out,
         exit_code,
@@ -241,6 +281,37 @@ async fn run_build_locked(plan: &BuildPlan) -> Result<BuildOutcome> {
         artifact_path,
         artifact_fresh,
     })
+}
+
+/// Writes the resolved selection to `<build_dir>/target.json`, so a human
+/// (or `embarch-umbrella doctor`) staring at a directory listing can recover
+/// what produced a given directory instead of reverse-engineering the
+/// `-args<hash>` segment of its name (`design.md` §3 decision 19).
+///
+/// **It never creates the directory**, and returns `Ok(false)` when it is
+/// absent: the file is evidence *about* a build directory, so writing one
+/// beside a directory no build has produced would manufacture the evidence.
+/// That is also why this runs after the build command rather than before it
+/// — nothing this crate does has to be correct for `west build -d` to treat
+/// an empty-but-existing directory as its own.
+///
+/// **An absent `target.json` therefore means "unattributable", never
+/// "orphaned".** Every directory built before this shipped has none, and a
+/// consumer that reads absence as "no live target claims this" would delete
+/// exactly the directories it has no evidence about.
+pub fn write_target_manifest(manifest: &TargetManifest) -> Result<bool> {
+    if !manifest.dir.is_dir() {
+        return Ok(false);
+    }
+    // Through the one serializer, like every other JSON object this crate
+    // emits (`json_out`, decision 50): the file is read by another program,
+    // so it gets `schema_version` for the same reason a `--json` object
+    // does, rather than a second versioning story of its own.
+    let mut json = crate::json_out::pretty(manifest.target.clone());
+    json.push('\n');
+    let path = manifest.dir.join(TARGET_MANIFEST_NAME);
+    std::fs::write(&path, json).with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(true)
 }
 
 /// An artifact only counts as "fresh" if it exists after a zero exit code

@@ -19,6 +19,11 @@
 //! are actually wired into the build path, and need a POSIX shell, so they
 //! are `#[cfg(unix)]`.
 //!
+//! Decision 19's `target.json` is pinned the same two ways, and for the
+//! same reason: the doc claimed the file for months while nothing wrote it,
+//! so a direct round-trip test alone would only prove the writer works, not
+//! that a build ever calls it.
+//!
 //! Criterion 4 has no direct form — the invariant is a property of spawning
 //! two concurrent drain tasks around one `child.wait()`, not of any single
 //! function — so it exists only in the `#[cfg(unix)]` end-to-end form.
@@ -29,7 +34,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
-use embarch_api::build::{artifact_is_fresh, truncate_log, OUTPUT_CAP_BYTES, OUTPUT_HEAD_BYTES};
+use embarch_api::build::{
+    artifact_is_fresh, truncate_log, write_target_manifest, TargetManifest, OUTPUT_CAP_BYTES,
+    OUTPUT_HEAD_BYTES, TARGET_MANIFEST_NAME,
+};
 
 // ---------------------------------------------------------------------------
 // Criterion 5, exactly — truncation on a UTF-8 character boundary
@@ -434,6 +442,147 @@ async fn a_build_that_never_produced_the_artifact_is_not_ready_to_flash() {
 }
 
 // ---------------------------------------------------------------------------
+// Decision 19 — the build directory's `target.json`
+// ---------------------------------------------------------------------------
+
+/// The round trip that makes the file worth writing: whatever `resolve`
+/// descriptor went in comes back out equal, so `cat target.json` answers
+/// "what produced this directory" exactly and not approximately.
+#[test]
+fn a_target_manifest_round_trips_the_resolved_selection() {
+    let dir = TempDir::new("manifest-round-trip");
+    std::fs::create_dir_all(dir.path()).expect("could not create the build directory");
+
+    // Every axis a directory name loses: a `-` inside three different
+    // fields, two absent axes, and the `extra_args` that exists in the name
+    // only as a hash.
+    let target = serde_json::json!({
+        "project": "example-sensor-fw",
+        "board": "nrf54l15dk/nrf54l15/cpuapp",
+        "soc": "nrf54l15",
+        "cpucluster": "cpuapp",
+        "variant": serde_json::Value::Null,
+        "revision": serde_json::Value::Null,
+        "app": "ble-shell",
+        "snippets": ["wdt31"],
+        "extra_args": ["-DCONFIG_LOG=n", "--pristine=always"],
+    });
+
+    let wrote = write_target_manifest(&TargetManifest {
+        dir: dir.path().to_path_buf(),
+        target: target.clone(),
+    })
+    .expect("writing the manifest failed");
+    assert!(wrote, "an existing build directory got no manifest");
+
+    let text = std::fs::read_to_string(dir.path().join(TARGET_MANIFEST_NAME))
+        .expect("target.json was not written");
+    let mut read_back: serde_json::Value =
+        serde_json::from_str(&text).expect("target.json was not valid JSON");
+
+    // Stamped by the one serializer, like every other JSON object this
+    // crate emits — a consumer in another repo reads this file, so it needs
+    // the same shape guarantee a `--json` object gives.
+    assert_eq!(
+        read_back[embarch_api::json_out::SCHEMA_VERSION_FIELD],
+        serde_json::json!(embarch_api::json_out::SCHEMA_VERSION),
+        "target.json carries no schema_version"
+    );
+    read_back
+        .as_object_mut()
+        .expect("target.json was not an object")
+        .remove(embarch_api::json_out::SCHEMA_VERSION_FIELD);
+
+    assert_eq!(read_back, target, "the manifest did not round-trip");
+    assert!(text.ends_with('\n'), "target.json should end in a newline");
+}
+
+/// The file is evidence *about* a build directory, so it never conjures one.
+/// This is the half a consumer depends on: an absent `target.json` has to
+/// mean "unattributable", which it cannot if this crate writes one wherever
+/// a plan happens to point.
+#[test]
+fn no_manifest_is_written_where_no_build_directory_exists() {
+    let dir = TempDir::new("manifest-no-dir");
+    let absent = dir.path().join("never-built");
+
+    let wrote = write_target_manifest(&TargetManifest {
+        dir: absent.clone(),
+        target: serde_json::json!({ "project": "example-sensor-fw" }),
+    })
+    .expect("an absent directory should not be an error");
+
+    assert!(!wrote, "a manifest was written for a directory that does not exist");
+    assert!(!absent.exists(), "the build directory was created out of nothing");
+}
+
+/// Wired in, not merely available — the defect this closes was a written
+/// claim with no caller. A build that produces its directory leaves a
+/// `target.json` in it, through the same `run_build` path a real build takes.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_real_build_leaves_a_target_manifest_in_its_build_directory() {
+    let dir = TempDir::new("manifest-e2e");
+    let build_dir = dir.path().join("nrf54l15dk-ble-shell");
+    std::fs::create_dir_all(&build_dir).expect("could not create the build directory");
+    let artifact = build_dir.join("zephyr.hex");
+
+    let mut plan = shell_plan(
+        dir.path(),
+        "printf built > nrf54l15dk-ble-shell/zephyr.hex",
+        &artifact,
+    );
+    plan.manifest = Some(TargetManifest {
+        dir: build_dir.clone(),
+        target: sample_descriptor(),
+    });
+
+    let outcome = embarch_api::build::BuildLocks::new()
+        .run_build(&plan)
+        .await
+        .expect("run_build failed");
+    assert!(outcome.ready_to_flash(), "the fixture build should have succeeded");
+
+    let text = std::fs::read_to_string(build_dir.join(TARGET_MANIFEST_NAME))
+        .expect("a successful build left no target.json");
+    let mut read_back: serde_json::Value =
+        serde_json::from_str(&text).expect("target.json was not valid JSON");
+    read_back
+        .as_object_mut()
+        .expect("target.json was not an object")
+        .remove(embarch_api::json_out::SCHEMA_VERSION_FIELD);
+    assert_eq!(read_back, sample_descriptor());
+}
+
+/// A *failed* build's directory is attributable too. It is the case that
+/// matters most in a listing — a directory nobody can explain is usually one
+/// whose build died — and it is why the write happens after the command
+/// rather than only on success.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_failed_build_still_leaves_its_directory_attributable() {
+    let dir = TempDir::new("manifest-failed");
+    let build_dir = dir.path().join("nrf54l15dk-ble-shell");
+    std::fs::create_dir_all(&build_dir).expect("could not create the build directory");
+
+    let mut plan = shell_plan(dir.path(), "exit 3", &build_dir.join("zephyr.hex"));
+    plan.manifest = Some(TargetManifest {
+        dir: build_dir.clone(),
+        target: sample_descriptor(),
+    });
+
+    let outcome = embarch_api::build::BuildLocks::new()
+        .run_build(&plan)
+        .await
+        .expect("run_build failed");
+    assert!(!outcome.build_succeeded(), "the fixture build should have failed");
+    assert!(
+        build_dir.join(TARGET_MANIFEST_NAME).exists(),
+        "a failed build left its directory unattributable"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
 
@@ -449,7 +598,26 @@ fn shell_plan(cwd: &Path, script: &str, artifact: &Path) -> embarch_api::build::
         // than being quietly rescued by the build timeout.
         timeout_secs: 300,
         env: std::collections::HashMap::new(),
+        manifest: None,
     }
+}
+
+/// The shape `resolve::resolve_zephyr` hands to a real build: the descriptor
+/// of a target whose directory name is genuinely lossy — `nrf54l15dk` and
+/// `ble-shell` both contain `-`, and `extra_args` survives only as a hash.
+#[cfg(unix)]
+fn sample_descriptor() -> serde_json::Value {
+    serde_json::json!({
+        "project": "example-sensor-fw",
+        "board": "nrf54l15dk/nrf54l15/cpuapp",
+        "soc": "nrf54l15",
+        "cpucluster": "cpuapp",
+        "variant": serde_json::Value::Null,
+        "revision": serde_json::Value::Null,
+        "app": "ble-shell",
+        "snippets": ["wdt31"],
+        "extra_args": ["-DCONFIG_LOG=n"],
+    })
 }
 
 /// A scratch directory that removes itself. Hand-rolled rather than pulling
