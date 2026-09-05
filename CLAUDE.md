@@ -2,8 +2,9 @@
 
 ## Docs
 
-Design doc: [../embarch-doc/embarch-api/design.md](../embarch-doc/embarch-api/design.md) — source of truth for this project's architecture/design.
-Update it proactively per [../embarch-doc/DOC-PROTOCOL.md](../embarch-doc/DOC-PROTOCOL.md) whenever a notable design decision, feature, or status change happens here.
+**Four files, not one.** Current truth: [spec.md](../embarch-doc/embarch-api/spec.md). Why it is that way: [decisions.md](../embarch-doc/embarch-api/decisions.md) — an index over `decisions/`, and a decision number addresses this sub-project, not a file. Unresolved: [open.md](../embarch-doc/embarch-api/open.md). Reference: [interfaces/](../embarch-doc/embarch-api/interfaces/).
+
+Update them proactively per [../embarch-doc/DOC-PROTOCOL.md](../embarch-doc/DOC-PROTOCOL.md) whenever a notable design decision, feature, or status change happens here — §4 says when, §5 says how, and history goes in a `changelog.d/` fragment rather than into a doc.
 
 ## Git
 
