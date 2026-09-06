@@ -150,6 +150,26 @@ pub struct ProjectConfig {
     /// retired.
     #[serde(default, rename = "targets")]
     pub retired_targets: Vec<toml::Value>,
+    /// `soc_chip_overrides`, **retired unbuilt** (decision 13). It was
+    /// described in `interfaces/config.md` and in decision 13 as a
+    /// per-project `{soc, chip}` list consulted *before* Core's
+    /// `POST /resolve-chip`, and nothing ever deserialized it: with no
+    /// `deny_unknown_fields` on this struct, a config declaring the key
+    /// parsed and dropped it in silence on **both** discovery kinds.
+    ///
+    /// Retired rather than built, because the short-circuit was the whole
+    /// design and the short-circuit is what makes it wrong: Core validates
+    /// every mapping against probe-rs's own registry (`embarch-core`
+    /// decision 8) and a hit here would skip that check, so a typo would
+    /// reach `/flash` as a real chip name and attach the wrong physical
+    /// target. An unmapped SoC stops at Core's 404, which names it.
+    ///
+    /// The field survives **only so a config written from the old doc is
+    /// refused by name** rather than dropped silently — the same posture
+    /// decision 53 gave `[[projects.targets]]`. `toml::Value` for the same
+    /// reason: every shape of it is equally retired.
+    #[serde(default, rename = "soc_chip_overrides")]
+    pub retired_soc_chip_overrides: Option<toml::Value>,
     /// Only meaningful for `discovery = "zephyr-west"`: the `-S` snippets a
     /// build uses when a call omits `snippets` entirely (`resolve::Selection`).
     /// Exists because a repo's normal dev build often always wants the same
@@ -441,6 +461,26 @@ impl Config {
                 );
             }
 
+            // Decision 13: `soc_chip_overrides` is retired unbuilt. Nothing
+            // ever deserialized it, so a config written from the interface
+            // doc set it and was silently ignored on *both* discovery
+            // kinds. Refused here for both, for the retired menu's reason
+            // one branch up — the author believed it did something — and
+            // with a remedy that is a real place to put the answer rather
+            // than a second dead end.
+            if project.retired_soc_chip_overrides.is_some() {
+                bail!(
+                    "project '{}' declares soc_chip_overrides, which is retired and was never \
+                     built — nothing ever read the key, on either discovery kind. An unmapped SoC \
+                     stops at embarch-core's 404, which names the SoC: add the mapping to Core's \
+                     own SoC->chip table, where it is checked against probe-rs's registry and \
+                     every project on every machine gets it, instead of one config disagreeing \
+                     with the rest. `embarch-core chip-list <filter>` finds the target string. \
+                     Remove the key",
+                    project.name
+                );
+            }
+
             match project.discovery {
                 Discovery::Static => {
                     if project.build_command.as_ref().is_none_or(|c| c.is_empty()) {
@@ -494,7 +534,8 @@ impl Config {
                              and never assembles a west argv for a snippet, flag or build \
                              directory to land in. Remove {}, or set discovery = \"zephyr-west\" \
                              and drop build_command/chip/artifact_path, which that kind resolves \
-                             per call instead",
+                             per call instead, adding west_binary and build_dir_root, which it \
+                             requires",
                             project.name,
                             unhonourable.join("/"),
                             if unhonourable.len() == 1 { "it" } else { "them" },
@@ -866,6 +907,15 @@ flash_format = "hex"
                 message.contains("drop build_command/chip/artifact_path"),
                 "{field}: {message}"
             );
+            // And what that kind *requires*, which is the other half and
+            // was missing (task `api/017`): a static project that followed
+            // the remedy literally landed on `has no west_binary`, then on
+            // `has no build_dir_root`, in the very next arm of this
+            // `validate()`. Naming what it refuses is not enough.
+            assert!(
+                message.contains("adding west_binary and build_dir_root"),
+                "{field}: {message}"
+            );
         }
     }
 
@@ -1182,6 +1232,56 @@ name = "target-a"
                 "build_command is named to a zephyr-west caller as something other than a \
                  prohibition; the next branch of validate() refuses it: {message}"
             );
+        }
+    }
+
+    /// Decision 13: `soc_chip_overrides` was retired unbuilt, and a config
+    /// declaring it is refused by name rather than dropped — which is what
+    /// happened for as long as the interface doc described it as a real
+    /// field. Both discovery kinds, because it was read on neither, so a
+    /// refusal scoped to one would re-create the asymmetry decision 20
+    /// exists to have removed.
+    #[test]
+    fn a_retired_soc_chip_overrides_table_is_refused_on_both_discovery_kinds() {
+        let overrides = r#"soc_chip_overrides = [{ soc = "nrf54l15", chip = "nRF54L15" }]"#;
+        let dir = tempdir();
+        let static_path = dir.path().join("static.toml");
+        std::fs::write(&static_path, static_project_with(dir.path(), overrides)).unwrap();
+        let zephyr_path = dir.path().join("zephyr.toml");
+        std::fs::write(
+            &zephyr_path,
+            format!(
+                r#"
+[core]
+base_url = "auto"
+token_env = "EMBARCH_TOKEN"
+
+[[projects]]
+name = "p"
+source_path = "{dir}"
+discovery = "zephyr-west"
+west_binary = "/usr/bin/west"
+build_dir_root = "{dir}"
+flash_format = "hex"
+{overrides}
+"#,
+                dir = dir.path().display()
+            ),
+        )
+        .unwrap();
+
+        for path in [&static_path, &zephyr_path] {
+            let message = Config::load_from_path(path)
+                .err()
+                .unwrap_or_else(|| panic!("{} loaded with soc_chip_overrides", path.display()))
+                .to_string();
+            assert!(message.contains("soc_chip_overrides"), "{message}");
+            assert!(message.contains("retired"), "{message}");
+            // The remedy has to be a real place to put the answer, or this
+            // refusal is just the dead end decision 13 was written to fix
+            // with one more step in front of it.
+            assert!(message.contains("chip-list"), "{message}");
+            assert!(message.contains("Core's"), "{message}");
         }
     }
 
