@@ -526,6 +526,31 @@ impl Config {
                     .filter_map(|(name, set)| set.then_some(name))
                     .collect();
                     if !unhonourable.is_empty() {
+                        // `west_binary` and `build_dir_root` are exactly the
+                        // two fields the `zephyr-west` arm *requires*, so
+                        // when one of them is the offender a fixed "adding
+                        // west_binary and build_dir_root" tail told the
+                        // operator to add back the field the same sentence
+                        // had just told them to remove (task `api/019`).
+                        // Switching kinds *keeps* such a field; only this
+                        // tail varies, and no fourth posture is introduced.
+                        let (kept, needed): (Vec<&str>, Vec<&str>) =
+                            ["west_binary", "build_dir_root"]
+                                .into_iter()
+                                .partition(|f| unhonourable.contains(f));
+                        let requires_tail = match (kept.as_slice(), needed.as_slice()) {
+                            ([], needed) => {
+                                format!("adding {}, which it requires", needed.join(" and "))
+                            }
+                            (kept, []) => {
+                                format!("keeping {}, which it requires", kept.join(" and "))
+                            }
+                            (kept, needed) => format!(
+                                "keeping {} and adding {}, both of which it requires",
+                                kept.join(" and "),
+                                needed.join(" and "),
+                            ),
+                        };
                         bail!(
                             "project '{}' (discovery = \"static\") sets {}, which only a \
                              discovery = \"zephyr-west\" project can honour — a static project \
@@ -534,11 +559,11 @@ impl Config {
                              and never assembles a west argv for a snippet, flag or build \
                              directory to land in. Remove {}, or set discovery = \"zephyr-west\" \
                              and drop build_command/chip/artifact_path, which that kind resolves \
-                             per call instead, adding west_binary and build_dir_root, which it \
-                             requires",
+                             per call instead, {}",
                             project.name,
                             unhonourable.join("/"),
                             if unhonourable.len() == 1 { "it" } else { "them" },
+                            requires_tail,
                         );
                     }
                 }
@@ -878,11 +903,31 @@ flash_format = "hex"
     /// can lose a field without a test noticing.
     #[test]
     fn static_project_setting_any_zephyr_only_field_fails_validation() {
-        for (field, line) in [
-            ("default_snippets", r#"default_snippets = ["ble-shell"]"#),
-            ("default_extra_args", r#"default_extra_args = ["-p", "always"]"#),
-            ("west_binary", r#"west_binary = "/usr/bin/west""#),
-            ("build_dir_root", r#"build_dir_root = "/tmp/build""#),
+        for (field, line, requires_tail) in [
+            (
+                "default_snippets",
+                r#"default_snippets = ["ble-shell"]"#,
+                "adding west_binary and build_dir_root, which it requires",
+            ),
+            (
+                "default_extra_args",
+                r#"default_extra_args = ["-p", "always"]"#,
+                "adding west_binary and build_dir_root, which it requires",
+            ),
+            // Decision 20 / task `api/019`: these two are exactly what the
+            // `zephyr-west` arm requires, so the switch-discovery remedy
+            // *keeps* the offender rather than telling the operator to add
+            // back what the same sentence told them to remove.
+            (
+                "west_binary",
+                r#"west_binary = "/usr/bin/west""#,
+                "keeping west_binary and adding build_dir_root, both of which it requires",
+            ),
+            (
+                "build_dir_root",
+                r#"build_dir_root = "/tmp/build""#,
+                "keeping build_dir_root and adding west_binary, both of which it requires",
+            ),
         ] {
             let dir = tempdir();
             let path = dir.path().join("config.toml");
@@ -912,9 +957,12 @@ flash_format = "hex"
             // the remedy literally landed on `has no west_binary`, then on
             // `has no build_dir_root`, in the very next arm of this
             // `validate()`. Naming what it refuses is not enough.
+            assert!(message.contains(requires_tail), "{field}: {message}");
+            // …and without contradicting the first half: no message ever
+            // says remove *and* add the same field (task `api/019`).
             assert!(
-                message.contains("adding west_binary and build_dir_root"),
-                "{field}: {message}"
+                !message.contains(&format!("adding {field}")),
+                "{field}: remedy removes and adds the same field: {message}"
             );
         }
     }
