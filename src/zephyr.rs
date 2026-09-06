@@ -164,7 +164,10 @@ impl Target {
     /// rather than joined verbatim: unlike snippet names, an arbitrary flag
     /// can contain characters unsafe in a directory name (`=`, `/`, quotes),
     /// and preserves caller-given order (flag order can be meaningful,
-    /// unlike snippets, so it isn't sorted first).
+    /// unlike snippets, so it isn't sorted first). The hash is
+    /// `extra_args_hash` — FNV-1a, spelled out in this crate — *not*
+    /// `DefaultHasher`, whose output the standard library does not promise
+    /// to keep stable across Rust releases (decision 19).
     pub fn build_dir_name(&self, snippets: &[String], extra_args: &[String]) -> String {
         let mut name = format!(
             "{}-{}-{}-{}",
@@ -178,13 +181,57 @@ impl Target {
             name.push_str(&snippets.join("_"));
         }
         if !extra_args.is_empty() {
-            use std::hash::{Hash, Hasher};
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            extra_args.hash(&mut hasher);
-            name.push_str(&format!("-args{:016x}", hasher.finish()));
+            name.push_str(&format!("-args{:016x}", extra_args_hash(extra_args)));
         }
         name
     }
+}
+
+/// The `-args<hash>` segment of a build directory name (decision 19).
+///
+/// **FNV-1a (64-bit), written out here on purpose.** This value names a
+/// directory on disk that a later run has to find again, so it has to be
+/// fixed by *this crate* and nothing else. `std::collections::hash_map::
+/// DefaultHasher` — what this used to be — documents its output as an
+/// implementation detail that may change between Rust releases, so a
+/// toolchain bump would silently rename every `-args*` directory: the next
+/// build misses its cache, builds into a new directory beside the old one,
+/// and the old one becomes an orphan that no selection reaches and that
+/// `embarch-umbrella` decision 26 forbids pruning, because it belongs to a
+/// still-valid target.
+///
+/// The encoding is **length-prefixed per argument**, so no arrangement of
+/// separators inside the arguments can make two different lists hash the
+/// same the way a plain join could (`["a", "b"]` vs `["a b"]`).
+///
+/// FNV-1a rather than a keyed SipHash: `extra_args` comes from this
+/// machine's own project config, never from an untrusted caller, so there
+/// is no hash-flooding threat to defend against — only accidental
+/// collisions over a handful of short flag strings, which a 64-bit
+/// avalanche hash covers — and FNV needs no dependency and no key to keep
+/// in step with the on-disk names.
+///
+/// Changing this function renames directories. `build_dir_name_args_hash_
+/// matches_a_hard_coded_literal` is the tripwire that makes that a failing
+/// test rather than a silent orphaning.
+fn extra_args_hash(extra_args: &[String]) -> u64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    fn feed(mut h: u64, bytes: &[u8]) -> u64 {
+        for &b in bytes {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(FNV_PRIME);
+        }
+        h
+    }
+
+    let mut h = FNV_OFFSET_BASIS;
+    for arg in extra_args {
+        h = feed(h, &(arg.len() as u64).to_le_bytes());
+        h = feed(h, arg.as_bytes());
+    }
+    h
 }
 
 /// A project directory doesn't look Zephyr/west-shaped: no `boards/*/*.yml`
@@ -1027,8 +1074,50 @@ board:
         };
         let with_pristine = vec!["-p".to_string(), "always".to_string()];
         assert_ne!(a.build_dir_name(&[], &with_pristine), a.build_dir_name(&[], &[]));
-        // Stable for the same input.
+        // Stable for the same input — within this process. That is all this
+        // assertion proves, and it is why the test below exists as well:
+        // `DefaultHasher` satisfied this one too, while renaming every
+        // directory on a toolchain bump.
         assert_eq!(a.build_dir_name(&[], &with_pristine), a.build_dir_name(&[], &with_pristine));
+    }
+
+    /// The tripwire for decision 19's stability promise. Unlike the
+    /// same-process `assert_eq!` above — which a toolchain-dependent hash
+    /// passes just as happily — this pins the hash to a **literal computed
+    /// once and written down**, so any change to `extra_args_hash` (a
+    /// different algorithm, a different encoding, a different constant)
+    /// fails here instead of silently renaming every `-args*` build
+    /// directory already on disk and orphaning it.
+    ///
+    /// If this fails, the fix is almost never "update the literal".
+    #[test]
+    fn build_dir_name_args_hash_matches_a_hard_coded_literal() {
+        let a = Target {
+            board: "ref_board".into(),
+            soc: "nrf54l15".into(),
+            cpucluster: Some("cpuapp".into()),
+            variant: None,
+            revision: Some("2".into()),
+            app: "widget".into(),
+        };
+        let with_pristine = vec!["-p".to_string(), "always".to_string()];
+        assert_eq!(
+            a.build_dir_name(&[], &with_pristine),
+            "ref_board-default-2-widget-args6222ab5e7fce6ae9"
+        );
+
+        // The raw hash, for the two shapes the encoding is chosen to keep
+        // apart: length-prefixing each argument means no arrangement of
+        // separators inside one can collide with a longer list.
+        assert_eq!(extra_args_hash(&with_pristine), 0x6222_ab5e_7fce_6ae9);
+        assert_eq!(extra_args_hash(&["-p".to_string()]), 0x9b94_0bd3_27fb_f12a);
+        assert_ne!(
+            extra_args_hash(&["-p always".to_string()]),
+            extra_args_hash(&with_pristine)
+        );
+        // Empty is never used (`build_dir_name` skips the segment), but the
+        // basis is part of the pinned definition.
+        assert_eq!(extra_args_hash(&[]), 0xcbf2_9ce4_8422_2325);
     }
 
     #[test]
