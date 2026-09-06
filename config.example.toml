@@ -92,7 +92,12 @@ build_timeout_secs = 900
 # from board/variant/revision/app params on build/flash/build_and_flash (see
 # list_targets), validated against what boards/*/*.yml and app/*/ actually
 # declare and back with real revision-suffixed overlay/defconfig files. chip
-# comes from embarch-core's POST /resolve-chip, not a value typed here.
+# comes from embarch-core's POST /resolve-chip, not a value typed here. The
+# reverse also holds: west_binary, build_dir_root, default_snippets,
+# default_extra_args and [projects.default_target] are all rejected outright
+# on a discovery = "static" project, which can honour none of them — a
+# config that cannot ever be honoured fails at load rather than carrying a
+# line that reads as meaningful and does nothing.
 [[projects]]
 name = "my-multi-board-project"
 source_path = "/path/to/my-multi-board-project"
@@ -114,6 +119,8 @@ build_timeout_secs = 900
 # snippets overrides this entirely, it doesn't add to it. Validated against
 # app/<app>/snippets/*/snippet.yml the same way board/variant/revision are
 # validated against boards/*/*.yml — see list_targets' snippets_by_app.
+# Rejected outright for a discovery = "static" project, which honours no
+# snippet at all.
 # default_snippets = ["ble-shell"]
 # A call that wants a build with NO snippets despite this default passes the
 # reserved literal ["none"] (--snippet none on the CLI), alone: an empty list
@@ -125,7 +132,9 @@ build_timeout_secs = 900
 # entirely — e.g. a repo that always wants a pristine rebuild. Same
 # override-not-additive semantics as default_snippets, but opaque: unlike
 # snippets, there's no real-file list to validate arbitrary flags against, so
-# these are passed straight through to west build unchanged.
+# these are passed straight through to west build unchanged. Rejected
+# outright for a discovery = "static" project, whose build_command is
+# configured in full and takes nothing appended.
 # default_extra_args = ["-p", "always"]
 # Optional: the BASE (board, variant, revision, app) selection a call narrows
 # from. Set what pins this repo's common target; a call naming one of these

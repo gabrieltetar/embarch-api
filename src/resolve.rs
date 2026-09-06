@@ -300,11 +300,31 @@ fn resolve_snippets(
             );
         }
         if available.iter().any(|s| s == NO_SNIPPETS) {
+            // The remedy is conditional and this function holds what decides
+            // it. "Omit `snippets` to take the project's configured
+            // default_snippets" was stated unconditionally and is only a
+            // remedy when that default is empty: with a non-empty one,
+            // omitting builds *those* rather than none, and the config edit
+            // a reader reaches for next — the literal in `default_snippets`
+            // — is itself refused at load (decision 21). Naming a remedy
+            // that is a second refusal is worse than naming one (decision
+            // 51's surface-text rule, task `api/015`).
+            let remedy = if default_snippets.is_empty() {
+                "Rename that snippet, or omit `snippets` — this project configures no \
+                 default_snippets, so omitting builds with none either way."
+                    .to_string()
+            } else {
+                format!(
+                    "Rename that snippet: with a configured default it is the only remedy. \
+                     Omitting `snippets` would build the project's configured default_snippets \
+                     {default_snippets:?}, not none, and \"{NO_SNIPPETS}\" cannot be written into \
+                     that list instead — it is refused at config load."
+                )
+            };
             anyhow::bail!(
                 "project '{project_name}' app '{app}' declares a real snippet named \
                  \"{NO_SNIPPETS}\", which collides with the reserved literal meaning \"build with \
-                 no snippets\" — refused rather than guessed at. Rename that snippet, or omit \
-                 `snippets` to take the project's configured default_snippets."
+                 no snippets\" — refused rather than guessed at. {remedy}"
             );
         }
         Vec::new()
@@ -837,6 +857,41 @@ flash_format = "bin"
         let message = format!("{err:#}");
         assert!(message.contains("collides"), "{message}");
         assert!(message.contains("widget"), "{message}");
+        // With no configured default, omitting `snippets` really does give
+        // the caller the empty set they asked for, so it is offered.
+        assert!(message.contains("omit `snippets`"), "{message}");
+    }
+
+    /// **The advice is conditional and the message says which case it is
+    /// in.** It used to offer "omit `snippets` to take the project's
+    /// configured default_snippets" unconditionally: with a non-empty
+    /// default that builds those snippets rather than none, and the config
+    /// edit it invites — the literal in `default_snippets` — is itself a
+    /// load error, so the reader is routed into a second refusal. A message
+    /// naming an unreachable remedy is worse than one naming a single
+    /// reachable one (decision 51, task `api/015`).
+    #[test]
+    fn the_collision_message_does_not_offer_omitting_when_a_default_is_configured() {
+        let real = vec!["none".to_string(), "ble-shell".to_string()];
+        let configured = vec!["ble-shell".to_string()];
+        let err = resolve_snippets("p", "widget", &[NO_SNIPPETS.to_string()], &configured, &real)
+            .map(|_| ())
+            .expect_err("a real snippet named none makes the literal ambiguous");
+        let message = format!("{err:#}");
+        assert!(message.contains("collides"), "{message}");
+        // Renaming is offered as the only remedy...
+        assert!(message.contains("the only remedy"), "{message}");
+        // ...and the other two paths a reader would try are named as the
+        // dead ends they are, rather than left to be discovered by running
+        // into them.
+        assert!(message.contains("[\"ble-shell\"]"), "{message}");
+        assert!(message.contains("refused at config load"), "{message}");
+        // Asserted as an absence too, so the unconditional phrasing cannot
+        // come back without this test failing.
+        assert!(
+            !message.contains("or omit `snippets`"),
+            "the unreachable remedy is offered anyway: {message}"
+        );
     }
 
     #[test]

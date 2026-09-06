@@ -122,14 +122,17 @@ pub struct ProjectConfig {
     /// pipeline made a second real probe common enough to need it for real.
     #[serde(default)]
     pub probe_serial: Option<String>,
-    /// Only meaningful for `discovery = "zephyr-west"`: the `west` binary to
-    /// invoke (often not on bare `PATH` — see `config.example.toml`).
+    /// `discovery = "zephyr-west"` only: the `west` binary to invoke (often
+    /// not on bare `PATH` — see `config.example.toml`). **Refused outright
+    /// for a `static` project**, which assembles no west argv (decision 20).
     #[serde(default)]
     pub west_binary: Option<PathBuf>,
-    /// Only meaningful for `discovery = "zephyr-west"`: parent directory
-    /// under which each distinct target gets its own build subdirectory
+    /// `discovery = "zephyr-west"` only: parent directory under which each
+    /// distinct target gets its own build subdirectory
     /// (`embarch-umbrella/design.md` §3 decision 10's no-shared-build-dir
-    /// rule), named by `zephyr::Target::build_dir_name`.
+    /// rule), named by `zephyr::Target::build_dir_name`. **Refused outright
+    /// for a `static` project**, whose build directory is its
+    /// `build_command`'s own business (decision 20).
     #[serde(default)]
     pub build_dir_root: Option<PathBuf>,
     /// `[[projects.targets]]`, **retired** (`design.md` §3 decision 53).
@@ -153,7 +156,9 @@ pub struct ProjectConfig {
     /// snippet(s) (e.g. this repo's own prior static config always built
     /// with `-S ble-shell`) — without this, moving that project to
     /// `zephyr-west` would silently drop it on every call unless a caller
-    /// remembered to pass `snippets` by hand every time.
+    /// remembered to pass `snippets` by hand every time. **Refused outright
+    /// for a `static` project**, which honours no snippet at all
+    /// (decision 20).
     #[serde(default)]
     pub default_snippets: Vec<String>,
     /// Only meaningful for `discovery = "zephyr-west"`: the base
@@ -169,7 +174,8 @@ pub struct ProjectConfig {
     /// `default_snippets` — there's no real-file list to validate arbitrary
     /// flags against, so these are passed straight through to `west build`,
     /// same posture `discovery = "static"`'s `build_command` already has for
-    /// its whole argv.
+    /// its whole argv. **Refused outright for a `static` project**, whose
+    /// argv is configured in full and takes nothing appended (decision 20).
     #[serde(default)]
     pub default_extra_args: Vec<String>,
     /// How to produce **this project's own firmware version string**, run in
@@ -456,18 +462,42 @@ impl Config {
                         );
                     }
                     // Decision 51: a static project refuses every selection
-                    // field on a *call*, so a default one is refused here
-                    // rather than accepted and then rejected at every use —
-                    // a config that cannot ever be honoured fails at load,
-                    // which is the cheapest place to learn it.
-                    if project.default_target.is_some() {
+                    // field on a *call*, so a config that cannot ever be
+                    // honoured fails at load, the cheapest place to learn
+                    // it. **The whole class, not just `default_target`**
+                    // (decision 20): the other four were equally
+                    // unhonourable here and loaded silently, which is an
+                    // asymmetry nobody decided and a trap for the next
+                    // field added. One shared remedy is honest here —
+                    // unlike the retired-menu branch above, where the two
+                    // discovery kinds migrate in opposite directions, every
+                    // one of these moves the same way.
+                    let unhonourable: Vec<&str> = [
+                        ("default_target", project.default_target.is_some()),
+                        ("default_snippets", !project.default_snippets.is_empty()),
+                        (
+                            "default_extra_args",
+                            !project.default_extra_args.is_empty(),
+                        ),
+                        ("west_binary", project.west_binary.is_some()),
+                        ("build_dir_root", project.build_dir_root.is_some()),
+                    ]
+                    .into_iter()
+                    .filter_map(|(name, set)| set.then_some(name))
+                    .collect();
+                    if !unhonourable.is_empty() {
                         bail!(
-                            "project '{}' (discovery = \"static\") sets default_target, which only \
-                             a discovery = \"zephyr-west\" project can honour — a static project \
-                             builds its configured build_command verbatim and refuses \
-                             board/variant/revision/app outright. Remove it, or set discovery = \
-                             \"zephyr-west\"",
-                            project.name
+                            "project '{}' (discovery = \"static\") sets {}, which only a \
+                             discovery = \"zephyr-west\" project can honour — a static project \
+                             runs its configured build_command verbatim, refuses \
+                             board/variant/revision/app/snippets/extra_args on a call outright, \
+                             and never assembles a west argv for a snippet, flag or build \
+                             directory to land in. Remove {}, or set discovery = \"zephyr-west\" \
+                             and drop build_command/chip/artifact_path, which that kind resolves \
+                             per call instead",
+                            project.name,
+                            unhonourable.join("/"),
+                            if unhonourable.len() == 1 { "it" } else { "them" },
                         );
                     }
                 }
@@ -775,6 +805,100 @@ board = "my_board"
         let message = err.to_string();
         assert!(message.contains("default_target"), "{message}");
         assert!(message.contains("static"), "{message}");
+    }
+
+    /// A static `[[projects]]` block carrying exactly the one extra line
+    /// under test, for the refusal below.
+    fn static_project_with(dir: &Path, extra: &str) -> String {
+        format!(
+            r#"
+[core]
+base_url = "auto"
+token_env = "EMBARCH_TOKEN"
+
+[[projects]]
+name = "p"
+source_path = "{dir}"
+build_command = ["true"]
+chip = "nRF54L15"
+artifact_path = "out.hex"
+flash_format = "hex"
+{extra}
+"#,
+            dir = dir.display()
+        )
+    }
+
+    /// **The refusal covers the class, not one member of it** (decision 20).
+    /// `default_target` failed at load while `default_snippets`,
+    /// `default_extra_args`, `west_binary` and `build_dir_root` were equally
+    /// unhonourable on a static project and loaded silently. One case per
+    /// newly-refused field, because a shared loop is exactly the thing that
+    /// can lose a field without a test noticing.
+    #[test]
+    fn static_project_setting_any_zephyr_only_field_fails_validation() {
+        for (field, line) in [
+            ("default_snippets", r#"default_snippets = ["ble-shell"]"#),
+            ("default_extra_args", r#"default_extra_args = ["-p", "always"]"#),
+            ("west_binary", r#"west_binary = "/usr/bin/west""#),
+            ("build_dir_root", r#"build_dir_root = "/tmp/build""#),
+        ] {
+            let dir = tempdir();
+            let path = dir.path().join("config.toml");
+            std::fs::write(&path, static_project_with(dir.path(), line)).unwrap();
+            let message = Config::load_from_path(&path)
+                .err()
+                .unwrap_or_else(|| panic!("{field} loaded on a static project"))
+                .to_string();
+            assert!(message.contains(field), "{field}: {message}");
+            assert!(message.contains("static"), "{field}: {message}");
+            // Assert the *advice*, not only the refusal (task `api/015`):
+            // both halves have to be things this operator can carry out.
+            assert!(message.contains("Remove it"), "{field}: {message}");
+            assert!(
+                message.contains("set discovery = \"zephyr-west\""),
+                "{field}: {message}"
+            );
+            // The switch-discovery half is only followable if it also says
+            // what that kind refuses, or it routes the reader straight into
+            // the next branch of this same `validate()`.
+            assert!(
+                message.contains("drop build_command/chip/artifact_path"),
+                "{field}: {message}"
+            );
+        }
+    }
+
+    /// Every unhonourable field is named at once rather than one per
+    /// re-run: an operator migrating a config fixes it in one pass.
+    #[test]
+    fn a_static_project_is_told_about_all_its_unhonourable_fields_at_once() {
+        let dir = tempdir();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            static_project_with(
+                dir.path(),
+                "default_snippets = [\"ble-shell\"]\nwest_binary = \"/usr/bin/west\"",
+            ),
+        )
+        .unwrap();
+        let message = Config::load_from_path(&path).unwrap_err().to_string();
+        assert!(message.contains("default_snippets"), "{message}");
+        assert!(message.contains("west_binary"), "{message}");
+        assert!(message.contains("them"), "{message}");
+    }
+
+    /// The refusal is set-membership, not "a static project is suspicious":
+    /// a static project setting none of them loads exactly as before, which
+    /// is the half that bounds the breaking-config-change cost.
+    #[test]
+    fn a_static_project_setting_none_of_them_still_loads() {
+        let dir = tempdir();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, static_project_with(dir.path(), "")).unwrap();
+        let config = Config::load_from_path(&path).unwrap();
+        assert_eq!(config.project("p").unwrap().discovery, Discovery::Static);
     }
 
     #[test]
