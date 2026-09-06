@@ -1710,8 +1710,6 @@ mod tests {
         assert_eq!(manifest_beside(artifact.to_str().unwrap()), None);
     }
 
-    use super::*;
-
     /// A default-options submit must produce the exact URL every caller sent
     /// before these parameters existed. The three old MCP tools and the
     /// `embarch-ui` Study Designer are still on that path, and an alias that

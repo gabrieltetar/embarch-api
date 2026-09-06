@@ -1,3 +1,18 @@
+# `crates/embarch-core-client` is a **workspace member**, not just a path
+# dependency (2026-09-06, decision 56). A path dependency is built as a lib
+# only, so its `#[cfg(test)] mod tests` is never compiled — which meant
+# `cargo clippy --all-targets -- -D warnings` and `cargo test` run here both
+# skipped that crate's 28 unit tests entirely, and a red `unused_imports`
+# sat in `client.rs` unreported. `members` alone does not fix it:
+# `cargo metadata` still reports this package as the sole default member, so
+# a bare `cargo clippy` at the root still misses the sub-crate. It is
+# `default-members` that makes the *unamended* gate command reach it, which
+# is the point — the gate lives in `embarch-fleet/protocol.md` §10 and is
+# not this repo's to change.
+[workspace]
+members = ["crates/embarch-core-client"]
+default-members = [".", "crates/embarch-core-client"]
+
 [package]
 name = "embarch-api"
 version = "0.1.0"
