@@ -776,18 +776,55 @@ impl CoreClient {
         Ok(&self.resolved_address().await?.0)
     }
 
-    /// The shared `reqwest` client, for the one caller that cannot go
-    /// through [`CoreClient::send`]: `study_events`, which streams a body
-    /// instead of parsing one and must set no request timeout.
+    /// The shared `reqwest` client, for the one caller that builds its
+    /// request outside this file: `study_events`, which streams a body
+    /// instead of parsing one and must set no request timeout. It carries
+    /// **no** credential — the token is applied by [`CoreClient::dispatch`],
+    /// which that caller goes through like every other route.
     pub(crate) fn http(&self) -> &reqwest::Client {
         &self.client
     }
 
-    /// The resolved bearer token. `pub(crate)` for the same one caller —
-    /// every other route gets it applied for it by `send`/`send_no_content`,
-    /// and that stays the rule.
-    pub(crate) fn bearer_token(&self) -> &str {
-        &self.token
+    /// **The one place an outbound request is authenticated and sent.**
+    ///
+    /// Every route in this client hands its `RequestBuilder` here — the
+    /// ones that just want JSON back, via [`CoreClient::send`], and equally
+    /// the ones that read a status themselves (a `404` that means "not
+    /// enrolled", a `409` that carries a topology mismatch) or that stream.
+    /// That makes `Authorization: Bearer …` unconditional **by
+    /// construction rather than by convention**, the shape `json_out` takes
+    /// for `schema_version` (`embarch-api` decisions 50, 55), and
+    /// `every_outbound_request_is_sent_through_the_one_funnel` fails if a
+    /// second send site appears anywhere in the crate.
+    ///
+    /// `timeout: None` is the streaming case and nothing else: `reqwest`'s
+    /// per-request timeout covers the body too, so applying one to an SSE
+    /// subscription would cut a healthy stream off — see
+    /// [`CoreClient::open_study_events`], which bounds itself per read
+    /// instead.
+    ///
+    /// ***Rejected: `default_headers` on the `ClientBuilder`.*** It would
+    /// attach the token to every request this `reqwest::Client` makes
+    /// rather than to every request *this client's routes* make, and those
+    /// are not the same set once anything else is built on the handle
+    /// `http()` already hands out. Per-route attachment also stays
+    /// observable: the mocked sweep can assert the header on the wire for
+    /// each route, which a builder default makes invisible at every call
+    /// site.
+    pub(crate) async fn dispatch(
+        &self,
+        request: reqwest::RequestBuilder,
+        timeout: Option<Duration>,
+    ) -> Result<reqwest::Response> {
+        let request = request.bearer_auth(&self.token);
+        let request = match timeout {
+            Some(timeout) => request.timeout(timeout),
+            None => request,
+        };
+        request
+            .send()
+            .await
+            .context("request to embarch-core failed")
     }
 
     /// The winning topology class — `Local` for a declared address (no
@@ -804,17 +841,16 @@ impl CoreClient {
     /// Core's error responses are plain-text bodies (axum's IntoResponse for
     /// `(StatusCode, String)`), not JSON — so non-2xx bodies must be read as
     /// text, never parsed as JSON, or Core's actual error message is lost.
+    ///
+    /// The default funnel: any status but 2xx is an error. A route that
+    /// gives a particular status its own meaning goes through
+    /// [`CoreClient::dispatch`] directly and reads the status itself.
     async fn send<T: serde::de::DeserializeOwned>(
         &self,
         request: reqwest::RequestBuilder,
         timeout: Duration,
     ) -> Result<T> {
-        let response = request
-            .bearer_auth(&self.token)
-            .timeout(timeout)
-            .send()
-            .await
-            .context("request to embarch-core failed")?;
+        let response = self.dispatch(request, Some(timeout)).await?;
 
         let status = response.status();
         if !status.is_success() {
@@ -841,12 +877,7 @@ impl CoreClient {
         request: reqwest::RequestBuilder,
         timeout: Duration,
     ) -> Result<()> {
-        let response = request
-            .bearer_auth(&self.token)
-            .timeout(timeout)
-            .send()
-            .await
-            .context("request to embarch-core failed")?;
+        let response = self.dispatch(request, Some(timeout)).await?;
 
         let status = response.status();
         if status.is_success() {
@@ -1025,14 +1056,11 @@ impl CoreClient {
     pub async fn validate(&self, role: &str) -> Result<ValidateResponse> {
         let url = format!("{}/validate", self.base_url().await?);
         let response = self
-            .client
-            .post(url)
-            .bearer_auth(&self.token)
-            .timeout(self.reset_timeout)
-            .json(&ValidateRequest { role })
-            .send()
-            .await
-            .context("request to embarch-core failed")?;
+            .dispatch(
+                self.client.post(url).json(&ValidateRequest { role }),
+                Some(self.reset_timeout),
+            )
+            .await?;
 
         let status = response.status();
         if status.is_success() {
@@ -1104,13 +1132,8 @@ impl CoreClient {
     pub async fn dev_bench_port(&self) -> Result<Option<DevBenchPortResponse>> {
         let url = format!("{}/dev-bench/port", self.base_url().await?);
         let response = self
-            .client
-            .get(url)
-            .bearer_auth(&self.token)
-            .timeout(self.status_timeout)
-            .send()
-            .await
-            .context("request to embarch-core failed")?;
+            .dispatch(self.client.get(url), Some(self.status_timeout))
+            .await?;
 
         let status = response.status();
         if status == reqwest::StatusCode::NOT_FOUND {
@@ -1221,14 +1244,8 @@ impl CoreClient {
 
         let url = format!("{}/study{}", self.base_url().await?, run.query_suffix());
         let response = self
-            .client
-            .post(url)
-            .bearer_auth(&self.token)
-            .timeout(self.study_timeout)
-            .json(study)
-            .send()
-            .await
-            .context("request to embarch-core failed")?;
+            .dispatch(self.client.post(url).json(study), Some(self.study_timeout))
+            .await?;
 
         let status = response.status();
         if status.is_success() {
@@ -1262,13 +1279,8 @@ impl CoreClient {
     pub async fn get_study_status(&self, study_id: &str) -> Result<StudyStatusResponse> {
         let url = format!("{}/study/{study_id}", self.base_url().await?);
         let response = self
-            .client
-            .get(url)
-            .bearer_auth(&self.token)
-            .timeout(self.study_timeout)
-            .send()
-            .await
-            .context("request to embarch-core failed")?;
+            .dispatch(self.client.get(url), Some(self.study_timeout))
+            .await?;
 
         let status = response.status();
         if status.is_success() {
@@ -1305,13 +1317,8 @@ impl CoreClient {
     async fn get_study_csv(&self, endpoint: &str, study_id: &str, not_found: &str) -> Result<Bytes> {
         let url = format!("{}/study/{study_id}/{endpoint}", self.base_url().await?);
         let response = self
-            .client
-            .get(url)
-            .bearer_auth(&self.token)
-            .timeout(self.study_timeout)
-            .send()
-            .await
-            .context("request to embarch-core failed")?;
+            .dispatch(self.client.get(url), Some(self.study_timeout))
+            .await?;
 
         let status = response.status();
         if status.is_success() {
@@ -1451,13 +1458,8 @@ impl CoreClient {
     pub async fn remove_signal(&self, name: &str) -> Result<bool> {
         let url = format!("{}/signals/{}", self.base_url().await?, urlencode(name));
         let response = self
-            .client
-            .delete(url)
-            .bearer_auth(&self.token)
-            .timeout(self.status_timeout)
-            .send()
-            .await
-            .context("request to embarch-core failed")?;
+            .dispatch(self.client.delete(url), Some(self.status_timeout))
+            .await?;
 
         let status = response.status();
         if status == reqwest::StatusCode::NOT_FOUND {
@@ -1507,13 +1509,8 @@ impl CoreClient {
     pub async fn study_streams(&self, study_id: &str) -> Result<Option<StudyStreamIndex>> {
         let url = format!("{}/study/{}/streams", self.base_url().await?, urlencode(study_id));
         let response = self
-            .client
-            .get(url)
-            .bearer_auth(&self.token)
-            .timeout(self.status_timeout)
-            .send()
-            .await
-            .context("request to embarch-core failed")?;
+            .dispatch(self.client.get(url), Some(self.status_timeout))
+            .await?;
 
         let status = response.status();
         if status == reqwest::StatusCode::NOT_FOUND {
@@ -1544,13 +1541,8 @@ impl CoreClient {
     pub async fn study_steps(&self, study_id: &str) -> Result<Option<StudySteps>> {
         let url = format!("{}/study/{}/steps", self.base_url().await?, urlencode(study_id));
         let response = self
-            .client
-            .get(url)
-            .bearer_auth(&self.token)
-            .timeout(self.status_timeout)
-            .send()
-            .await
-            .context("request to embarch-core failed")?;
+            .dispatch(self.client.get(url), Some(self.status_timeout))
+            .await?;
 
         let status = response.status();
         if status == reqwest::StatusCode::NOT_FOUND {

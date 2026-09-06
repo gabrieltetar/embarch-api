@@ -406,7 +406,10 @@ impl CoreClient {
     /// answers, and `reqwest`'s per-request timeout covers the body too, so
     /// applying it here would cut a healthy stream off after 30 s. The
     /// bound that replaces it is [`FollowOptions::idle_timeout`], applied
-    /// per read.
+    /// per read. That is the whole of what makes this route special: it
+    /// still goes through `CoreClient::dispatch` like every other one, and
+    /// so is authenticated by construction rather than by this method
+    /// remembering to be.
     pub async fn open_study_events(
         &self,
         study_id: &str,
@@ -414,11 +417,7 @@ impl CoreClient {
     ) -> Result<StudyEventStream> {
         let url = format!("{}/study/{study_id}/events", self.base_url().await?);
         let response = self
-            .http()
-            .get(url)
-            .bearer_auth(self.bearer_token())
-            .header("Accept", "text/event-stream")
-            .send()
+            .dispatch(self.http().get(url).header("Accept", "text/event-stream"), None)
             .await
             .context("could not open embarch-core's study event stream")?;
 

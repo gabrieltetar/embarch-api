@@ -487,9 +487,11 @@ async fn an_already_finished_study_returns_without_waiting_for_an_event() {
 }
 
 /// The subscription must carry the bearer token like every other route. The
-/// stream is the one call that does not go through `CoreClient::send`, which
-/// is where that is applied for everything else — so it is also the one that
-/// could quietly stop sending it.
+/// stream is the one call that does not go through `CoreClient::send` — it
+/// reads the response instead of consuming it, and sets no request timeout —
+/// so before decision 55 it applied the token by hand and was the one route
+/// that could quietly stop sending it. It goes through `dispatch` now; this
+/// asserts on the wire what that is supposed to buy.
 #[tokio::test]
 async fn the_event_stream_request_carries_the_bearer_token() {
     let mock = MockCore::start(routed(

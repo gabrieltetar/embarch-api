@@ -140,8 +140,9 @@ async fn every_outbound_call_carries_the_bearer_token() {
     // is why the mock answers that one route.
     let _ = client.post_study(&self_test_study(), &StudyRunOptions::default()).await;
     // The SSE stream is the one route that does not go through the client's
-    // `send` helper at all (it streams a body and sets no request timeout),
-    // so it is exactly the shape that escapes a hand-kept list — and did.
+    // `send` helper (it streams a body and sets no request timeout), so it
+    // is exactly the shape that escapes a hand-kept list — and did. It does
+    // go through `dispatch`, which is what now applies the token to it.
     let _ = client
         .open_study_events("study-1", Duration::from_millis(250))
         .await;
@@ -352,6 +353,88 @@ fn the_sweep_calls_every_networked_method() {
         "`{SWEEP_FN}` calls these, but no outbound request was found anywhere in their \
          source: {stale:?}. Either they stopped reaching the network, or this scan's idea \
          of how a request is built has gone stale."
+    );
+}
+
+/// The one method allowed to authenticate a request and put it on the wire.
+const AUTH_FUNNEL: &str = "dispatch";
+
+/// **The structural half of decision 55**, and the reason the sweep above is
+/// now a guard on one funnel rather than an audit of twenty-five call sites.
+///
+/// Until 2026-09-06, nine of `CoreClient`'s routes applied `.bearer_auth(…)`
+/// by hand — the ones giving a `404` or a `409` its own meaning, plus the SSE
+/// stream — because `send`/`send_no_content` consume the response and those
+/// routes need to read the status themselves. All nine did send the token,
+/// and `client.rs`'s own comment said none of them existed. **A convention
+/// nine sites are exempt from is not a convention**, and a comment asserting
+/// an invariant the code does not hold is worse than no comment.
+///
+/// So the token is applied in exactly one place, and this asserts it: the
+/// same shape decision 50 gives `json_out::pretty` for `schema_version`. A
+/// new route cannot be unauthenticated without either calling `bearer_auth`
+/// itself or sending a request of its own, and both are red here.
+///
+/// **What this does not cover.** Like `the_sweep_calls_every_networked_method`
+/// it is a lexical scan, not a Rust parse. It reads a bare `.send()` and
+/// `.execute(` as "puts a request on the wire", which is what `reqwest` gives
+/// this crate and nothing else; a channel `send` takes an argument and so
+/// does not collide. And it says nothing about *which* token — that is
+/// `the_resolved_token_is_the_one_that_is_sent`'s job.
+#[test]
+fn every_outbound_request_is_sent_through_the_one_funnel() {
+    let mut auth_sites: Vec<String> = Vec::new();
+    let mut wire_sites: Vec<String> = Vec::new();
+
+    for (file, lines) in &client_sources() {
+        let mut enclosing = String::from("<no enclosing fn>");
+        for (number, line) in lines {
+            if let Some((name, _)) = declared_fn(line) {
+                enclosing = name;
+            }
+            let site = format!("{file}:{number} (in `{enclosing}`)");
+            if line.contains(".bearer_auth(") {
+                auth_sites.push(site.clone());
+            }
+            if line.contains(".send()") || line.contains(".execute(") {
+                wire_sites.push(site);
+            }
+        }
+    }
+
+    let expected = format!("(in `{AUTH_FUNNEL}`)");
+    let stray: Vec<&String> = auth_sites
+        .iter()
+        .filter(|site| !site.ends_with(&expected))
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "these sites apply the bearer token themselves: {stray:?}. `CoreClient::{AUTH_FUNNEL}` \
+         is the only place that may — a route needing typed status handling passes it its \
+         `RequestBuilder` and reads the status off what comes back."
+    );
+    assert_eq!(
+        auth_sites.len(),
+        1,
+        "expected exactly one `.bearer_auth(…)` in the client, found {}: {auth_sites:?}. More \
+         than one inside `{AUTH_FUNNEL}` means a branch can skip it.",
+        auth_sites.len()
+    );
+
+    let stray: Vec<&String> = wire_sites
+        .iter()
+        .filter(|site| !site.ends_with(&expected))
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "these sites send a request without going through `CoreClient::{AUTH_FUNNEL}`: \
+         {stray:?}. That is how a route ends up unauthenticated, and the token being applied \
+         by construction depends on this being the empty set."
+    );
+    assert!(
+        !wire_sites.is_empty(),
+        "no send site was found at all — this scan's idea of how a request reaches the wire \
+         has gone stale, and it would pass vacuously"
     );
 }
 
