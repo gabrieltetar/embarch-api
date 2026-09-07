@@ -229,8 +229,8 @@ pub struct RunStudyParams {
     /// steps, streams_crc over streams and protocols_crc over protocols —
     /// are recomputed and overwritten regardless of what's given.
     ///
-    /// Real MCP-path gap found running `embarch-doc/embarch-api/milestone-8.md`
-    /// §3.8 against a live MCP client: `serde_json::Value`'s own `JsonSchema`
+    /// Real MCP-path gap found running against a live MCP client
+    /// (`embarch-api` decision 31, 33): `serde_json::Value`'s own `JsonSchema`
     /// impl generates the JSON Schema literal `true` ("matches anything"),
     /// with no `"type": "object"` for a client to key off — at least one real
     /// client (Claude Code) read that as "no declared shape" and serialized
@@ -789,7 +789,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Reset a project's target chip via embarch-core. For a discovery = \"zephyr-west\" project, board/variant/revision/app select which target's chip to reset (extends design.md §3 decision 12's params to reset, for the same reason build/flash need them: there's no single stored chip to fall back to). A discovery = \"static\" project has one stored chip and rejects those params rather than discarding them.")]
+    #[tool(description = "Reset a project's target chip via embarch-core. For a discovery = \"zephyr-west\" project, board/variant/revision/app select which target's chip to reset (extends embarch-api decision 12's params to reset, for the same reason build/flash need them: there's no single stored chip to fall back to). A discovery = \"static\" project has one stored chip and rejects those params rather than discarding them.")]
     async fn reset(
         &self,
         Parameters(params): Parameters<TargetParams>,
@@ -810,7 +810,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Enroll a physical probe with embarch-topology's enrollment storage (design.md decision 22), recording which board its serial number is wired to. Requires exactly one debug probe currently attached, unless probe_serial picks a specific one — Core refuses (naming every candidate) otherwise, since the whole point is knowing exactly which board is meant before confirming. Once enrolled, flash/reset/run_study all refuse to touch that probe unless a live hardware-ID readback still matches what was recorded here. No project param — this isn't build-target selection.")]
+    #[tool(description = "Enroll a physical probe with embarch-topology's enrollment storage (embarch-topology decision 14), recording which board its serial number is wired to. Requires exactly one debug probe currently attached, unless probe_serial picks a specific one — Core refuses (naming every candidate) otherwise, since the whole point is knowing exactly which board is meant before confirming. Once enrolled, flash/reset/run_study all refuse to touch that probe unless a live hardware-ID readback still matches what was recorded here. No project param — this isn't build-target selection.")]
     async fn enroll_probe(
         &self,
         Parameters(EnrollProbeParams { role, chip, probe_serial }): Parameters<EnrollProbeParams>,
@@ -827,7 +827,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Explicit, non-destructive re-check of an already-enrolled board's live identity via embarch-core's POST /validate (design.md §3 decision 28) — the same check flash/reset/run_study already run mid-attach, callable on its own without touching hardware otherwise. On a match, returns the enrolled board's fields. On a topology mismatch (the attached chip no longer matches what was recorded), returns an error naming both the recorded and live hardware IDs plus a fix_it_url pointing at embarch-ui's Topology tab — relayed as text, never auto-opened (embarch-topology/design.md §3 decision 12: opening/focusing the UI is the caller's job). On no board enrolled under role yet, returns a plain not-enrolled error.")]
+    #[tool(description = "Explicit, non-destructive re-check of an already-enrolled board's live identity via embarch-core's POST /validate (embarch-core decision 28) — the same check flash/reset/run_study already run mid-attach, callable on its own without touching hardware otherwise. On a match, returns the enrolled board's fields. On a topology mismatch (the attached chip no longer matches what was recorded), returns an error naming both the recorded and live hardware IDs plus a fix_it_url pointing at embarch-ui's Topology tab — relayed as text, never auto-opened (embarch-topology decision 12: opening/focusing the UI is the caller's job). On no board enrolled under role yet, returns a plain not-enrolled error.")]
     async fn validate(
         &self,
         Parameters(ValidateParams { role }): Parameters<ValidateParams>,
@@ -858,7 +858,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "List the most recent topology-mismatch alerts from embarch-core's durable log via GET /alerts (design.md §3 decision 28) — what a validate 409, or a mismatch caught mid-flash/reset/run_study, gets logged as. Defaults to the 20 most recent.")]
+    #[tool(description = "List the most recent topology-mismatch alerts from embarch-core's durable log via GET /alerts (embarch-core decision 28) — what a validate 409, or a mismatch caught mid-flash/reset/run_study, gets logged as. Defaults to the 20 most recent.")]
     async fn alerts(
         &self,
         Parameters(AlertsParams { limit }): Parameters<AlertsParams>,
@@ -1142,7 +1142,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Alias for study_stream_data, kept for one release: fetches whichever declared tap answers the 'gatt' alias (a GattTranscript-encoded tap), as rendered CSV text. This is the exhaustive record — every notification, indication, read, write, subscribe and connect/disconnect event across every step, with each payload in both hex and printable-ASCII columns — Every study with a monitor step gets one automatically as of schema v14 (embarch-study-designer/design.md decision 54, which retired the capped per-step gatt_activity that used to be the only inline record). Prefer study_stream_data { study_id, name }, and call list_study_streams to see what a study captured and whether it was truncated. A study with no GATT transcript tap has none; that's a clear error naming study_id, not empty output.")]
+    #[tool(description = "Alias for study_stream_data, kept for one release: fetches whichever declared tap answers the 'gatt' alias (a GattTranscript-encoded tap), as rendered CSV text. This is the exhaustive record — every notification, indication, read, write, subscribe and connect/disconnect event across every step, with each payload in both hex and printable-ASCII columns — Every study with a monitor step gets one automatically as of schema v14 (embarch-study-designer decision 54, which retired the capped per-step gatt_activity that used to be the only inline record). Prefer study_stream_data { study_id, name }, and call list_study_streams to see what a study captured and whether it was truncated. A study with no GATT transcript tap has none; that's a clear error naming study_id, not empty output.")]
     async fn study_gatt_data(
         &self,
         Parameters(StudyIdParams { study_id }): Parameters<StudyIdParams>,
