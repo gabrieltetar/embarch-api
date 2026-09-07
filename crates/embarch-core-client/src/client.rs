@@ -270,7 +270,7 @@ impl std::error::Error for TopologyMismatchError {}
 /// Alert`'s fields without depending on that crate's `hardware` feature
 /// (this crate deliberately never links `probe-rs`/`serialport`,
 /// `embarch-topology/design.md` §4's own "no hardware knowledge" boundary).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AlertResponse {
     pub id: String,
     pub occurred_at_utc_ms: u64,
@@ -290,7 +290,7 @@ pub struct AlertResponse {
 /// in-process, is what keeps it correct when Core runs on a different
 /// machine than whichever process is asking — the same "never link
 /// probe-rs/serialport directly" rule §11 already states for this crate.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EnrolledBoardResponse {
     pub probe_serial: String,
     pub role: String,
@@ -299,6 +299,15 @@ pub struct EnrolledBoardResponse {
     pub confirmed_at_utc_ms: u64,
     #[serde(default)]
     pub link_port_serial: Option<String>,
+    /// Which USB interface of the link-port device carries the runtime link,
+    /// when the serial alone cannot say (a debug probe exposing two VCOM
+    /// ports shares one USB serial across both) —
+    /// `embarch_topology::hardware::EnrolledBoard::link_port_interface`'s own
+    /// doc comment has the nRF54L15DK two-VCOM story that made this a real
+    /// field, not a speculative one (`embarch-topology` decision 20). Added
+    /// here 2026-09-07 after the mirror silently dropped it for a release.
+    #[serde(default)]
+    pub link_port_interface: Option<u8>,
 }
 
 /// One declared DUT signal link — `POST /signals` / `GET /signals`
@@ -1618,6 +1627,87 @@ mod tests {
             serde_json::from_str::<SignalLink>(SIGNAL_LINK_JSON).unwrap(),
             outpost_signal()
         );
+    }
+
+    /// [`AlertResponse`]'s half of the same mirror contract
+    /// [`SIGNAL_LINK_JSON`] documents. The Core-side counterpart test that
+    /// pins `embarch_topology::hardware::Alert` against this exact string
+    /// does not exist yet — this only pins the client's own read of it.
+    const ALERT_RESPONSE_JSON: &str = concat!(
+        r#"{"id":"18f3a2-4242","occurred_at_utc_ms":1725000000000,"role":"dut","#,
+        r#""probe_serial":"ABC123","chip":"nrf54l15","recorded_hardware_id":"AAAA","#,
+        r#""live_hardware_id":"BBBB","reason":"hardware id mismatch"}"#
+    );
+
+    fn sample_alert() -> AlertResponse {
+        AlertResponse {
+            id: "18f3a2-4242".to_string(),
+            occurred_at_utc_ms: 1725000000000,
+            role: "dut".to_string(),
+            probe_serial: "ABC123".to_string(),
+            chip: "nrf54l15".to_string(),
+            recorded_hardware_id: "AAAA".to_string(),
+            live_hardware_id: Some("BBBB".to_string()),
+            reason: "hardware id mismatch".to_string(),
+        }
+    }
+
+    #[test]
+    fn an_alert_round_trips_against_the_pinned_shape() {
+        assert_eq!(serde_json::to_string(&sample_alert()).unwrap(), ALERT_RESPONSE_JSON);
+        assert_eq!(
+            serde_json::from_str::<AlertResponse>(ALERT_RESPONSE_JSON).unwrap(),
+            sample_alert()
+        );
+    }
+
+    /// [`EnrolledBoardResponse`]'s half of the same mirror contract, pinning
+    /// `link_port_interface` in particular (`embarch-topology` decision 20)
+    /// — the field this task exists to stop the mirror from dropping. The
+    /// Core-side counterpart test that pins `embarch_topology::hardware::
+    /// EnrolledBoard` against this exact string does not exist yet.
+    const ENROLLED_BOARD_RESPONSE_JSON: &str = concat!(
+        r#"{"probe_serial":"ABC123","role":"dev-bench","chip":"nrf54l15","#,
+        r#""hardware_id":"AAAA","confirmed_at_utc_ms":1725000000000,"#,
+        r#""link_port_serial":"D607104","link_port_interface":2}"#
+    );
+
+    fn sample_enrolled_board() -> EnrolledBoardResponse {
+        EnrolledBoardResponse {
+            probe_serial: "ABC123".to_string(),
+            role: "dev-bench".to_string(),
+            chip: "nrf54l15".to_string(),
+            hardware_id: "AAAA".to_string(),
+            confirmed_at_utc_ms: 1725000000000,
+            link_port_serial: Some("D607104".to_string()),
+            link_port_interface: Some(2),
+        }
+    }
+
+    #[test]
+    fn an_enrolled_board_round_trips_against_the_pinned_shape() {
+        assert_eq!(
+            serde_json::to_string(&sample_enrolled_board()).unwrap(),
+            ENROLLED_BOARD_RESPONSE_JSON
+        );
+        assert_eq!(
+            serde_json::from_str::<EnrolledBoardResponse>(ENROLLED_BOARD_RESPONSE_JSON).unwrap(),
+            sample_enrolled_board()
+        );
+    }
+
+    /// An older Core that predates `link_port_interface` (and, in
+    /// principle, `link_port_serial`) still parses — both fields
+    /// `#[serde(default)]` to `None`.
+    #[test]
+    fn an_older_core_body_missing_link_port_interface_still_parses() {
+        let json = concat!(
+            r#"{"probe_serial":"ABC123","role":"dev-bench","chip":"nrf54l15","#,
+            r#""hardware_id":"AAAA","confirmed_at_utc_ms":1725000000000}"#
+        );
+        let board: EnrolledBoardResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(board.link_port_serial, None);
+        assert_eq!(board.link_port_interface, None);
     }
 
     /// The other route variant, whose tag is the one a `rename_all` could
