@@ -99,6 +99,7 @@ mod tests {
             protocols: Default::default(),
             protocols_crc: 0,
             dev_bench_log_level: Default::default(),
+            record_checks: Default::default(),
         }
     }
 

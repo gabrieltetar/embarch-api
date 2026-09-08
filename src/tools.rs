@@ -1206,7 +1206,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "List what a completed study actually captured: one entry per declared stream tap, with its name, how many bytes it wrote, and whether it was TRUNCATED. Read truncated: it is how you learn a capture is short rather than complete — either a retention rotation deleted a segment, or dev-bench reported dropping records — and a capture that lost data must not be read as a whole one. An entry with bytes_written 0 is a tap that was declared and produced nothing, which is a different fact from a tap that wasn't declared at all. Only a completed study has this; a pending, running or failed one returns its status instead. Use the names from here with study_stream_data.")]
+    #[tool(description = "List what a completed study actually captured: one entry per declared stream tap, with its name, how many bytes it wrote, whether it was TRUNCATED, and — when the study declared its record framing — a records object saying how many of its records verify against their own checksums. Read truncated: it is how you learn a capture is short rather than complete — either a retention rotation deleted a segment, or dev-bench reported dropping records — and a capture that lost data must not be read as a whole one. Read records too, because it answers a different question and is the only end-to-end one: truncated is what some link reported about itself, while records.verified vs records.total is whether the bytes on disk match what the DUT computed a checksum over. A 10 h drain reported truncated false with 3 of 598 records damaged, so a clean truncated is not proof of a clean capture. records absent means the study declared no framing to check, which is not the same as everything verifying. An entry with bytes_written 0 is a tap that was declared and produced nothing, which is a different fact from a tap that wasn't declared at all. Only a completed study has this; a pending, running or failed one returns its status instead. Use the names from here with study_stream_data.")]
     async fn list_study_streams(
         &self,
         Parameters(StudyIdParams { study_id }): Parameters<StudyIdParams>,
@@ -1241,17 +1241,37 @@ impl EmbarchApi {
 /// and a listing that dropped it would hand back a capture that reads
 /// complete and isn't. Shared by the MCP tool and the CLI subcommand so the
 /// two cannot disagree about what a stream listing is.
+///
+/// `records` rides alongside it and answers a different question. `truncated`
+/// is what some *link* reported about itself; `records` is whether the bytes
+/// on disk match the checksum the DUT computed over them, which is the only
+/// end-to-end statement here. A 10 h drain came back `truncated: false` with 3
+/// of 598 records damaged -- every link's accounting was honest and the loss
+/// was in a frame Core discarded -- so the two are not redundant, and the
+/// per-record answer is the one that says which parts of a capture are usable.
 pub fn streams_json(result: &embarch_study_designer::StudyResult) -> serde_json::Value {
     serde_json::Value::Array(
         result
             .streams
             .iter()
             .map(|s| {
-                serde_json::json!({
+                let mut row = serde_json::json!({
                     "name": s.name.as_str(),
                     "bytes_written": s.bytes_written,
                     "truncated": s.truncated,
-                })
+                });
+                // Absent when the study declared no framing for this tap.
+                // Absent and "everything verified" are different facts, so
+                // the key is omitted rather than reported as a clean result.
+                if let Some(r) = s.records.as_ref() {
+                    row["records"] = serde_json::json!({
+                        "total": r.total,
+                        "verified": r.verified,
+                        "leading_bytes": r.leading_bytes,
+                        "bad_offsets": r.bad_offsets.as_slice(),
+                    });
+                }
+                row
             })
             .collect(),
     )

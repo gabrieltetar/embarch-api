@@ -1249,10 +1249,31 @@ async fn list_study_streams(core: &CoreClient, study_id: &str, json: bool) -> i3
                         .iter()
                         .map(|s| {
                             format!(
-                                "{} — {} bytes{}",
+                                "{} — {} bytes{}{}",
                                 s.name,
                                 s.bytes_written,
-                                if s.truncated { "  [TRUNCATED — this capture is short]" } else { "" }
+                                if s.truncated { "  [TRUNCATED — this capture is short]" } else { "" },
+                                // Printed even when everything verified: "595
+                                // of 598 records verified" is the sentence
+                                // that decides whether a capture is usable,
+                                // and "598 of 598" is what earns trusting it.
+                                match s.records.as_ref() {
+                                    None => String::new(),
+                                    Some(r) if r.all_verified() => {
+                                        format!("  [{} records, all verified]", r.total)
+                                    }
+                                    Some(r) => format!(
+                                        "  [{} of {} records verified{}; bad at {:?}]",
+                                        r.verified,
+                                        r.total,
+                                        if r.leading_bytes > 0 {
+                                            format!(", {} leading bytes in no record", r.leading_bytes)
+                                        } else {
+                                            String::new()
+                                        },
+                                        r.bad_offsets.as_slice()
+                                    ),
+                                }
                             )
                         })
                         .collect::<Vec<_>>()
