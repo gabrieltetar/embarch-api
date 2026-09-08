@@ -224,6 +224,13 @@ pub struct ValidateResponse {
     pub chip: String,
     pub hardware_id: String,
     pub confirmed_at_utc_ms: u64,
+    /// The instant *this* live check's hardware-ID compare passed — distinct
+    /// from `confirmed_at_utc_ms` above, which names *enrolment* time and
+    /// does not move on a re-check (`embarch-topology` decision 26,
+    /// `embarch-core` decision 50). Flat, top-level, same as every other
+    /// field here — `POST /validate`'s response shape is not
+    /// `embarch_topology::hardware::Validation`'s nested `{ board, .. }`.
+    pub validated_at_utc_ms: u64,
 }
 
 /// `POST /validate`'s `409 Conflict` body — the enrolled board's live
@@ -1694,6 +1701,25 @@ mod tests {
             serde_json::from_str::<EnrolledBoardResponse>(ENROLLED_BOARD_RESPONSE_JSON).unwrap(),
             sample_enrolled_board()
         );
+    }
+
+    /// [`ValidateResponse`]'s wire shape (`embarch-core/src/api.rs`'s
+    /// `ValidateOkResponse`, flat and top-level — not
+    /// `embarch_topology::hardware::Validation`'s nested `{ board, .. }`).
+    /// Pins that `validated_at_utc_ms` (this call's own live check,
+    /// `embarch-topology` decision 26 / `embarch-core` decision 50) parses
+    /// distinctly from `confirmed_at_utc_ms` (enrolment time) rather than
+    /// one silently shadowing the other.
+    #[test]
+    fn a_validate_response_parses_both_distinct_timestamps() {
+        let json = concat!(
+            r#"{"ok":true,"role":"dut","probe_serial":"ABC123","chip":"nrf54l15","#,
+            r#""hardware_id":"AAAA","confirmed_at_utc_ms":1725000000000,"#,
+            r#""validated_at_utc_ms":1726000000000}"#
+        );
+        let resp: ValidateResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.confirmed_at_utc_ms, 1725000000000);
+        assert_eq!(resp.validated_at_utc_ms, 1726000000000);
     }
 
     /// An older Core that predates `link_port_interface` (and, in

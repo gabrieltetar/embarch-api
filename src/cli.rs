@@ -740,8 +740,12 @@ async fn validate(core: &CoreClient, role: &str, json: bool) -> i32 {
                 "chip": resp.chip,
                 "hardware_id": resp.hardware_id,
                 "confirmed_at_utc_ms": resp.confirmed_at_utc_ms,
+                "validated_at_utc_ms": resp.validated_at_utc_ms,
             }),
-            format!("ok: '{}' still matches hardware_id {}", resp.role, resp.hardware_id),
+            format!(
+                "ok: '{}' still matches hardware_id {} (validated_at_utc_ms {}, enrolled/confirmed_at_utc_ms {})",
+                resp.role, resp.hardware_id, resp.validated_at_utc_ms, resp.confirmed_at_utc_ms
+            ),
         ),
         Err(e) => match e.downcast_ref::<TopologyMismatchError>() {
             // Relay the mismatch and its fix_it_url as text — never opened
