@@ -323,6 +323,38 @@ pub enum Commands {
     /// flash-dev-bench/build-and-flash-dev-bench, since flashing halts the
     /// core rather than starting it running.
     ResetDevBench,
+    /// Run the dev-bench Hello/HelloAck handshake on its own via
+    /// embarch-core's GET /dev-bench/hello and report the identity
+    /// cross-check — the only place in the suite that serves the JTAG-read
+    /// identity, the board's self-reported identity and how they relate,
+    /// together. Opens the dev-bench serial link just long enough for the
+    /// handshake and closes it again; no Study runs and no firmware is
+    /// flashed.
+    ///
+    /// Against a Core new enough to report all three identity fields, the
+    /// output reads "complete" and renders self_reported_hardware_id (what
+    /// the bench itself claims over the wire), probe_hardware_id (what the
+    /// enrolled probe just read over JTAG) and link_identity (Core's own
+    /// comparison of those two — "match"/"mismatch"/"not-reported"/
+    /// "undeclared") verbatim under its own label. Read link_identity
+    /// itself, never infer it from compatible or from the two ids' mere
+    /// presence: "not-reported"/"undeclared" is the real, common answer
+    /// today and is NOT a pass. Against an older Core (predating
+    /// embarch-core decision 47's rename of hardware_id to
+    /// self_reported_hardware_id), one or more of those three fields is
+    /// missing, and the output instead leads with a line saying the
+    /// cross-check is UNAVAILABLE and naming which field(s) this Core did
+    /// not send (embarch-api decisions 58/59) — never read a missing field
+    /// as a confirmed match.
+    ///
+    /// Exits nonzero with a distinct message on each of Core's two error
+    /// statuses: 409 means a study is already using the dev-bench link and
+    /// this call was refused rather than racing it — retry once the study
+    /// finishes, this is not a fault; 502 means the handshake itself was
+    /// attempted and failed (dev-bench absent, unreachable, reporting a
+    /// declared identity mismatch, or reporting itself schema-incompatible)
+    /// — that is a real bench problem to go look at, not a busy signal.
+    DevBenchHello,
     /// Enroll a physical probe with embarch-core's known_boards table
     /// (design.md decision 22), recording which board its serial number is
     /// wired to. Requires exactly one debug probe currently attached.

@@ -6,7 +6,8 @@ use crate::build::BuildOutcome;
 use embarch_api::json_out;
 use crate::config::{Config, ProjectConfig};
 use embarch_core_client::{
-    CoreClient, FollowItem, FollowOptions, StudyConflictError, StudyEvent, TopologyMismatchError,
+    render_hello_ack, CoreClient, DevBenchBusyError, DevBenchHandshakeError, FollowItem,
+    FollowOptions, StudyConflictError, StudyEvent, TopologyMismatchError,
 };
 use embarch_study_designer::Outcome;
 use crate::resolve::{self, Resolved, Selection};
@@ -89,6 +90,7 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
             build_and_flash_dev_bench(&config, &core, erase, json).await
         }
         Commands::ResetDevBench => reset_dev_bench(&config, &core, json).await,
+        Commands::DevBenchHello => dev_bench_hello(&core, json).await,
         Commands::EnrollProbe { role, chip, probe_serial } => {
             enroll_probe(&core, &role, &chip, probe_serial.as_deref(), json).await
         }
@@ -702,6 +704,47 @@ async fn reset_dev_bench(config: &Config, core: &CoreClient, json: bool) -> i32 
             format!("reset dev_bench: {}", resp.reset),
         ),
         Err(e) => error_result(json, format!("reset failed for dev_bench: {e:#}")),
+    }
+}
+
+async fn dev_bench_hello(core: &CoreClient, json: bool) -> i32 {
+    match core.dev_bench_hello().await {
+        Ok(info) => {
+            let human = render_hello_ack(&info);
+            finish(
+                json,
+                true,
+                serde_json::json!({
+                    "success": true,
+                    "schema_version": info.schema_version,
+                    "compatible": info.compatible,
+                    "firmware_version": info.firmware_version,
+                    "self_reported_hardware_id": info.self_reported_hardware_id,
+                    "probe_hardware_id": info.probe_hardware_id,
+                    "link_identity": info.link_identity,
+                }),
+                human,
+            )
+        }
+        Err(e) => match e.downcast_ref::<DevBenchBusyError>() {
+            Some(busy) => error_result(
+                json,
+                format!(
+                    "dev_bench_hello refused: a study is already in flight and using the \
+                     dev-bench link (409) — this is not a fault, retry once it finishes: {busy}"
+                ),
+            ),
+            None => match e.downcast_ref::<DevBenchHandshakeError>() {
+                Some(handshake) => error_result(
+                    json,
+                    format!(
+                        "dev_bench_hello failed: the Hello/HelloAck handshake itself did not \
+                         succeed (502) — check the bench, this is not a busy signal: {handshake}"
+                    ),
+                ),
+                None => error_result(json, format!("dev_bench_hello failed: {e:#}")),
+            },
+        },
     }
 }
 
@@ -1399,7 +1442,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 23,
+            arms, 24,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."

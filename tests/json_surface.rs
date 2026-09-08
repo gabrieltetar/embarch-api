@@ -59,6 +59,7 @@ const EVERY_SUBCOMMAND: &[&[&str]] = &[
     &["flash-dev-bench"],
     &["build-and-flash-dev-bench"],
     &["reset-dev-bench"],
+    &["dev-bench-hello"],
     &["enroll-probe", "--role", "some-role", "--chip", "nRF54L15"],
     &["validate", "--role", "some-role"],
     &["alerts"],
