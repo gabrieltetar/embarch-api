@@ -10,8 +10,8 @@ use crate::build::{BuildLocks, BuildOutcome};
 use embarch_api::json_out;
 use crate::config::{Config, ProjectConfig};
 use embarch_core_client::{
-    CoreClient, FollowItem, FollowMode, FollowOptions, StudyConflictError, StudyEvent,
-    TopologyMismatchError,
+    CoreClient, DevBenchBusyError, DevBenchHandshakeError, FollowItem, FollowMode, FollowOptions,
+    StudyConflictError, StudyEvent, TopologyMismatchError,
 };
 use crate::resolve::{self, Selection};
 
@@ -786,6 +786,28 @@ impl EmbarchApi {
                 "target": resolved.descriptor,
             })),
             Err(e) => Self::err_text(format!("reset failed for dev_bench: {e:#}")),
+        }
+    }
+
+    #[tool(description = "Run the dev-bench Hello/HelloAck handshake on its own via embarch-core's GET /dev-bench/hello and report the identity cross-check — the only place in the suite that serves the JTAG-read identity, the board's self-reported identity and how they relate, together. This call opens the dev-bench serial link just long enough for the handshake and then closes it again; no Study runs and no firmware is flashed. Against a Core new enough to report all three identity fields, the response reads 'complete' and each of self_reported_hardware_id (what the bench itself claims over the wire), probe_hardware_id (what the enrolled probe just read over JTAG) and link_identity (Core's own comparison of those two — 'match'/'mismatch'/'not-reported'/'undeclared') is rendered verbatim under its own label. Read link_identity itself, never infer it from compatible or from the two ids' mere presence: 'not-reported'/'undeclared' is the real, common answer today and is NOT a pass. Against an older Core (predating embarch-core decision 47's rename of hardware_id to self_reported_hardware_id), one or more of those three fields is missing, and the response instead leads with a line saying the cross-check is UNAVAILABLE and naming which field(s) this Core did not send (embarch-api decisions 58/59) — never read a missing field as a confirmed match, and never confuse 'this Core did not send it' with the board's own 'not-reported' answer. Fails with a distinct message on each of Core's two error statuses: 409 means a study is already using the dev-bench link and this call was refused rather than racing it — retry once the study finishes, this is not a fault; 502 means the handshake itself was attempted and failed (dev-bench absent, unreachable, reporting a declared identity mismatch, or reporting itself schema-incompatible) — that is a real bench problem to go look at, not a busy signal.")]
+    async fn dev_bench_hello(&self) -> Result<CallToolResult, McpError> {
+        match self.core.dev_bench_hello().await {
+            Ok(info) => Ok(CallToolResult::success(vec![ContentBlock::text(
+                embarch_core_client::render_hello_ack(&info),
+            )])),
+            Err(e) => match e.downcast_ref::<DevBenchBusyError>() {
+                Some(busy) => Self::err_text(format!(
+                    "dev_bench_hello refused: a study is already in flight and using the \
+                     dev-bench link (409) — this is not a fault, retry once it finishes: {busy}"
+                )),
+                None => match e.downcast_ref::<DevBenchHandshakeError>() {
+                    Some(handshake) => Self::err_text(format!(
+                        "dev_bench_hello failed: the Hello/HelloAck handshake itself did not \
+                         succeed (502) — check the bench, this is not a busy signal: {handshake}"
+                    )),
+                    None => Self::err_text(format!("dev_bench_hello failed: {e:#}")),
+                },
+            },
         }
     }
 

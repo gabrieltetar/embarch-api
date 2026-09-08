@@ -637,17 +637,181 @@ fn urlencode(raw: &str) -> String {
     out
 }
 
-/// `GET /dev-bench/hello`'s body (`embarch-core/design.md` §4) — the
-/// `Hello`/`HelloAck` handshake run on its own, with no `Study` involved.
-/// `firmware_version` is what the bench currently running actually reports,
-/// which is the only version in this suite that is genuinely read back off
-/// the thing it describes.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+/// `GET /dev-bench/hello`'s body — mirrors `embarch-core`'s own
+/// `study::HelloAckInfo` (`src/study.rs`) field-for-field, not
+/// `embarch_topology::hardware`'s comparison types, since Core is what
+/// actually serializes this route and this crate can't link
+/// `embarch-topology`'s `hardware` feature to check the two agree (see
+/// `SignalLink`'s own doc comment above for the same constraint on a
+/// different type). `firmware_version` is what the bench currently running
+/// actually reports, which is the only version in this suite that is
+/// genuinely read back off the thing it describes.
+///
+/// **`link_identity` is the whole point of this route being served at
+/// all** — `self_reported_hardware_id` compared against `probe_hardware_id`
+/// is the only place in the suite that surfaces both the JTAG-read and the
+/// bench's own self-reported identity, and how they relate, as data. It is a
+/// stable string (`"match"`/`"mismatch"`/`"not-reported"`/`"undeclared"`),
+/// deliberately not a `bool`: today's real answer for every chip is
+/// `"undeclared"` (`embarch-core` §3 decision 35), and collapsing that to
+/// `compatible: true`-shaped success would make an unverified board look
+/// confirmed. A caller that only reads `compatible` and ignores this field
+/// has silently thrown away the one fact this endpoint exists to report.
+///
+/// Field named `self_reported_hardware_id`, not `hardware_id`, because Core
+/// decision 47 (2026-09-07, `tasks/core/020`) renamed it after finding that
+/// name collided with the JTAG-read `hardware_id` served by
+/// `/probes/enroll`, `/probes/enrolled` and `POST /validate` — this route's
+/// own `probe_hardware_id` field is that same JTAG-read value, spelled
+/// differently *within this one route* on purpose (see those three structs'
+/// own `hardware_id` fields and `tasks/api/044`, which is about renaming
+/// *their* spelling, not this one — this route never used the ambiguous name
+/// so nothing here needed changing).
+///
+/// **The three identity fields are `Option<String>` with `#[serde(default)]`,
+/// per `embarch-api` decision 58** — every response field this crate
+/// deserializes that Core may not yet send is optional, because the rename
+/// above (`embarch-core` decision 47) happened *after* this route already
+/// existed: a Core that predates the rename serves `hardware_id`, not
+/// `self_reported_hardware_id`, and does not serve `link_identity` or
+/// `probe_hardware_id` under those spellings at all. A bare required field
+/// here would make `serde` fail the whole response on a missing key against
+/// exactly that Core — turning the one route built to answer *is the board
+/// on the link the board the probe verified?* into a deserialization error
+/// instead of an answer. `None` means "this Core did not send it", which is
+/// a fact about the Core, not about the bench — never conflate it with the
+/// bench's own `"not-reported"` (a real, declared answer) — see the two
+/// rendering states in `embarch-api decision 59`'s tool.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct HelloAckResponse {
     pub schema_version: u32,
     pub compatible: bool,
     pub firmware_version: String,
+    #[serde(default)]
+    pub self_reported_hardware_id: Option<String>,
+    #[serde(default)]
+    pub link_identity: Option<String>,
+    #[serde(default)]
+    pub probe_hardware_id: Option<String>,
 }
+
+/// Renders a [`HelloAckResponse`] for a reader, per `embarch-api` decision
+/// 59 — the rendering call settled after this unit was refused once for
+/// treating a missing field as a pass.
+///
+/// **Two states that must not be reachable from each other:**
+///
+/// - **Complete** (all three identity fields present): each is rendered
+///   verbatim, under its own label, exactly as the bytes Core sent —
+///   `"not-reported"`/`"undeclared"` reach the reader unaltered, because
+///   they are the *board's* own answers and are real bench results, not a
+///   client-side judgement. A trailing note says so explicitly.
+/// - **Incomplete** (any of the three is `None`): the output **leads** with
+///   a line naming the cross-check unavailable and which field(s) were
+///   absent, points at `embarch-core` decision 47 (the rename that an older
+///   Core predates) as the known cause and `embarch-api` decision 58 as why
+///   the call tolerates it instead of failing, and only then may render the
+///   fields Core did report — never above that line, never implying a
+///   comparison was made.
+///
+/// This function never computes a verdict of its own from the two hardware
+/// ids — `link_identity` is Core's own answer to the cross-check and is
+/// surfaced, not replaced (`embarch-topology` decision 20's failure mode,
+/// named in `embarch-api` decision 59).
+///
+/// A `None` field renders as exactly one thing, a sentence, never a token:
+/// never an empty string, `null`, `-`, `"unknown"`, and — the one that
+/// actually matters — **never `"not-reported"`**, a different fact with a
+/// different cause (the *board* declining to state an identity, versus
+/// *this Core* not having the field at all).
+pub fn render_hello_ack(info: &HelloAckResponse) -> String {
+    fn field_line(label: &str, value: &Option<String>) -> String {
+        match value {
+            Some(v) => format!("{label}: {v}"),
+            None => format!("{label}: this Core did not send this field."),
+        }
+    }
+
+    let missing: Vec<&str> = [
+        ("self_reported_hardware_id", info.self_reported_hardware_id.is_none()),
+        ("probe_hardware_id", info.probe_hardware_id.is_none()),
+        ("link_identity", info.link_identity.is_none()),
+    ]
+    .into_iter()
+    .filter_map(|(name, is_missing)| is_missing.then_some(name))
+    .collect();
+
+    let core_fields = format!(
+        "schema_version: {}\ncompatible: {}\nfirmware_version: {}",
+        info.schema_version, info.compatible, info.firmware_version
+    );
+    let identity_fields = format!(
+        "{}\n{}\n{}",
+        field_line("self_reported_hardware_id", &info.self_reported_hardware_id),
+        field_line("probe_hardware_id", &info.probe_hardware_id),
+        field_line("link_identity", &info.link_identity),
+    );
+
+    if missing.is_empty() {
+        format!(
+            "Identity cross-check: complete — self_reported_hardware_id, probe_hardware_id \
+             and link_identity were all reported by this Core.\n\n{core_fields}\n{identity_fields}\n\n\
+             Note: \"not-reported\" and \"undeclared\" above are the board's own answers, not \
+             confirmations — read link_identity itself; never infer a pass from compatible or \
+             from the two ids' mere presence."
+        )
+    } else {
+        format!(
+            "Identity cross-check: UNAVAILABLE — this Core did not send {}.\n\n\
+             embarch-core decision 47 (tasks/core/020) renamed hardware_id to \
+             self_reported_hardware_id; a Core older than that rename does not serve these \
+             fields under these names. embarch-api decision 58 is why this client tolerates the \
+             missing field(s) rather than failing the call outright, and decision 59 is why this \
+             tool renders \"unavailable\" here rather than a partial pass.\n\n\
+             Fields this Core did report (not a cross-check — the comparison itself is \
+             unavailable):\n{core_fields}\n{identity_fields}",
+            missing.join(", "),
+        )
+    }
+}
+
+/// Distinct error for `GET /dev-bench/hello`'s `409 Conflict`: a study is
+/// already in flight on Core and this route refused to race it for the
+/// link, rather than actually attempting (and failing) the handshake. Kept
+/// as its own downcastable type (`StudyConflictError`'s own precedent above)
+/// so a caller — `embarch-api`'s MCP tool in particular — can send an
+/// operator to "wait for the study" rather than "the bench is unplugged or
+/// broken", which is what [`DevBenchHandshakeError`] means instead.
+#[derive(Debug)]
+pub struct DevBenchBusyError {
+    pub message: String,
+}
+
+impl std::fmt::Display for DevBenchBusyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for DevBenchBusyError {}
+
+/// Distinct error for `GET /dev-bench/hello`'s `502 Bad Gateway`: the
+/// `Hello`/`HelloAck` handshake itself failed — dev-bench didn't answer, a
+/// declared identity mismatch was found, or its firmware reported itself
+/// incompatible. Nothing here says a study is running; this is the "go
+/// look at the bench" case, [`DevBenchBusyError`]'s opposite.
+#[derive(Debug)]
+pub struct DevBenchHandshakeError {
+    pub message: String,
+}
+
+impl std::fmt::Display for DevBenchHandshakeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for DevBenchHandshakeError {}
 
 /// `POST /study`'s `409 Conflict` body: `{"study_id": "<uuid-string>"}`
 /// naming the study already in-flight.
@@ -1599,9 +1763,39 @@ impl CoreClient {
     ///
     /// Reuses `status_timeout`: like `/status`, this is one short serial
     /// exchange, not a flash.
+    ///
+    /// Goes through [`CoreClient::dispatch`] directly rather than `send`,
+    /// because this route gives two non-2xx statuses two entirely different
+    /// meanings that a caller needs to tell apart: `409` ([`DevBenchBusyError`])
+    /// means a study is already using the link and this call was refused
+    /// rather than racing it, `502` ([`DevBenchHandshakeError`]) means the
+    /// handshake itself was attempted and failed. Collapsing both into one
+    /// generic "non-2xx" error (as `send`'s default funnel does) is exactly
+    /// what would send an operator to the wrong place.
     pub async fn dev_bench_hello(&self) -> Result<HelloAckResponse> {
         let url = format!("{}/dev-bench/hello", self.base_url().await?);
-        self.send(self.client.get(url), self.status_timeout).await
+        let response = self.dispatch(self.client.get(url), Some(self.status_timeout)).await?;
+
+        let status = response.status();
+        if status.is_success() {
+            return response
+                .json::<HelloAckResponse>()
+                .await
+                .context("failed to parse embarch-core's response as JSON");
+        }
+
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "<no response body>".to_string());
+
+        if status == reqwest::StatusCode::CONFLICT {
+            return Err(anyhow::Error::new(DevBenchBusyError { message: body }));
+        }
+        if status == reqwest::StatusCode::BAD_GATEWAY {
+            return Err(anyhow::Error::new(DevBenchHandshakeError { message: body }));
+        }
+        Err(anyhow!("embarch-core returned {status}: {body}"))
     }
 }
 
@@ -1774,6 +1968,114 @@ mod tests {
         let json = serde_json::to_string(&link).unwrap();
         assert!(json.contains(r#""kind":"via-dev-bench""#), "{json}");
         assert_eq!(serde_json::from_str::<SignalLink>(&json).unwrap(), link);
+    }
+
+    /// [`HelloAckResponse`]'s half of the same mirror contract
+    /// [`SIGNAL_LINK_JSON`] documents — pinned against `embarch-core`'s own
+    /// `study::HelloAckInfo` field-for-field, `self_reported_hardware_id`,
+    /// `link_identity` and `probe_hardware_id` included. The Core-side
+    /// counterpart test that pins `HelloAckInfo` against this exact string
+    /// does not exist yet — this only pins the client's own read of it.
+    const HELLO_ACK_RESPONSE_JSON: &str = concat!(
+        r#"{"schema_version":10,"compatible":true,"firmware_version":"g1a2b3c",""#,
+        r#"self_reported_hardware_id":"AAAABBBB","link_identity":"undeclared",""#,
+        r#"probe_hardware_id":"BBBBAAAA"}"#
+    );
+
+    fn sample_hello_ack() -> HelloAckResponse {
+        HelloAckResponse {
+            schema_version: 10,
+            compatible: true,
+            firmware_version: "g1a2b3c".to_string(),
+            self_reported_hardware_id: Some("AAAABBBB".to_string()),
+            link_identity: Some("undeclared".to_string()),
+            probe_hardware_id: Some("BBBBAAAA".to_string()),
+        }
+    }
+
+    #[test]
+    fn a_hello_ack_round_trips_against_the_pinned_shape() {
+        assert_eq!(serde_json::to_string(&sample_hello_ack()).unwrap(), HELLO_ACK_RESPONSE_JSON);
+        assert_eq!(
+            serde_json::from_str::<HelloAckResponse>(HELLO_ACK_RESPONSE_JSON).unwrap(),
+            sample_hello_ack()
+        );
+    }
+
+    /// **`link_identity`'s not-a-pass contract, written out.** `"undeclared"`
+    /// (today's real answer for every chip, `embarch-core` §3 decision 35)
+    /// must round-trip as that exact string, not coerce to any boolean —
+    /// this is the regression that would let an absent identity check start
+    /// reading as a confirmed one.
+    #[test]
+    fn link_identity_survives_as_the_literal_string_not_a_bool() {
+        let ack = sample_hello_ack();
+        assert_eq!(ack.link_identity.as_deref(), Some("undeclared"));
+        let json = serde_json::to_string(&ack).unwrap();
+        assert!(json.contains(r#""link_identity":"undeclared""#), "{json}");
+        assert!(!json.contains(r#""link_identity":true"#));
+        assert!(!json.contains(r#""link_identity":false"#));
+    }
+
+    /// **`embarch-api` decision 58's whole reason for existing, pinned at
+    /// this struct.** A Core older than `embarch-core` decision 47
+    /// (`tasks/core/020`, 2026-09-07) serves none of the three identity
+    /// fields under these spellings — `self_reported_hardware_id` in
+    /// particular predates the rename as plain `hardware_id`, which this
+    /// struct does not (and must not) alias. Against that Core's response
+    /// body, every field this struct cannot yet see must deserialize to
+    /// `None`, not fail the whole response — a bare required `String` here
+    /// is exactly the defect `api/036` was refused at the merge for.
+    #[test]
+    fn an_older_core_missing_all_three_identity_fields_still_deserializes() {
+        let json = r#"{"schema_version":9,"compatible":true,"firmware_version":"g0f0f0f"}"#;
+        let ack: HelloAckResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(ack.schema_version, 9);
+        assert!(ack.compatible);
+        assert_eq!(ack.firmware_version, "g0f0f0f");
+        assert_eq!(ack.self_reported_hardware_id, None);
+        assert_eq!(ack.link_identity, None);
+        assert_eq!(ack.probe_hardware_id, None);
+    }
+
+    /// The refused unit's whole reason for coming back, written as a test:
+    /// a response missing `self_reported_hardware_id` **entirely** (not
+    /// present as `null`, absent as a key — the shape an older
+    /// `embarch-core` actually sends) still deserializes, and the render
+    /// leads with the unavailable line rather than a partial pass.
+    #[test]
+    fn an_incomplete_response_renders_the_unavailable_line_first() {
+        let json = concat!(
+            r#"{"schema_version":9,"compatible":true,"firmware_version":"g0f0f0f","#,
+            r#""link_identity":"undeclared","probe_hardware_id":"BBBBAAAA"}"#
+        );
+        let ack: HelloAckResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(ack.self_reported_hardware_id, None);
+
+        let rendered = render_hello_ack(&ack);
+        let unavailable_line = rendered.lines().next().unwrap();
+        assert!(unavailable_line.contains("UNAVAILABLE"), "{rendered}");
+        assert!(unavailable_line.contains("self_reported_hardware_id"), "{rendered}");
+        // The one thing this whole task exists to prevent: an absent field
+        // must never render as the board's own "not-reported" answer.
+        assert!(!rendered.contains("self_reported_hardware_id: not-reported"), "{rendered}");
+        assert!(rendered.contains("this Core did not send this field"), "{rendered}");
+        // The present fields may still appear, but only below the leading line.
+        let unavailable_pos = rendered.find("UNAVAILABLE").unwrap();
+        let probe_pos = rendered.find("probe_hardware_id: BBBBAAAA").unwrap();
+        assert!(probe_pos > unavailable_pos, "{rendered}");
+    }
+
+    /// The complete-response half of the same contract: every field present
+    /// renders verbatim and the note about not-reported/undeclared appears.
+    #[test]
+    fn a_complete_response_renders_every_field_verbatim() {
+        let rendered = render_hello_ack(&sample_hello_ack());
+        assert!(rendered.starts_with("Identity cross-check: complete"), "{rendered}");
+        assert!(rendered.contains("self_reported_hardware_id: AAAABBBB"), "{rendered}");
+        assert!(rendered.contains("probe_hardware_id: BBBBAAAA"), "{rendered}");
+        assert!(rendered.contains("link_identity: undeclared"), "{rendered}");
+        assert!(rendered.contains("not confirmations"), "{rendered}");
     }
 
     /// Named and timed are **two** facts, and the pair is why they are two
