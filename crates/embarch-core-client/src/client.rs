@@ -230,7 +230,16 @@ pub struct ValidateResponse {
     /// `embarch-core` decision 50). Flat, top-level, same as every other
     /// field here — `POST /validate`'s response shape is not
     /// `embarch_topology::hardware::Validation`'s nested `{ board, .. }`.
-    pub validated_at_utc_ms: u64,
+    ///
+    /// `Option` so a Core older than `tasks/core/026` (predating this field)
+    /// still parses, rather than every `validate` call failing at
+    /// deserialization (`embarch-api` decision 58 — the crate's rule, not
+    /// this field's exception; see `link_port_interface` and
+    /// `study_designer_schema_version` for the same shape). `None` must never
+    /// be presented as "validated at 1970" — a fabricated timestamp is worse
+    /// than the parse error it replaces.
+    #[serde(default)]
+    pub validated_at_utc_ms: Option<u64>,
 }
 
 /// `POST /validate`'s `409 Conflict` body — the enrolled board's live
@@ -1719,7 +1728,22 @@ mod tests {
         );
         let resp: ValidateResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.confirmed_at_utc_ms, 1725000000000);
-        assert_eq!(resp.validated_at_utc_ms, 1726000000000);
+        assert_eq!(resp.validated_at_utc_ms, Some(1726000000000));
+    }
+
+    /// An older Core that predates `validated_at_utc_ms` (before
+    /// `tasks/core/026`) still parses — `#[serde(default)]` to `None`,
+    /// mirroring `an_older_core_body_missing_link_port_interface_still_parses`.
+    /// `None` must never be read as "validated at 1970".
+    #[test]
+    fn an_older_core_validate_body_missing_validated_at_still_parses() {
+        let json = concat!(
+            r#"{"ok":true,"role":"dut","probe_serial":"ABC123","chip":"nrf54l15","#,
+            r#""hardware_id":"AAAA","confirmed_at_utc_ms":1725000000000}"#
+        );
+        let resp: ValidateResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.confirmed_at_utc_ms, 1725000000000);
+        assert_eq!(resp.validated_at_utc_ms, None);
     }
 
     /// An older Core that predates `link_port_interface` (and, in

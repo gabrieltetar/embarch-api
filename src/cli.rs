@@ -729,24 +729,35 @@ async fn enroll_probe(core: &CoreClient, role: &str, chip: &str, probe_serial: O
 
 async fn validate(core: &CoreClient, role: &str, json: bool) -> i32 {
     match core.validate(role).await {
-        Ok(resp) => finish(
-            json,
-            true,
-            serde_json::json!({
-                "success": true,
-                "ok": true,
-                "role": resp.role,
-                "probe_serial": resp.probe_serial,
-                "chip": resp.chip,
-                "hardware_id": resp.hardware_id,
-                "confirmed_at_utc_ms": resp.confirmed_at_utc_ms,
-                "validated_at_utc_ms": resp.validated_at_utc_ms,
-            }),
-            format!(
-                "ok: '{}' still matches hardware_id {} (validated_at_utc_ms {}, enrolled/confirmed_at_utc_ms {})",
-                resp.role, resp.hardware_id, resp.validated_at_utc_ms, resp.confirmed_at_utc_ms
-            ),
-        ),
+        Ok(resp) => {
+            // `validated_at_utc_ms` is `None` from a Core older than
+            // `tasks/core/026` (`embarch-api` decision 58) — never reported,
+            // not "validated at 1970". `null` in the JSON surface is honest
+            // for the same reason; the human line has to say it in words or
+            // a reader sees a missing number and assumes a bug.
+            let validated_at_word = match resp.validated_at_utc_ms {
+                Some(ms) => ms.to_string(),
+                None => "not reported by this Core".to_string(),
+            };
+            finish(
+                json,
+                true,
+                serde_json::json!({
+                    "success": true,
+                    "ok": true,
+                    "role": resp.role,
+                    "probe_serial": resp.probe_serial,
+                    "chip": resp.chip,
+                    "hardware_id": resp.hardware_id,
+                    "confirmed_at_utc_ms": resp.confirmed_at_utc_ms,
+                    "validated_at_utc_ms": resp.validated_at_utc_ms,
+                }),
+                format!(
+                    "ok: '{}' still matches hardware_id {} (validated_at_utc_ms {}, enrolled/confirmed_at_utc_ms {})",
+                    resp.role, resp.hardware_id, validated_at_word, resp.confirmed_at_utc_ms
+                ),
+            )
+        }
         Err(e) => match e.downcast_ref::<TopologyMismatchError>() {
             // Relay the mismatch and its fix_it_url as text — never opened
             // automatically (`embarch-topology validate`'s own CLI does the
