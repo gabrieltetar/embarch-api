@@ -66,11 +66,23 @@ flash_format = "hex"
 # something a caller (or an agent) supplies per flash.
 # base_address = 0x2000
 build_timeout_secs = 900
-# Optional: only needed when embarch-core runs on a different machine/OS than
-# the build (e.g. Core on Windows, build here in WSL2). Windows-visible UNC
-# form of the same artifact file, sent to Core's /flash instead of the
-# WSL2-local artifact_path above. When unset, behavior is unchanged.
-# artifact_path_for_core = "\\\\wsl.localhost\\Ubuntu-24.04\\home\\myuser\\my-nrf-project\\app\\firmware\\build\\zephyr\\zephyr.hex"
+# Optional: additive over the inherited environment, not a replacement —
+# PATH and toolchain setup stay with whatever launches this process.
+# env = { CMAKE_BUILD_TYPE = "Debug" }
+# Optional: fallbacks for serial_log's own port/baud params when a call
+# omits them. baud defaults to 115200 when unset.
+# serial_port = "/dev/ttyACM0"
+# serial_baud = 115200
+# Optional: disambiguates this project's own debug probe when more than one
+# is attached (design.md §3 decision 9) — matched against status's own
+# probes[].serial_number. Omitted, Core falls back to first-probe-found.
+# probe_serial = "001050253368"
+# Optional: how to produce this project's own firmware version string, run
+# in source_path, for `run_study --reflash dut|both` (design.md §3 decision
+# 40) — trimmed stdout becomes the reported version. Defaults to the
+# invocation below; only consulted on an actual reflash. A git argv naming a
+# tree-mutating subcommand is refused, wherever in the argv it appears.
+# version_command = ["git", "describe", "--always", "--dirty", "--abbrev=8"]
 
 # Example project #2: also Zephyr/west-based, different chip family.
 [[projects]]

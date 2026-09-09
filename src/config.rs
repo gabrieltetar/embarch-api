@@ -1424,4 +1424,41 @@ flash_format = "hex"
         assert!(project.build_command.is_none());
         assert!(project.artifact_path.is_none());
     }
+
+    /// `config.example.toml` is the file a new engineer copies (`README.md`
+    /// calls it "the full configuration schema"), so it has to load through
+    /// the real loader, not just parse as TOML. Its three `[[projects]]`
+    /// `source_path`s are illustrative placeholders (`/path/to/...`) that
+    /// exist on nobody's machine — `validate()` requires each to exist, so
+    /// point every one of them at the same real tempdir instead of editing
+    /// the example to be less legible as an example.
+    #[test]
+    fn config_example_toml_loads_through_the_real_loader() {
+        let raw = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/config.example.toml"
+        ))
+        .expect("config.example.toml should be readable");
+
+        let dir = tempdir();
+        let patched = raw
+            .replace("/path/to/my-nrf-project", &dir.path().display().to_string())
+            .replace(
+                "/path/to/my-stm32-project",
+                &dir.path().display().to_string(),
+            )
+            .replace(
+                "/path/to/my-multi-board-project",
+                &dir.path().display().to_string(),
+            );
+
+        let config = write_config(dir.path(), &patched);
+        assert_eq!(config.projects.len(), 3);
+        assert_eq!(config.projects[0].name, "my-nrf-project");
+        assert_eq!(config.projects[2].discovery, Discovery::ZephyrWest);
+        // The retired UNC field is gone from the example entirely.
+        assert!(!raw.contains("artifact_path_for_core"));
+        // dev_bench is fully commented out in the example.
+        assert!(config.dev_bench.is_none());
+    }
 }
