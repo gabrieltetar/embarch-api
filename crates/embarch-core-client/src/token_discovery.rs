@@ -73,18 +73,29 @@ fn windows_token_path() -> PathBuf {
     Path::new(&program_data).join("embarch").join("token")
 }
 
-/// Detects WSL2 by reading `/proc/version`, since `$WSL_DISTRO_NAME` can be
-/// stripped depending on how the process was spawned (e.g. some MCP client
-/// launchers scrub the environment). Case-insensitive match on "microsoft"
-/// or "wsl", matching what Microsoft's own WSL2 kernel build stamps there.
+/// Detects WSL2 by delegating to `embarch_topology::software::detect_wsl2`
+/// (`embarch-topology` decisions 4, 8: one implementation, called live, not
+/// mirrored) — the same union-of-two-signals rule `embarch-umbrella/src/env.rs`
+/// already uses, rather than this crate's own former stricter-on-one-signal
+/// rule (`embarch-api` decision, see `embarch-api/decisions/core-link.md`).
+/// This crate already links `embarch-topology` (`Cargo.toml`), so the call
+/// was one hop away.
+///
+/// This used to also accept a `/proc/version` containing "wsl" without
+/// "microsoft", reasoning that `$WSL_DISTRO_NAME` can be scrubbed by an MCP
+/// launcher. That reasoning argues for keeping *both* signals available (a
+/// union), which `detect_wsl2` already is — it does not argue for a third,
+/// looser string match on the kernel release alone. No real WSL2 kernel
+/// build is known to stamp "wsl" into `/proc/version` without also stamping
+/// "microsoft" (every Microsoft-built WSL2 kernel release does both,
+/// including this process's own), so the extra branch covered no observed
+/// case; dropping it removes the one way these two calls in the same binary
+/// could disagree.
 #[cfg(unix)]
 fn is_wsl2() -> bool {
-    std::fs::read_to_string("/proc/version")
-        .map(|version| {
-            let lower = version.to_lowercase();
-            lower.contains("microsoft") || lower.contains("wsl")
-        })
-        .unwrap_or(false)
+    let proc_version = std::fs::read_to_string("/proc/version").ok();
+    let wsl_distro_env = std::env::var("WSL_DISTRO_NAME").ok();
+    embarch_topology::software::detect_wsl2(proc_version.as_deref(), wsl_distro_env.as_deref())
 }
 
 /// The WSL2-translated path to `%ProgramData%\embarch\token`, computed once
