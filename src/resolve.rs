@@ -418,7 +418,7 @@ async fn resolve_zephyr(project: &ProjectConfig, selection: Selection<'_>, core:
     };
 
     let build_dir = build_dir_root.join(target.build_dir_name(&snippets, &extra_args));
-    let app_path = project.source_path.join("app").join(&target.app);
+    let app_path = zephyr::app_path(&project.source_path, &target.app);
     let command = zephyr::build_command(&west_binary, &target, &snippets, &extra_args, &build_dir, &app_path);
     let artifact_path = zephyr::artifact_path(&build_dir, &project.flash_format);
 

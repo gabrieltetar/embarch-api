@@ -236,30 +236,42 @@ fn extra_args_hash(extra_args: &[String]) -> u64 {
 
 /// A project directory doesn't look Zephyr/west-shaped: no `boards/*/*.yml`
 /// found at all (unrelated to whether any of them turned out file-backing
-/// valid). Same detection shape `embarch-umbrella`'s `init` uses.
+/// valid), or neither an `app/` nor an `apps/` directory exists at all
+/// (decision 63) — distinct from *finding* one of those directories empty of
+/// real apps, which is a legitimate "this repo has no buildable app yet" and
+/// stays a plain empty target list, not an error.
 #[derive(Debug)]
-pub struct NotZephyrWest;
+pub enum ScanError {
+    NoBoardYml,
+    NoAppDir,
+}
 
-impl std::fmt::Display for NotZephyrWest {
+impl std::fmt::Display for ScanError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "no board.yml files found under boards/ — this doesn't look like a Zephyr/west project"
-        )
+        match self {
+            ScanError::NoBoardYml => write!(
+                f,
+                "no board.yml files found under boards/ — this doesn't look like a Zephyr/west project"
+            ),
+            ScanError::NoAppDir => write!(
+                f,
+                "neither app/ nor apps/ found under the project's source_path — this doesn't look like a Zephyr/west project"
+            ),
+        }
     }
 }
 
-impl std::error::Error for NotZephyrWest {}
+impl std::error::Error for ScanError {}
 
 /// Live-scan `source_path` for every file-backing-validated (board, soc,
 /// cpucluster, variant, revision, app) tuple. Pure filesystem + YAML reads —
 /// no `west` invocation, so cheap enough to call on every request.
-pub fn scan(source_path: &Path) -> Result<Vec<Target>, NotZephyrWest> {
+pub fn scan(source_path: &Path) -> Result<Vec<Target>, ScanError> {
     let boards = scan_boards(source_path);
     if boards.is_empty() {
-        return Err(NotZephyrWest);
+        return Err(ScanError::NoBoardYml);
     }
-    let apps = scan_apps(source_path);
+    let apps = scan_apps(source_path)?;
 
     let mut targets = Vec::new();
     for board in &boards {
@@ -521,22 +533,53 @@ fn scan_boards(source_path: &Path) -> Vec<BoardDef> {
     out
 }
 
-/// Every snippet name declared under `source_path/app/<app>/snippets`,
-/// recursively — matching Zephyr's own `snippets.py` (`os.walk` under a
-/// snippet root, not a fixed one-level nesting), since a `snippet.yml`'s
-/// directory nesting depth isn't itself meaningful. Confirmed against a
-/// real target repo: ten snippets (`ble-shell`, `release`,
-/// `factory-test`, `datalogging_cli`, `charging-state`, `wdt31`,
+/// The two conventional west app-directory names, checked in this order
+/// (decision 63). `apps/` (plural) is listed second but **wins a same-name
+/// collision** in `app_dir` below — see that function's doc.
+const APP_DIR_NAMES: [&str; 2] = ["app", "apps"];
+
+/// `<source_path>/<app>` — the directory a given app's `CMakeLists.txt`,
+/// snippets, and `app_path` actually live under, checked against whichever
+/// of `app/`/`apps/` (decision 63) really has a `CMakeLists.txt` for that
+/// name.
+///
+/// **On a same-name collision — `app` present under both `app/<name>` and
+/// `apps/<name>`** — `apps/` wins: it's the newer, plural convention this
+/// decision added support for, and picking one deterministically beats
+/// guessing which the caller meant. This only matters for the pathological
+/// case of one repo maintaining two directories with an identically-named
+/// app in each; the ordinary case (a repo uses exactly one of the two) never
+/// reaches the collision branch at all.
+///
+/// Falls back to `app/<name>` if neither has a real `CMakeLists.txt` for it
+/// (shouldn't happen for a name that came out of `scan_apps`, which already
+/// filtered on that).
+fn app_dir(source_path: &Path, app: &str) -> PathBuf {
+    for name in ["apps", "app"] {
+        let candidate = source_path.join(name).join(app);
+        if candidate.join("CMakeLists.txt").is_file() {
+            return candidate;
+        }
+    }
+    source_path.join("app").join(app)
+}
+
+/// Every snippet name declared under `<app dir>/<app>/snippets`
+/// (`app_dir` above), recursively — matching Zephyr's own `snippets.py`
+/// (`os.walk` under a snippet root, not a fixed one-level nesting), since a
+/// `snippet.yml`'s directory nesting depth isn't itself meaningful.
+/// Confirmed against a real target repo: ten snippets (`ble-shell`,
+/// `release`, `factory-test`, `datalogging_cli`, `charging-state`, `wdt31`,
 /// `sensor01-evk`, `sensor01-evt-3led`, `sensor01-evt-5led`, `max_signal`)
 /// all one level deep, but not assumed to always be. The name comes from `snippet.yml`'s
 /// own `name:` field, not the directory name — they match by convention in
 /// every real example here, but Zephyr doesn't require it.
 ///
-/// Only `app/<app>/snippets` is scanned, not `boards/**/snippets` or a
+/// Only `<app dir>/<app>/snippets` is scanned, not `boards/**/snippets` or a
 /// workspace-wide `snippets/` root — both real Zephyr snippet locations this
 /// module doesn't yet cover, since the real repo only uses the former.
 fn scan_snippets(source_path: &Path, app: &str) -> Vec<String> {
-    let snippets_dir = source_path.join("app").join(app).join("snippets");
+    let snippets_dir = app_dir(source_path, app).join("snippets");
     let mut out = Vec::new();
     let mut stack = vec![snippets_dir];
     while let Some(dir) = stack.pop() {
@@ -565,21 +608,39 @@ fn scan_snippets(source_path: &Path, app: &str) -> Vec<String> {
     out
 }
 
-/// Every `app/<name>/CMakeLists.txt` under `source_path` — app name is the
-/// directory name. Same shape `embarch-umbrella`'s `init` already
-/// recognizes as "this repo has a west app."
-fn scan_apps(source_path: &Path) -> Vec<String> {
-    let app_dir = source_path.join("app");
-    let Ok(entries) = std::fs::read_dir(&app_dir) else {
-        return Vec::new();
-    };
-    let mut apps: Vec<String> = entries
-        .flatten()
-        .filter(|e| e.path().is_dir() && e.path().join("CMakeLists.txt").is_file())
-        .filter_map(|e| e.file_name().into_string().ok())
+/// Every `<CMakeLists.txt>`-backed app directory name under `source_path`
+/// (decision 63): both `app/` and `apps/` are scanned, and either alone is
+/// enough — a repo using only one of the two conventional names still gets
+/// its real apps back. **Neither directory existing at all** is refused
+/// (`ScanError::NoAppDir`), kept distinguishable from "one of them exists
+/// but holds no real app subdirectory", which is a legitimate empty `Vec`
+/// and not an error — the caller needs to tell "this repo isn't laid out the
+/// way this scanner expects" apart from "this repo really has nothing
+/// buildable yet".
+fn scan_apps(source_path: &Path) -> Result<Vec<String>, ScanError> {
+    let present: Vec<&str> = APP_DIR_NAMES
+        .iter()
+        .copied()
+        .filter(|name| source_path.join(name).is_dir())
+        .collect();
+    if present.is_empty() {
+        return Err(ScanError::NoAppDir);
+    }
+
+    let mut apps: Vec<String> = present
+        .into_iter()
+        .flat_map(|name| {
+            let dir = source_path.join(name);
+            let entries = std::fs::read_dir(&dir).into_iter().flatten().flatten();
+            entries
+                .filter(|e| e.path().is_dir() && e.path().join("CMakeLists.txt").is_file())
+                .filter_map(|e| e.file_name().into_string().ok())
+                .collect::<Vec<_>>()
+        })
         .collect();
     apps.sort();
-    apps
+    apps.dedup();
+    Ok(apps)
 }
 
 /// Narrows `targets` by whatever subset of `board`/`variant`/`revision`/`app`
@@ -668,15 +729,23 @@ pub fn build_command(
     cmd
 }
 
-fn context_result<T>(r: Result<T, NotZephyrWest>, source_path: &Path) -> Result<T> {
+fn context_result<T>(r: Result<T, ScanError>, source_path: &Path) -> Result<T> {
     r.with_context(|| format!("{} does not look like a Zephyr/west project", source_path.display()))
 }
 
 /// Convenience wrapper returning `anyhow::Result` for callers that just want
 /// a single error type (MCP tool / CLI handlers), rather than matching on
-/// `NotZephyrWest` themselves.
+/// `ScanError` themselves.
 pub fn scan_or_err(source_path: &Path) -> Result<Vec<Target>> {
     context_result(scan(source_path), source_path)
+}
+
+/// Public so callers resolving a real filesystem path for an already-known
+/// app name (e.g. `resolve.rs`'s `west build <app_path>` argument) use the
+/// same `app/`-vs-`apps/` resolution `scan`/`scan_snippets` do, rather than
+/// re-hardcoding `app/<name>` (decision 63).
+pub fn app_path(source_path: &Path, app: &str) -> PathBuf {
+    app_dir(source_path, app)
 }
 
 #[cfg(test)]
@@ -822,6 +891,92 @@ board:
         let dir = tempfile_dir();
         fs::create_dir_all(dir.path().join("app/foo")).unwrap();
         assert!(scan(dir.path()).is_err());
+    }
+
+    fn write_single_board(root: &Path) {
+        let board_dir = root.join("boards/acme/single");
+        fs::create_dir_all(&board_dir).unwrap();
+        fs::write(
+            board_dir.join("single.yml"),
+            "board:\n  name: single\n  socs:\n    - name: nrf54l15\n",
+        )
+        .unwrap();
+        fs::write(board_dir.join("single_nrf54l15.dts"), "").unwrap();
+    }
+
+    /// Decision 63: `apps/` (plural) scans exactly like `app/` (singular).
+    #[test]
+    fn apps_dir_plural_scans_like_app_singular() {
+        let dir = tempfile_dir();
+        write_single_board(dir.path());
+        let app_dir = dir.path().join("apps/widget");
+        fs::create_dir_all(&app_dir).unwrap();
+        fs::write(app_dir.join("CMakeLists.txt"), "").unwrap();
+
+        let targets = scan(dir.path()).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].app, "widget");
+    }
+
+    /// Decision 63: neither `app/` nor `apps/` existing at all is a distinct
+    /// error, never silently indistinguishable from "found no apps" (a
+    /// legitimate empty `Vec` when one of the two directories exists but has
+    /// no real app subdirectory — see `both_dirs_present_merges_and_apps_wins_a_collision`
+    /// and `one_app_dir_present_but_empty_is_a_plain_empty_result`).
+    #[test]
+    fn neither_app_dir_is_a_distinct_error_from_found_no_apps() {
+        let dir = tempfile_dir();
+        write_single_board(dir.path());
+        match scan(dir.path()) {
+            Err(ScanError::NoAppDir) => {}
+            other => panic!("expected ScanError::NoAppDir, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn one_app_dir_present_but_empty_is_a_plain_empty_result() {
+        let dir = tempfile_dir();
+        write_single_board(dir.path());
+        fs::create_dir_all(dir.path().join("app")).unwrap();
+
+        let targets = scan(dir.path()).unwrap();
+        assert_eq!(targets, vec![], "{targets:#?}");
+    }
+
+    /// Decision 63: both `app/` and `apps/` present merges their real apps,
+    /// and a same-name collision resolves to `apps/`'s copy deterministically
+    /// rather than either an error or an arbitrary pick.
+    #[test]
+    fn both_dirs_present_merges_and_apps_wins_a_collision() {
+        let dir = tempfile_dir();
+        write_single_board(dir.path());
+
+        let widget_app = dir.path().join("app/widget");
+        fs::create_dir_all(&widget_app).unwrap();
+        fs::write(widget_app.join("CMakeLists.txt"), "").unwrap();
+
+        let widget_apps = dir.path().join("apps/widget");
+        fs::create_dir_all(&widget_apps).unwrap();
+        fs::write(widget_apps.join("CMakeLists.txt"), "").unwrap();
+        // Marker only `apps/widget` carries, to prove app_path resolves here.
+        fs::create_dir_all(widget_apps.join("snippets/only-in-apps")).unwrap();
+        fs::write(widget_apps.join("snippets/only-in-apps/snippet.yml"), "name: only-in-apps\n").unwrap();
+
+        let extra_app = dir.path().join("apps/extra");
+        fs::create_dir_all(&extra_app).unwrap();
+        fs::write(extra_app.join("CMakeLists.txt"), "").unwrap();
+
+        let targets = scan(dir.path()).unwrap();
+        let apps: std::collections::BTreeSet<_> = targets.iter().map(|t| t.app.clone()).collect();
+        assert_eq!(
+            apps,
+            ["extra", "widget"].into_iter().map(String::from).collect(),
+            "{targets:#?}"
+        );
+
+        assert_eq!(app_path(dir.path(), "widget"), widget_apps);
+        let snippets = scan_snippets(dir.path(), "widget");
+        assert_eq!(snippets, vec!["only-in-apps".to_string()]);
     }
 
     /// Regression test using the real reference-dut repo's actual
