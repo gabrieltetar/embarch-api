@@ -716,7 +716,7 @@ async fn dev_bench_hello(core: &CoreClient, json: bool) -> i32 {
                 true,
                 serde_json::json!({
                     "success": true,
-                    "schema_version": info.schema_version,
+                    "dev_bench_schema_version": info.schema_version,
                     "compatible": info.compatible,
                     "firmware_version": info.firmware_version,
                     "self_reported_hardware_id": info.self_reported_hardware_id,
