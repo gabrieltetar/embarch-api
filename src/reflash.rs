@@ -119,7 +119,7 @@ pub fn mismatch_message(what: &str, required: &str, actual: &str, remedy: &str) 
 /// Which configured project a run will reflash as the DUT, if any.
 ///
 /// `run_study` deliberately has no `project` parameter for the ordinary case
-/// (decision 44's own note: a study targets whatever DUT is connected
+/// (decision 40's own note: a study targets whatever DUT is connected
 /// through Core's dev-bench link, not one of this crate's configured
 /// projects). Rebuilding that DUT's firmware is a different thing and *is*
 /// project-shaped, so the parameter appears exactly when it becomes
@@ -169,7 +169,7 @@ pub struct RunStudyRequest<'a> {
     pub allow_version_mismatch: bool,
     /// Which configured project is the DUT. Required by `--reflash dut|both`
     /// and meaningless otherwise — a study is not project-shaped
-    /// (decision 44's own "no `project` param" note on `run_study`), but
+    /// (decision 40's own "no `project` param" note on `run_study`), but
     /// *rebuilding the DUT's firmware* is, and there is nowhere else for the
     /// build target to come from.
     pub project: Option<&'a str>,
