@@ -188,12 +188,70 @@ fn ceil_char_boundary(s: &str, i: usize) -> usize {
         .unwrap_or(s.len())
 }
 
+/// Drains a child stream line-by-line **as bytes**, not as UTF-8 text.
+///
+/// `AsyncBufReadExt::lines()`/`next_line()` decode each line as UTF-8 and
+/// return `Err(InvalidData)` on the first byte that isn't — and the caller
+/// here used to treat that identically to a clean EOF (`while let Ok(Some(..))
+/// = ...`), so a single stray non-UTF-8 byte anywhere in the log silently
+/// ended the drain and dropped everything after it, with no error and no
+/// marker. `read_until(b'\n', ..)` has no such failure mode: it hands back
+/// raw bytes regardless of their encoding, so a toolchain emitting a
+/// latin-1 path or a stray control byte only ever costs that one line, not
+/// the rest of the compiler output.
+///
+/// Each line is decoded with [`String::from_utf8`] first; only a line that
+/// actually fails gets the lossy fallback (`from_utf8_lossy`, substituting
+/// U+FFFD), and only then is it counted. Every replaced line is named in a
+/// summary marker appended to the end of the capture, in the same
+/// "arithmetic that adds back up" style [`truncate_log`]'s marker uses, so a
+/// caller relying on the returned text ever being silently wrong sees that
+/// it happened instead of an output that merely looks complete.
 async fn drain_stream<R: tokio::io::AsyncRead + Unpin>(reader: R) -> String {
-    let mut lines = BufReader::new(reader).lines();
+    let mut reader = BufReader::new(reader);
     let mut out = String::new();
-    while let Ok(Some(line)) = lines.next_line().await {
-        out.push_str(&line);
-        out.push('\n');
+    let mut raw = Vec::new();
+    let mut bad_lines: Vec<usize> = Vec::new();
+    let mut line_no = 0usize;
+    loop {
+        raw.clear();
+        match reader.read_until(b'\n', &mut raw).await {
+            Ok(0) => break,
+            Ok(_) => {
+                line_no += 1;
+                // Mirror `Lines`' own normalization: a trailing `\n` (and, for
+                // a `\r\n` terminator, the `\r` ahead of it) is stripped, then
+                // re-added below, uniformly, whether or not the child's last
+                // line was newline-terminated at all.
+                if raw.last() == Some(&b'\n') {
+                    raw.pop();
+                    if raw.last() == Some(&b'\r') {
+                        raw.pop();
+                    }
+                }
+                match String::from_utf8(std::mem::take(&mut raw)) {
+                    Ok(line) => out.push_str(&line),
+                    Err(err) => {
+                        bad_lines.push(line_no);
+                        out.push_str(&String::from_utf8_lossy(err.as_bytes()));
+                    }
+                }
+                out.push('\n');
+            }
+            Err(_) => break,
+        }
+    }
+    if !bad_lines.is_empty() {
+        out.push_str(&format!(
+            "...[{count} line(s) contained non-UTF-8 bytes and were decoded lossily \
+             (invalid bytes replaced with U+FFFD): line(s) {lines}]...\n",
+            count = bad_lines.len(),
+            lines = bad_lines
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+        ));
     }
     out
 }

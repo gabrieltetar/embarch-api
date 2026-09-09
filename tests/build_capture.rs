@@ -5,7 +5,9 @@
 //!    stdout/stderr while barely touching the other must not hang,
 //! 5. truncation on a UTF-8 character boundary, never mid-codepoint — now at
 //!    **both** cuts, since the log is kept head-and-tail (decision 18),
-//! 6. an untouched pre-existing artifact **not** counted as fresh.
+//! 6. an untouched pre-existing artifact **not** counted as fresh,
+//! 7. a non-UTF-8 byte anywhere in a stream costing only its own line, not
+//!    everything drained after it.
 //!
 //! The other three live in `tests/core_client_http.rs`.
 //!
@@ -373,6 +375,51 @@ async fn a_multibyte_build_log_survives_the_cap_end_to_end() {
     );
     assert!(tail.ends_with("end\n"), "the end of the log was lost");
     assert_within_cap_and_marker_is_honest(&outcome.stdout, 120_005);
+}
+
+/// The defect this task exists to close: `next_line()` (used until this
+/// task) returns `Err(InvalidData)` on the first non-UTF-8 byte, and the old
+/// drain treated that identically to a clean EOF — so a stray non-UTF-8 byte
+/// anywhere in a build log silently truncated everything after it, with no
+/// error and no marker. Both `error:` lines here must survive, and the
+/// invalid line's replacement must be visible rather than merely absent.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_non_utf8_byte_does_not_truncate_the_rest_of_the_log() {
+    let dir = TempDir::new("non-utf8");
+    // `\377`/`\376` are octal for 0xff/0xfe — on their own line, between the
+    // two `error:` lines the old drain would stop at the first and lose the
+    // second.
+    let plan = shell_plan(
+        dir.path(),
+        "printf 'error: bad\\n\\377\\376\\nerror: the real one\\n'",
+        &dir.path().join("firmware.hex"),
+    );
+
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(60),
+        embarch_api::build::BuildLocks::new().run_build(&plan),
+    )
+    .await
+    .expect("run_build never returned")
+    .expect("run_build failed");
+
+    assert_eq!(outcome.exit_code, Some(0), "the fixture child did not exit 0");
+    assert!(
+        outcome.stdout.contains("error: bad"),
+        "the line before the bad byte was lost; stdout was {:?}",
+        outcome.stdout
+    );
+    assert!(
+        outcome.stdout.contains("error: the real one"),
+        "the line after the bad byte was silently dropped; stdout was {:?}",
+        outcome.stdout
+    );
+    assert!(
+        outcome.stdout.contains("non-UTF-8"),
+        "the lossy substitution was not surfaced anywhere in the capture; stdout was {:?}",
+        outcome.stdout
+    );
 }
 
 /// Criterion 6, wired in. The build succeeds, exits 0, and leaves the
