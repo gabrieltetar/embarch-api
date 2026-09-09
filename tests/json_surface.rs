@@ -63,6 +63,7 @@ const EVERY_SUBCOMMAND: &[&[&str]] = &[
     &["enroll-probe", "--role", "some-role", "--chip", "nRF54L15"],
     &["validate", "--role", "some-role"],
     &["alerts"],
+    &["list-serial-ports"],
     &["versions"],
 ];
 

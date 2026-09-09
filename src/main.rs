@@ -391,6 +391,14 @@ pub enum Commands {
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
+    /// List every USB serial port embarch-core's OWN machine currently
+    /// enumerates (`GET /serial-ports`) — not this CLI's machine. Use this
+    /// when a project has no configured serial_port, or when a port name
+    /// guessed from this machine (e.g. a WSL2 /dev/ttyACM0) fails to open:
+    /// serial-log wants a name Core's OS recognises, a Windows COM name on
+    /// the suite's own primary topology. An empty list is a real answer —
+    /// nothing plugged into Core's machine — not an error.
+    ListSerialPorts,
     /// Print the version numbers compiled into THIS binary: its crate
     /// version, the `embarch-study-designer` host type schema version it
     /// submits studies under, and its `--json` shape version.

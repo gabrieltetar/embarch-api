@@ -96,6 +96,7 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         }
         Commands::Validate { role } => validate(&core, &role, json).await,
         Commands::Alerts { limit } => alerts(&core, limit, json).await,
+        Commands::ListSerialPorts => serial_ports(&core, json).await,
         // Normally intercepted by `main` before a config is even looked for
         // (decision 52). Kept here so the subcommand surface is exhaustive
         // from either entry point, and so it behaves identically if a future
@@ -861,6 +862,45 @@ async fn alerts(core: &CoreClient, limit: usize, json: bool) -> i32 {
     }
 }
 
+async fn serial_ports(core: &CoreClient, json: bool) -> i32 {
+    match core.list_serial_ports().await {
+        Ok(ports) => {
+            let human = if ports.is_empty() {
+                "no serial ports enumerated on embarch-core's machine".to_string()
+            } else {
+                ports
+                    .iter()
+                    .map(|p| {
+                        format!(
+                            "{} (vendor_id={:?} product_id={:?} serial_number={:?} product={:?})",
+                            p.port_name, p.vendor_id, p.product_id, p.serial_number, p.product
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            finish(
+                json,
+                true,
+                serde_json::json!({
+                    "success": true,
+                    "ports": ports.iter().map(|p| serde_json::json!({
+                        "port_name": p.port_name,
+                        "detected_by": p.detected_by,
+                        "vendor_id": p.vendor_id,
+                        "product_id": p.product_id,
+                        "serial_number": p.serial_number,
+                        "product": p.product,
+                        "interface": p.interface,
+                    })).collect::<Vec<_>>(),
+                }),
+                human,
+            )
+        }
+        Err(e) => error_result(json, format!("list-serial-ports failed: {e:#}")),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn serial_log(
     config: &Config,
@@ -1442,7 +1482,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 24,
+            arms, 25,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."

@@ -903,7 +903,25 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Read the serial console log for a project via embarch-core. Falls back to the project's configured serial_port/serial_baud if not overridden.")]
+    #[tool(description = "List every USB serial port embarch-core's OWN machine currently enumerates, via GET /serial-ports — not this MCP server's machine, and not dev-bench's link (that's a different question, answered by attach/validate). Use this before serial_log when a project has no configured serial_port, or when a port guessed from the caller's own machine (e.g. a WSL2 /dev/ttyACM0) fails to open: the value serial_log wants is a name Core's OS recognises, a Windows COM name on the suite's own primary topology. An empty list is a real answer — nothing plugged into Core's machine — not an error. Each entry's detected_by is always \"enumerated\" here (unnarrowed); vendor_id/product_id/serial_number/product/interface are whatever Core's OS descriptor read reports, any of which can be null.")]
+    async fn list_serial_ports(&self) -> Result<CallToolResult, McpError> {
+        match self.core.list_serial_ports().await {
+            Ok(ports) => Self::ok_json(serde_json::json!({
+                "ports": ports.into_iter().map(|p| serde_json::json!({
+                    "port_name": p.port_name,
+                    "detected_by": p.detected_by,
+                    "vendor_id": p.vendor_id,
+                    "product_id": p.product_id,
+                    "serial_number": p.serial_number,
+                    "product": p.product,
+                    "interface": p.interface,
+                })).collect::<Vec<_>>(),
+            })),
+            Err(e) => Self::err_text(format!("list_serial_ports failed: {e:#}")),
+        }
+    }
+
+    #[tool(description = "Read the serial console log for a project via embarch-core, opening the named port on CORE'S OWN MACHINE — not the machine this MCP server or its caller runs on. Falls back to the project's configured serial_port/serial_baud if not overridden; if neither gives a port, call list_serial_ports to discover a value Core's machine actually recognises (e.g. a Windows COM name when Core runs on Windows and the caller is WSL2 — a guess from the caller's own /dev/ttyACM0-style name will not resolve there). duration_ms is bounded by embarch-core's own cap on this route — see /serial-log in embarch-core's interface docs for the current number.")]
     async fn serial_log(
         &self,
         Parameters(SerialLogParams {
