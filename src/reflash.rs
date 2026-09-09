@@ -424,6 +424,14 @@ mod tests {
             "main".into(),
         ])
         .is_err());
+        // Nor does hiding it behind a shell that takes a -c/-lc script string
+        // — the shell-wrapper bypass this unit closes.
+        assert!(reject_tree_mutating_command(&[
+            "bash".into(),
+            "-lc".into(),
+            "git checkout main && git describe".into(),
+        ])
+        .is_err());
     }
 
     #[test]

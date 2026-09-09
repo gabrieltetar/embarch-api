@@ -18,11 +18,17 @@
 //!
 //! # The load-bearing constraint, moved with the code
 //!
-//! **Nothing here ever runs `git checkout`.** Manipulating an engineer's
-//! working tree to satisfy a test harness is destructive to the thing they
-//! are actively editing. Deriving a version is a *read*, and
-//! [`reject_tree_mutating_command`] is what keeps it one even when the argv
-//! arrives from a human-written config file this crate does not get to trust.
+//! **This crate never knowingly runs a tree-mutating `git` subcommand.**
+//! Manipulating an engineer's working tree to satisfy a test harness is
+//! destructive to the thing they are actively editing. Deriving a version is
+//! a *read*, and [`reject_tree_mutating_command`] is what keeps it one even
+//! when the argv arrives from a human-written config file this crate does
+//! not get to trust — including a `git` invocation named directly, or handed
+//! to a shell/exec wrapper (`bash -lc "git checkout main"`, `env git stash`).
+//! What it still cannot see: a `git` mutation hidden inside an opaque program
+//! of the config's own (`./scripts/version.sh clean`) never shows this rule a
+//! `git` token to notice, and stays out of reach by design — this guard reads
+//! argv, not a script's contents.
 
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -50,6 +56,25 @@ const TREE_MUTATING_GIT_SUBCOMMANDS: &[&str] = &[
     "apply", "am", "pull", "revert", "worktree", "submodule", "sparse-checkout",
 ];
 
+/// Programs that hand their remaining argv to another program rather than
+/// running it themselves — a shell that takes a `-c`/`-lc` script string, or
+/// `env` handing its trailing argv straight to whatever it names. A `git`
+/// invocation hidden behind one of these does not present as `git` in
+/// [`reject_tree_mutating_command`]'s `program` position, so it needs its own
+/// pass over the flattened argv rather than the early `program_name != "git"`
+/// return.
+const SHELL_OR_EXEC_WRAPPER_PROGRAMS: &[&str] =
+    &["sh", "bash", "zsh", "dash", "env", "cmd", "powershell", "pwsh"];
+
+/// Splits `args` into individual words, breaking apart any argument that
+/// itself contains whitespace (the `"git checkout main && git describe"` a
+/// shell's `-c`/`-lc` takes as one argv element) so a `git` subcommand
+/// embedded in a script string is visible the same way one passed as
+/// separate argv elements (`env`'s trailing command) already is.
+fn flatten_wrapper_args(args: &[String]) -> Vec<String> {
+    args.iter().flat_map(|a| a.split_whitespace()).map(str::to_string).collect()
+}
+
 /// Refuses a version command that would move the working tree.
 ///
 /// Deliberately matches **any** argument, not just the one in subcommand
@@ -60,6 +85,17 @@ const TREE_MUTATING_GIT_SUBCOMMANDS: &[&str] = &[
 /// That trade is one-sided: a version command has no business naming any of
 /// these, and the cost of the false positive is renaming an argument, while
 /// the cost of the false negative is somebody's uncommitted work.
+///
+/// The same over-rejection also covers a `git` invocation handed to a shell
+/// or exec wrapper (`bash -lc "git checkout main && git describe"`,
+/// `env git stash`): when `program` is one of
+/// [`SHELL_OR_EXEC_WRAPPER_PROGRAMS`], the remaining argv is flattened
+/// (splitting any argument that itself contains whitespace, so a `-lc`
+/// script string is scanned word by word) and checked for a `git` token
+/// alongside a mutating subcommand token. What this still cannot see is an
+/// opaque program of its own — `./scripts/version.sh clean` never shows this
+/// rule a `git` token to notice, wrapper or not, so that stays out of reach
+/// exactly as it did before.
 pub fn reject_tree_mutating_command(command: &[String]) -> Result<()> {
     let Some((program, args)) = command.split_first() else {
         anyhow::bail!("version_command is empty — give it at least a program to run");
@@ -68,13 +104,24 @@ pub fn reject_tree_mutating_command(command: &[String]) -> Result<()> {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or(program.as_str());
-    if program_name != "git" {
+
+    let subcommand: Option<String> = if program_name == "git" {
+        args.iter().find(|a| TREE_MUTATING_GIT_SUBCOMMANDS.contains(&a.as_str())).cloned()
+    } else if SHELL_OR_EXEC_WRAPPER_PROGRAMS.contains(&program_name) {
+        let tokens = flatten_wrapper_args(args);
+        let names_git = tokens
+            .iter()
+            .any(|t| Path::new(t).file_stem().and_then(|s| s.to_str()) == Some("git"));
+        if names_git {
+            tokens.into_iter().find(|t| TREE_MUTATING_GIT_SUBCOMMANDS.contains(&t.as_str()))
+        } else {
+            None
+        }
+    } else {
         return Ok(());
-    }
-    if let Some(subcommand) = args
-        .iter()
-        .find(|a| TREE_MUTATING_GIT_SUBCOMMANDS.contains(&a.as_str()))
-    {
+    };
+
+    if let Some(subcommand) = subcommand {
         anyhow::bail!(
             "refusing to run `git ... {subcommand} ...`: EmbArch never moves an engineer's \
              working tree to satisfy a study's version requirement \
@@ -159,13 +206,45 @@ mod tests {
         }
     }
 
-    /// Not a git command at all: this rule is about `git`'s tree, and a
-    /// project that versions itself some other way is not this rule's
-    /// business.
+    /// Narrowed rule: a program this guard cannot see `git` inside of is not
+    /// its business, `git`-named argument or not. `./scripts/version.sh` is
+    /// opaque — its argv never names `git` — so `clean` there is just an
+    /// argument to a script this rule has no way to know mutates anything.
+    /// That stays true even though `bash -lc "git ... clean"` right below is
+    /// now refused: the difference is a visible `git` token, not the word
+    /// `clean`.
     #[test]
     fn a_non_git_program_is_not_second_guessed() {
         assert!(reject_tree_mutating_command(&argv(&["cat", "VERSION"])).is_ok());
         assert!(reject_tree_mutating_command(&argv(&["./scripts/version.sh", "clean"])).is_ok());
+    }
+
+    /// The hole this unit closes: a shell or exec wrapper hides `git` from
+    /// the `program` position, so the rule needs its own pass over the
+    /// flattened argv rather than being satisfied that `program_name != "git"`.
+    #[test]
+    fn a_git_mutation_hidden_behind_a_shell_wrapper_is_still_refused() {
+        for command in [
+            argv(&["bash", "-lc", "git checkout main && git describe"]),
+            argv(&["sh", "-c", "git reset --hard"]),
+            argv(&["/usr/bin/env", "git", "stash"]),
+        ] {
+            let err = reject_tree_mutating_command(&command).unwrap_err().to_string();
+            assert!(err.contains("refusing to run"), "{command:?} was waved through: {err}");
+        }
+    }
+
+    /// A `git` read behind the same wrappers still passes — the wrapper
+    /// coverage is about the subcommand, not about refusing `git` wholesale.
+    #[test]
+    fn a_git_read_behind_a_shell_wrapper_still_passes() {
+        assert!(reject_tree_mutating_command(&argv(&[
+            "bash",
+            "-lc",
+            "git describe --always --dirty"
+        ]))
+        .is_ok());
+        assert!(reject_tree_mutating_command(&argv(&["cat", "VERSION"])).is_ok());
     }
 
     #[test]
