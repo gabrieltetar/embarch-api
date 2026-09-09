@@ -74,7 +74,8 @@ build_timeout_secs = 900
 # serial_port = "/dev/ttyACM0"
 # serial_baud = 115200
 # Optional: disambiguates this project's own debug probe when more than one
-# is attached (design.md §3 decision 9) — matched against status's own
+# is attached (embarch-core decision 9, decisions/probes.md — NOT this repo's
+# own decision 9, which is about locked dependency choices) — matched against status's own
 # probes[].serial_number. Omitted, Core falls back to first-probe-found.
 # probe_serial = "001050253368"
 # Optional: how to produce this project's own firmware version string, run
