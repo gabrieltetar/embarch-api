@@ -32,7 +32,7 @@ pub const OUTPUT_HEAD_BYTES: usize = 16 * 1024;
 /// Everything a build actually needs to run, independent of whether it came
 /// from a `discovery = "static"` project (today's fully-static schema) or a
 /// `discovery = "zephyr-west"` project's live, per-call target resolution
-/// (`resolve.rs`, `design.md` §3 decision 12) — `build.rs` itself doesn't
+/// (`resolve.rs`, decision 12) — `build.rs` itself doesn't
 /// know or care which produced it.
 pub struct BuildPlan {
     /// Locks per distinct build output, not just per project: two different
@@ -48,7 +48,7 @@ pub struct BuildPlan {
     pub timeout_secs: u64,
     pub env: HashMap<String, String>,
     /// The provenance file dropped beside the build output, or `None` where
-    /// the directory is already self-describing (`design.md` §3 decision
+    /// the directory is already self-describing (decision
     /// 19). `Some` only for a `zephyr-west` target, whose directory *name*
     /// is lossy: `extra_args` is folded into it as a hash, and `-` is legal
     /// inside a board, app and snippet name, so the name cannot be parsed
@@ -344,7 +344,7 @@ async fn run_build_locked(plan: &BuildPlan) -> Result<BuildOutcome> {
 /// Writes the resolved selection to `<build_dir>/target.json`, so a human
 /// (or `embarch-umbrella doctor`) staring at a directory listing can recover
 /// what produced a given directory instead of reverse-engineering the
-/// `-args<hash>` segment of its name (`design.md` §3 decision 19).
+/// `-args<hash>` segment of its name (decision 19).
 ///
 /// **It never creates the directory**, and returns `Ok(false)` when it is
 /// absent: the file is evidence *about* a build directory, so writing one

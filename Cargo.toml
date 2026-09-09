@@ -24,14 +24,14 @@ edition = "2021"
 anyhow = "1.0.103"
 clap = { version = "4.6.2", features = ["derive"] }
 # 2026-08-24: `core_client.rs`/`config::CoreConfig`/`token_discovery.rs`
-# extracted into this shared crate (embarch-ui/design.md §3 decision 5,
-# embarch-ui/milestone-1.md §4.1) so embarch-ui depends on the same
+# extracted into this shared crate (`embarch-ui` decision 5,
+# `embarch-ui`'s milestone-1.md §4.1) so embarch-ui depends on the same
 # implementation rather than a duplicated one. `bytes`/`reqwest` moved with
 # it — this crate no longer touches either directly. `embarch-topology`
 # also dropped as a direct dependency: its only use here was
 # `CoreConfig`'s default port constant, which moved with `CoreConfig`.
 embarch-core-client = { path = "crates/embarch-core-client" }
-# `alloc` (embarch-study-designer/design.md §3 decision 46) backs `Study.steps`
+# `alloc` (`embarch-study-designer` decision 46) backs `Study.steps`
 # with a heap `Vec` instead of a 64-slot inline array of ~600-byte `Step`s.
 # This crate is the one that actually crashed on the old shape — a debug build
 # overflowed its stack serving a live `study_status` over MCP — and, unlike

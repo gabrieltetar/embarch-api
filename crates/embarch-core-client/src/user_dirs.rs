@@ -2,11 +2,11 @@
 //! in — one definition, several callers.
 //!
 //! Split out of [`crate::api_log`], which established the directory and its
-//! reasoning (`embarch-api/design.md` §3 decision 43's 2026-08-25
+//! reasoning (decision 43's 2026-08-25
 //! correction: per-user, not machine-wide, because `/var/lib` is root-owned
 //! and `embarch-api` runs as the engineer). It stopped being a logging
 //! detail the moment a second thing needed the same directory —
-//! `embarch-ui`'s recent-projects list (`embarch-ui/design.md` §3 decision
+//! `embarch-ui`'s recent-projects list (`embarch-ui` decision
 //! 14) — and it lives in *this* crate for the reason `api_log`'s own header
 //! gives: `embarch-core-client` is the only crate both `embarch-api` and
 //! `embarch-ui` depend on, and a path two repos resolve independently is a

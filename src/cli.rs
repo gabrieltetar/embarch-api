@@ -139,7 +139,7 @@ async fn resolve_or_exit(
 }
 
 /// Prints `value` (in `--json` mode) or `human` (otherwise) to the right
-/// stream and returns the process exit code, per design.md §5a: `0` on
+/// stream and returns the process exit code, per this repo's `spec.md`: `0` on
 /// success, `1` on any operation failure, distinguished only by the
 /// message/JSON text, never a per-failure-kind code.
 ///
@@ -425,7 +425,7 @@ async fn flash(
 
     // Always the WSL2-local path — `core.flash` itself decides whether that
     // can go straight to Core as-is or needs uploading, based on topology
-    // (`core_client.rs`'s own doc comment, `design.md` §9).
+    // (`core_client.rs`'s own doc comment, decision 15).
     let path = firmware_path.unwrap_or_else(|| resolved.plan.artifact_path.display().to_string());
 
     match core
@@ -805,7 +805,7 @@ async fn validate(core: &CoreClient, role: &str, json: bool) -> i32 {
         Err(e) => match e.downcast_ref::<TopologyMismatchError>() {
             // Relay the mismatch and its fix_it_url as text — never opened
             // automatically (`embarch-topology validate`'s own CLI does the
-            // same; `embarch-topology/design.md` §3 decision 12). The URL is
+            // same; `embarch-topology` decision 12). The URL is
             // a fixed `embarch-ui` Topology-tab link as of decision 19 there,
             // not a discovered one — still opaque from here either way.
             Some(mismatch) => error_result(
@@ -1000,7 +1000,7 @@ async fn run_study(
         }
     };
 
-    // design.md §3 decision 26: recompute and overwrite all three of a
+    // `embarch-study-designer` decision 26: recompute and overwrite all three of a
     // study's seals unconditionally, regardless of whatever values
     // (including missing/zero ones) were in the submitted JSON.
     if let Err(e) = crate::study::reseal_study(&mut study) {

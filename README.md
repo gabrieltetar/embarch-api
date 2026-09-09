@@ -56,7 +56,7 @@ See [config.example.toml](config.example.toml) for the full configuration schema
 
 ## Design doc
 
-The full design record — architecture decisions, configuration schema reference, MCP tool surface, CLI subcommand surface, build orchestration details, and security model — lives in [embarch-doc/embarch-api/design.md](https://github.com/gabrieltetar/embarch-doc/blob/main/embarch-api/design.md), treated as the durable source of truth ahead of any chat history that produced it.
+The full design record — current truth, open questions, architecture decisions, configuration schema reference, MCP tool surface, and CLI subcommand surface — lives in [embarch-doc/embarch-api/spec.md](https://github.com/gabrieltetar/embarch-doc/blob/main/embarch-api/spec.md) and its linked `decisions/`, `open.md` and `interfaces/` files, treated as the durable source of truth ahead of any chat history that produced it.
 
 ## License
 

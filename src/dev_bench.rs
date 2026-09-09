@@ -18,7 +18,7 @@
 //! comment has the reasoning for why no default is better than a plausible
 //! one here.
 //!
-//! embarch-api/design.md's dev-bench-flashing-pipeline decision.
+//! decision 32.
 
 use anyhow::Result;
 
@@ -28,7 +28,7 @@ use crate::resolve::Resolved;
 
 /// The app directory within the workspace. Still a constant, and legitimately
 /// so: it's `embarch-dev-bench`'s own repo layout (`workspaces/*/app` is a
-/// symlink to the one shared `app/`, that repo's `design.md` §2), identical
+/// symlink to the one shared `app/`, that repo's `spec.md` §2), identical
 /// for every vendor-family workspace and not a property of any board.
 const APP_DIR: &str = "app";
 

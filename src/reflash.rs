@@ -1,9 +1,9 @@
 //! `run_study`'s reflash selector and the version derivation behind it —
-//! `design.md` §3 decision 40, the orchestrating half of
-//! `embarch-study-designer/design.md` §3 decision 40.
+//! decision 40, the orchestrating half of
+//! `embarch-study-designer` decision 40.
 //!
 //! Sequencing is **check → build → flash → `POST /study`**, all here,
-//! because Core has no build system (`embarch-core/design.md` §3 decision
+//! because Core has no build system (`embarch-core` decision
 //! 31). Core still gates independently on submit, so nothing in this module
 //! is the enforcement point: a `Study` posted straight to Core with a stale
 //! bench is rejected whether or not anything here ran. What this adds is the
@@ -34,7 +34,7 @@ use anyhow::{Context, Result};
 ///
 /// **Moved 2026-08-26, and the move is the point.** `embarch-ui`'s Study
 /// Designer prefills a `Study`'s `requires.firmware_version` from the
-/// configured project's own `git describe` (`embarch-ui/design.md` §3
+/// configured project's own `git describe` (`embarch-ui`
 /// decision 11), and `embarch-ui` cannot depend on this crate — no such
 /// dependency direction exists in the suite. The alternative was a second copy
 /// of this argv and of [`reject_tree_mutating_command`]'s over-rejecting rule,
@@ -48,7 +48,7 @@ use anyhow::{Context, Result};
 pub use embarch_core_client::version::{default_version_command, derive_version};
 
 /// Which firmware a run should rebuild and reflash before submitting its
-/// study (`design.md` §3 decision 40).
+/// study (decision 40).
 ///
 /// `None` is the default and the safe one: flashing is the destructive-ish
 /// half, and a study that merely observes a board somebody just flashed by
@@ -119,7 +119,7 @@ pub fn mismatch_message(what: &str, required: &str, actual: &str, remedy: &str) 
 /// Which configured project a run will reflash as the DUT, if any.
 ///
 /// `run_study` deliberately has no `project` parameter for the ordinary case
-/// (`design.md` §5's own note: a study targets whatever DUT is connected
+/// (decision 44's own note: a study targets whatever DUT is connected
 /// through Core's dev-bench link, not one of this crate's configured
 /// projects). Rebuilding that DUT's firmware is a different thing and *is*
 /// project-shaped, so the parameter appears exactly when it becomes
@@ -169,14 +169,14 @@ pub struct RunStudyRequest<'a> {
     pub allow_version_mismatch: bool,
     /// Which configured project is the DUT. Required by `--reflash dut|both`
     /// and meaningless otherwise — a study is not project-shaped
-    /// (`design.md` §5's own "no `project` param" note on `run_study`), but
+    /// (decision 44's own "no `project` param" note on `run_study`), but
     /// *rebuilding the DUT's firmware* is, and there is nowhere else for the
     /// build target to come from.
     pub project: Option<&'a str>,
     pub selection: crate::resolve::Selection<'a>,
 }
 
-/// `design.md` §3 decision 40's sequence: **check → build → flash → `POST
+/// decision 40's sequence: **check → build → flash → `POST
 /// /study`**, all here because Core has no build system.
 ///
 /// The two halves are sequenced differently, and the difference is decision
@@ -235,7 +235,7 @@ pub async fn run_study(
         .await
         .context("dev-bench flash failed")?;
         // Flashing halts the core rather than starting it running
-        // (`design.md` §3 decision 32's `reset_dev_bench` note), so a bench
+        // (decision 32's `reset_dev_bench` note), so a bench
         // that is never reset never replies to `Hello` and every check below
         // would time out against a chip sitting halted.
         core.reset(&resolved.chip, resolved.probe_serial.as_deref())
@@ -388,7 +388,7 @@ mod tests {
         assert!(ReflashTarget::Both.includes_dut());
     }
 
-    /// **The test `design.md` §3 decision 40 exists for.** It fails the
+    /// **The test decision 40 exists for.** It fails the
     /// moment anything in this crate's reflash path acquires a way to move an
     /// engineer's working tree — including through a `version_command` typed
     /// into a config file, which is the likeliest way it would come back.

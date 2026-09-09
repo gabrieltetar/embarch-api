@@ -42,10 +42,10 @@ struct Cli {
     command: Option<Commands>,
 }
 
-/// The four `discovery = "zephyr-west"` selection flags (`design.md` §3
+/// The four `discovery = "zephyr-west"` selection flags (decision 12,
 /// decision 12), shared by every subcommand that runs a build or needs a
 /// chip. A `discovery = "static"` project **refuses** any of them, naming
-/// which were given (`design.md` §3 decision 51) — it builds its configured
+/// which were given (decision 51) — it builds its configured
 /// `build_command` verbatim and has nowhere to apply them.
 #[derive(clap::Args, Debug)]
 pub struct TargetSelection {
@@ -84,7 +84,7 @@ pub struct TargetSelection {
     pub extra_arg: Vec<String>,
 }
 
-/// CLI subcommand surface (design.md §3.10/§5a) — mirrors embarch-api's MCP
+/// CLI subcommand surface (decisions 3, 10) — mirrors embarch-api's MCP
 /// tools in `tools.rs` one-for-one, so a human with no MCP client can invoke
 /// the identical operations directly.
 #[derive(Subcommand, Debug)]
@@ -356,7 +356,7 @@ pub enum Commands {
     /// — that is a real bench problem to go look at, not a busy signal.
     DevBenchHello,
     /// Enroll a physical probe with embarch-core's known_boards table
-    /// (design.md decision 22), recording which board its serial number is
+    /// (`embarch-core` decision 22), recording which board its serial number is
     /// wired to. Requires exactly one debug probe currently attached.
     EnrollProbe {
         /// A human-chosen label for this board (e.g.
@@ -368,13 +368,13 @@ pub enum Commands {
         #[arg(long)]
         chip: String,
         /// Picks which currently-attached probe to enroll when more than
-        /// one is present (`embarch-topology/design.md` §3 decision 15).
+        /// one is present (`embarch-topology` decision 15).
         /// Omitted, falls back to "exactly one attached" — unchanged.
         #[arg(long)]
         probe_serial: Option<String>,
     },
     /// Explicit, non-destructive re-check of an already-enrolled board's
-    /// live identity via embarch-core (design.md §3 decision 28) — the same
+    /// live identity via embarch-core (`embarch-core` decision 28) — the same
     /// check flash/reset/run-study already run mid-attach, callable on its
     /// own. A topology mismatch exits nonzero with the recorded/live
     /// hardware IDs and a fix_it_url printed to stderr — never opened
@@ -385,7 +385,7 @@ pub enum Commands {
         role: String,
     },
     /// List the most recent topology-mismatch alerts from embarch-core's
-    /// durable log (design.md §3 decision 28).
+    /// durable log (`embarch-core` decision 28).
     Alerts {
         /// How many of the most recent alerts to return.
         #[arg(long, default_value_t = 20)]
@@ -413,11 +413,11 @@ pub enum Commands {
 
 /// Walks up from `start` looking for `embarch/embarch.toml` at each level —
 /// the conventional location `embarch init` scaffolds
-/// (`embarch-umbrella/design.md` §3 decision 10), same discovery pattern
+/// (`embarch-umbrella` decision 10), same discovery pattern
 /// `git`/`west` themselves use for their own config/workspace root.
 ///
 /// Only ever consulted as a third fallback, after `--config` and
-/// `EMBARCH_API_CONFIG` — never the sole mechanism. `embarch-api/design.md`
+/// `EMBARCH_API_CONFIG` — never the sole mechanism. This repo's `spec.md`
 /// §4 already rejected cwd-inference *as the only source*, for a real
 /// reason: an MCP client controls the spawn cwd, so silently trusting it
 /// unconditionally would be a hidden assumption the config's origin
@@ -449,7 +449,7 @@ fn main() -> Result<()> {
     // default (8 MiB on Linux, 1 MiB on Windows) with no `Builder` knob to
     // change it. That's not enough to deserialize a real `StudyResult` in
     // place (~1.3 MB by value, `embarch-study-designer`'s
-    // worst-case-capacity `heapless` fields, embarch-core/design.md
+    // worst-case-capacity `heapless` fields, `embarch-core`
     // decision 24, plus unoptimized debug-build frame overhead on top) —
     // confirmed via a real crash, not just the type's known size: this
     // exact shape (`Builder::thread_stack_size` alone, no thread
@@ -458,7 +458,7 @@ fn main() -> Result<()> {
     // (`BleConnect`->`GattDiscover`->`GattMonitorAll`) against real
     // hardware, both over MCP and via this same subcommand run directly.
     // Matches the exact "debug builds only" risk
-    // `embarch-study-designer/design.md` §7 already tracked from a smaller
+    // `embarch-study-designer` spec.md §7 already tracked from a smaller
     // 2-step case — this is that same bug, not a new one, just the first
     // real GATT-sized trigger, and the first time it's needed a real
     // production fix rather than a test-only `RUST_MIN_STACK`/

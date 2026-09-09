@@ -29,7 +29,7 @@ impl std::error::Error for ResealError {}
 /// `study.protocols_crc` with freshly computed values over `study.steps`,
 /// `study.streams` and `study.protocols`, regardless of whatever values
 /// (including missing/zero ones) were already present in the submitted JSON
-/// — `embarch-study-designer/design.md` §3 decision 26: a seal is filled in
+/// — `embarch-study-designer` decision 26: a seal is filled in
 /// by whoever *submits* a `Study`, unconditionally, not trusted from the
 /// caller. Idempotent: a caller that already computed correct values is
 /// unaffected.
@@ -85,7 +85,7 @@ mod tests {
 
             decoders: Default::default(),
             name: heapless::String::try_from("t").unwrap(),
-            // `embarch-study-designer/design.md` §3 decision 40: mandatory,
+            // `embarch-study-designer` decision 40: mandatory,
             // with "any" an explicit legal value. These cases are about
             // `steps_crc` and have nothing to say about which builds a study
             // needs, so they say so.
@@ -94,7 +94,7 @@ mod tests {
             streams: heapless::Vec::new(),
             steps_crc: crc,
             streams_crc: crc,
-            // `embarch-study-designer/design.md` §3 decision 58: these cases
+            // `embarch-study-designer` decision 58: these cases
             // are about `steps_crc` and run no protocol.
             protocols: Default::default(),
             protocols_crc: 0,
@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn self_test_fixture_round_trips_end_to_end() {
         // Kept on a dedicated, generously-sized stack, for a reason that
-        // shrank: `embarch-study-designer/design.md` §3 decision 46 replaced
+        // shrank: `embarch-study-designer` decision 46 replaced
         // `Study.steps`' 64-slot inline array with a heap `Vec` (this crate
         // enables the `alloc` feature by name), which is the "noted for
         // follow-up" this comment used to end on. `Study` is no longer the

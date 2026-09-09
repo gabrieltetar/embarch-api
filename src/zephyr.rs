@@ -1,5 +1,5 @@
 //! Live Zephyr/west target discovery for a `discovery = "zephyr-west"`
-//! project (`design.md` §3 decision 12).
+//! project (decision 12).
 //!
 //! Nothing in here is cached, at any granularity, within or across sessions
 //! — it's pure filesystem + YAML reads, already cheap enough to redo on
@@ -152,7 +152,7 @@ impl Target {
     }
 
     /// Per-target build directory name, satisfying
-    /// `embarch-umbrella/design.md` §3 decision 10's no-shared-build-dir
+    /// `embarch-umbrella` decision 10's no-shared-build-dir
     /// rule without a human naming each one:
     /// `<board>-<variant-or-'default'>-<revision-or-'none'>-<app>[-<snippets>][-args<hash>]`.
     /// `snippets` (already sorted+deduped by the caller — `resolve.rs`) is
@@ -584,7 +584,7 @@ fn scan_apps(source_path: &Path) -> Vec<String> {
 
 /// Narrows `targets` by whatever subset of `board`/`variant`/`revision`/`app`
 /// is given. Never guesses: exactly one match proceeds, zero or more than
-/// one is an error (`design.md` §3 decision 12) — the caller decides how to
+/// one is an error (decision 12) — the caller decides how to
 /// report each case (`Selection::NoMatch` lists nothing to fall back to
 /// beyond the full scan; `Selection::Ambiguous` carries exactly the
 /// narrowed remainder, not the full unfiltered list).

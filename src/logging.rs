@@ -1,5 +1,5 @@
-//! `embarch-api`'s own rolling logfile (`design.md` §3 decision 43), so
-//! [embarch-ui](../../embarch-doc/embarch-ui/design.md)'s Debug tab can show
+//! `embarch-api`'s own rolling logfile (decision 43), so
+//! `embarch-ui`'s Debug tab can show
 //! this process's logs at all.
 //!
 //! Core solves the same problem with `/logs/recent` + `/logs/stream`, which
@@ -23,8 +23,8 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
 
-/// Which of `embarch-api`'s two entry points is running (`design.md` §3
-/// decisions 4 and 3.10) — the tag that makes one shared logfile legible.
+/// Which of `embarch-api`'s two entry points is running (decisions
+/// 4 and 3, 10) — the tag that makes one shared logfile legible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     /// Spawned by an MCP client, speaking JSON-RPC over stdio.

@@ -3,8 +3,8 @@
 //! `embarch-api`'s own `core_client.rs`/`config.rs::CoreConfig`/
 //! `token_discovery.rs` so `embarch-api` and `embarch-ui` depend on the same
 //! crate instead of `embarch-ui` growing an independent, duplicated client.
-//! See `embarch-doc/embarch-ui/design.md` §3 decision 5 and
-//! `embarch-doc/embarch-ui/milestone-1.md` §4.1 for the full rationale.
+//! See `embarch-ui` decision 5 and
+//! `embarch-ui`'s milestone-1.md §4.1 for the full rationale.
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -55,7 +55,7 @@ fn default_core_port() -> u16 {
 #[derive(Debug, Deserialize)]
 pub struct CoreConfig {
     /// Core's base URL, or the literal `"auto"` to resolve it at first use
-    /// (`embarch-api/design.md` §3.11). `"auto"` exists because the WSL2
+    /// (decision 11). `"auto"` exists because the WSL2
     /// host-gateway address changes on every WSL restart, so any literal IP
     /// written here is guaranteed to go stale — and did, before this field
     /// accepted it.
@@ -83,7 +83,7 @@ pub struct CoreConfig {
     /// `get_study_power_data`, `get_study_waveform_data`) — unlike
     /// build/flash/reset/serial-log, these don't warrant separate knobs:
     /// `POST /study` returns immediately (async, `embarch-study-designer`
-    /// design.md §3 decision 9), status polling is a cheap read, and the
+    /// decision 9), status polling is a cheap read, and the
     /// power/waveform CSV downloads are bounded by the same
     /// `limits::MAX_STEPS_PER_STUDY`-sized study that produced them.
     #[serde(default = "default_study_timeout_secs")]

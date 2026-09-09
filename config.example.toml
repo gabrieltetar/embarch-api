@@ -42,12 +42,12 @@ serial_timeout_secs = 15
 # fine, fully-supported way to configure it. If the repo actually has several
 # real boards/variants/revisions worth selecting between at call time instead
 # of one hand-picked combination, see example project #3 below
-# (discovery = "zephyr-west", design.md §3 decision 12) instead.
+# (discovery = "zephyr-west", decision 12) instead.
 #
 # The consequence to know before picking this shape: a static project runs the
 # build_command below verbatim, so a call that passes board, variant, revision,
 # app, snippets or extra_args is **refused**, naming which of them were given
-# (design.md §3 decision 51). It is not that they are ignored — they used to
+# (decision 51). It is not that they are ignored — they used to
 # be, and a build with two snippets reported success having built without them.
 [[projects]]
 name = "my-nrf-project"
@@ -59,7 +59,7 @@ artifact_path = "build/zephyr/zephyr.hex"
 chip = "nRF54L15"
 flash_format = "hex"
 # Optional: the flash offset to write the artifact at, passed through to
-# embarch-core (design.md §3 decision 42). Not needed here — a `hex` image
+# Core (decision 42). Not needed here — a `hex` image
 # carries its own load address — but *required in practice* for a
 # flash_format = "bin" project, whose raw binary carries none. Write it as a
 # TOML hex literal; it's a build-config fact of the project, deliberately not
@@ -79,7 +79,7 @@ build_timeout_secs = 900
 # probes[].serial_number. Omitted, Core falls back to first-probe-found.
 # probe_serial = "001050253368"
 # Optional: how to produce this project's own firmware version string, run
-# in source_path, for `run_study --reflash dut|both` (design.md §3 decision
+# in source_path, for `run_study --reflash dut|both` (decision
 # 40) — trimmed stdout becomes the reported version. Defaults to the
 # invocation below; only consulted on an actual reflash. A git argv naming a
 # tree-mutating subcommand is refused, wherever in the argv it appears.
@@ -97,7 +97,7 @@ chip = "STM32F446ZE"
 flash_format = "hex"
 build_timeout_secs = 900
 
-# Example project #3: discovery = "zephyr-west" (design.md §3 decision 12) —
+# Example project #3: discovery = "zephyr-west" (decision 12) —
 # for a repo with several real boards/variants/hardware-revisions worth
 # selecting between at call time, rather than one hand-picked combination
 # baked into config. Note what's absent compared to projects #1/#2: no
@@ -162,7 +162,7 @@ build_timeout_secs = 900
 # app = "my-app"
 
 # embarch-dev-bench's own firmware — deliberately NOT a [[projects]] entry
-# (design.md's dev-bench-flashing-pipeline decision): dev-bench isn't a DUT a
+# (decision 32): dev-bench isn't a DUT a
 # firmware engineer or an agent configures/discovers, it's EmbArch's own test
 # rig, one board at a time, addressed by no project name. Enables
 # build_dev_bench/flash_dev_bench/build_and_flash_dev_bench; omit this table

@@ -2,7 +2,7 @@
 //! selection into a concrete `build::BuildPlan` and chip, regardless of
 //! whether the project is `discovery = "static"` (today's schema, read
 //! straight from config) or `discovery = "zephyr-west"` (resolved live, per
-//! call — `zephyr.rs`, `design.md` §3 decision 12). Every MCP tool and CLI
+//! call — `zephyr.rs`, decision 12). Every MCP tool and CLI
 //! subcommand that runs a build or talks to Core about a chip goes through
 //! here, so the branch on `discovery` happens in exactly one place.
 
@@ -14,8 +14,8 @@ use embarch_core_client::CoreClient;
 use crate::zephyr;
 
 /// The reserved snippet literal that forces a build with **no** snippets
-/// over a project's configured `default_snippets` (`design.md` §3
-/// decision 21). Reserved rather than escaped because there was no third
+/// over a project's configured `default_snippets` (decision
+/// 21). Reserved rather than escaped because there was no third
 /// state between "omit `snippets` and take the default" and "pass an
 /// explicit list": an empty list is indistinguishable from an omitted one
 /// through the plain slice `Selection` carries, and decision 51 depends on
@@ -28,9 +28,9 @@ use crate::zephyr;
 /// have meant.
 pub const NO_SNIPPETS: &str = "none";
 
-/// The four optional call-time params `design.md` §3 decision 12 adds to
+/// The four optional call-time params decision 12 adds to
 /// `build`/`flash`/`build_and_flash` (and, as an extension beyond the
-/// decision's original text — see `design.md`'s changelog — `reset`), plus
+/// decision's original text — see decision 12's changelog — `reset`), plus
 /// `snippets`: a same-shape extension, but not one of the four narrowing
 /// axes — a snippet selection doesn't narrow which (board, soc, cpucluster,
 /// variant, revision, app) tuple `zephyr::select` resolves, it's an
@@ -39,7 +39,7 @@ pub const NO_SNIPPETS: &str = "none";
 /// name after target selection is already settled.
 ///
 /// **Every field here is rejected, not ignored, for a `discovery =
-/// "static"` project** (`design.md` §3 decision 51): a hand-authored
+/// "static"` project** (decision 51): a hand-authored
 /// `build_command` is an opaque argv this crate did not assemble, so there
 /// is nowhere to put any of them, and an input that cannot be honoured
 /// fails rather than being accepted and dropped.
@@ -69,16 +69,16 @@ pub struct Resolved {
     pub plan: BuildPlan,
     pub chip: String,
     pub flash_format: String,
-    /// Only meaningful for `flash_format = "bin"` (`embarch-core/design.md`
-    /// §3 decision 18). Comes from the project's own `base_address` config
-    /// field (`design.md` §3 decision 42) for a `[[projects]]` entry, and
+    /// Only meaningful for `flash_format = "bin"` (`embarch-core`
+    /// decision 18). Comes from the project's own `base_address` config
+    /// field (decision 42) for a `[[projects]]` entry, and
     /// from `dev_bench.rs`'s fixed constant for dev-bench — which was the
     /// only source of it at all until decision 42, the gap that forced the
     /// ESP32-C5 validation to flash by hand-written `POST /flash` instead of
     /// through here.
     pub base_address: Option<String>,
     /// Disambiguates which attached debug probe to flash/reset through when
-    /// more than one is present (`embarch-core/design.md` §3 decision 9).
+    /// more than one is present (`embarch-core` decision 9).
     /// `None` for every DUT project resolved here today — a real gap only
     /// dev-bench's own resolution surfaced (see `dev_bench.rs`), since
     /// exercising two probes simultaneously (a DUT's own probe alongside
@@ -124,7 +124,7 @@ fn fields_given(selection: &Selection<'_>) -> Vec<&'static str> {
 }
 
 fn resolve_static(project: &ProjectConfig, selection: Selection<'_>) -> Result<Resolved> {
-    // `design.md` §3 decision 51. A static project builds by running its
+    // decision 51. A static project builds by running its
     // configured `build_command` verbatim, so there is no scan to narrow and
     // no `-S` to append to an argv this crate did not assemble — the only
     // honest answers were "reject" and "splice", and splicing into an opaque
@@ -178,7 +178,7 @@ fn resolve_static(project: &ProjectConfig, selection: Selection<'_>) -> Result<R
 
 /// The (board, variant, revision, app) `zephyr::select` actually narrows
 /// with, once the project's configured `default_target` has filled in
-/// whatever the call left out (`design.md` §3 decision 20).
+/// whatever the call left out (decision 20).
 ///
 /// **Per field, not all-or-nothing.** A call naming `board` overrides the
 /// default's `board` and nothing else, which is what "a base selection a
@@ -263,7 +263,7 @@ fn default_target_note(effective: &EffectiveSelection<'_>) -> String {
 }
 
 /// Which snippets a build actually gets, given what the call passed and what
-/// the project configures (`design.md` §3 decision 21).
+/// the project configures (decision 21).
 ///
 /// Three states, which is the whole point: an omitted list takes
 /// `default_snippets`, an explicit list replaces it, and the reserved
@@ -517,7 +517,7 @@ pub fn list_targets(project: &ProjectConfig) -> Result<serde_json::Value> {
         }
         Discovery::Static => {
             // **A static project has exactly one target: itself**
-            // (`design.md` §3 decision 53). It used to return the
+            // (decision 53). It used to return the
             // hand-authored `[[projects.targets]]` menu, and error demanding
             // one when a project had none — a menu nothing selected from,
             // since a build runs the project-level `build_command` and
@@ -541,8 +541,8 @@ pub fn list_targets(project: &ProjectConfig) -> Result<serde_json::Value> {
 }
 
 /// Core's `/flash` takes the offset as a hex-or-decimal *string*
-/// (`embarch-core/design.md` §3 decision 18's `parse_base_address`), while
-/// the config field is a TOML integer (`design.md` §3 decision 42) so a
+/// (`embarch-core` decision 18's `parse_base_address`), while
+/// the config field is a TOML integer (decision 42) so a
 /// value written `0x2000` reads as one. `{:#x}` is the round trip: it is the
 /// form Core's own error message names, and the form a `bin` bench's
 /// `[dev_bench] base_address` is written in too — which is why this is

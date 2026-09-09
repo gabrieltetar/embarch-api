@@ -98,10 +98,10 @@ pub struct ProjectParams {
     pub project: String,
 }
 
-/// The four `discovery = "zephyr-west"` selection params (`design.md` §3
+/// The four `discovery = "zephyr-west"` selection params (decision 12,
 /// decision 12), shared by every tool that resolves a build target. A
 /// `discovery = "static"` project **refuses** any of them, naming which were
-/// given (`design.md` §3 decision 51) — it builds its configured
+/// given (decision 51) — it builds its configured
 /// `build_command` verbatim and has nowhere to apply them.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct TargetParams {
@@ -300,7 +300,7 @@ impl RunStudyParams {
     }
 }
 
-/// `study_stream_data`'s params (`design.md` §3 decision 39) — one declared
+/// `study_stream_data`'s params (decision 39) — one declared
 /// tap's capture, by the name the `Study` gave it.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct StudyStreamParams {
@@ -386,7 +386,7 @@ pub struct StudyWatchParams {
     pub include_samples: Option<bool>,
 }
 
-/// `embarch-core/design.md` §3 decision 22's `POST /probes/enroll`, wrapped
+/// `embarch-core` decision 22's `POST /probes/enroll`, wrapped
 /// per decision 34. No `project`/`board`/`variant`/etc. — enrollment isn't
 /// build-target selection, it's "record which physical probe I mean,"
 /// matching `run_study`'s own "no project param when the concept genuinely
@@ -402,13 +402,13 @@ pub struct EnrollProbeParams {
     /// against this same probe.
     pub chip: String,
     /// Picks which currently-attached probe to enroll when more than one is
-    /// present (`embarch-topology/design.md` §3 decision 15). Omitted,
+    /// present (`embarch-topology` decision 15). Omitted,
     /// Core falls back to its "exactly one attached" requirement.
     #[serde(default)]
     pub probe_serial: Option<String>,
 }
 
-/// `embarch-core/design.md` §3 decision 28's `POST /validate`, wrapped per
+/// `embarch-core` decision 28's `POST /validate`, wrapped per
 /// decision 34's own precedent (`EnrollProbeParams`, above): no
 /// `project`/build-target params, since this isn't build-target selection
 /// either — just "is the board enrolled as `role` still the one attached."
@@ -419,7 +419,7 @@ pub struct ValidateParams {
     pub role: String,
 }
 
-/// `embarch-core/design.md` §3 decision 28's `GET /alerts`.
+/// `embarch-core` decision 28's `GET /alerts`.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct AlertsParams {
     /// How many of the most recent alerts to return. Defaults to 20.
@@ -565,7 +565,7 @@ impl EmbarchApi {
         };
         // Always the WSL2-local path — `core.flash` itself decides whether
         // that can go straight to Core as-is or needs uploading, based on
-        // topology (`core_client.rs`'s own doc comment, `design.md` §9).
+        // topology (`core_client.rs`'s own doc comment, decision 15).
         let path = resolved.plan.artifact_path.display().to_string();
 
         match self
@@ -994,7 +994,7 @@ impl EmbarchApi {
                 }
             };
 
-        // design.md §3 decision 26: recompute and overwrite all three of a
+        // `embarch-study-designer` decision 26: recompute and overwrite all three of a
         // study's seals unconditionally, regardless of whatever values
         // (including missing/zero ones) were in the submitted JSON.
         if let Err(e) = crate::study::reseal_study(&mut study) {
@@ -1251,7 +1251,7 @@ impl EmbarchApi {
     }
 }
 
-/// `StudyResult.streams` as JSON (`embarch-study-designer/design.md` §4.8).
+/// `StudyResult.streams` as JSON (`embarch-study-designer` spec.md §4.8).
 ///
 /// Carries `truncated` through verbatim, which is the field this listing
 /// exists for: `StreamRef.truncated` is set both when a retention rotation

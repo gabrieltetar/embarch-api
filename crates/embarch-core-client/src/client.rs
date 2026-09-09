@@ -14,8 +14,8 @@ use embarch_topology::software::{ProbeOutcome, TopologyClass};
 enum Address {
     /// Declared in config, used as-is.
     Declared(String),
-    /// `base_url = "auto"` — discovered by probing (config.rs, design.md
-    /// §3.11). Deliberately not resolved at construction time: the startup
+    /// `base_url = "auto"` — discovered by probing (config.rs, decision
+    /// 11). Deliberately not resolved at construction time: the startup
     /// connectivity check is MCP-mode-only and `list_projects` is meant to
     /// work with Core down, both of which eager resolution would break.
     Auto {
@@ -64,7 +64,7 @@ pub struct StatusResponse {
     pub status: String,
     pub probes: Vec<ProbeInfo>,
     /// The **host type** schema version Core was built against
-    /// (`embarch-study-designer/design.md` §3 decision 12 and its
+    /// (`embarch-study-designer` decision 12 and its
     /// 2026-08-25 amendment) — the number that guards this hop, which
     /// carries `Study`/`StudyResult` whole rather than the dev-bench subset.
     ///
@@ -77,7 +77,7 @@ pub struct StatusResponse {
 }
 
 /// `embarch-api` and Core disagree about `embarch-study-designer`'s host
-/// type schema (`embarch-study-designer/design.md` §3 decision 12).
+/// type schema (`embarch-study-designer` decision 12).
 /// Downcastable so a caller can distinguish it from a transport failure —
 /// the same idiom `StudyConflictError` already uses.
 #[derive(Debug)]
@@ -103,7 +103,7 @@ impl std::fmt::Display for SchemaVersionMismatch {
                 f,
                 "embarch-study-designer host type schema mismatch: this embarch-api was built \
                  against v{}, and embarch-core served no version at all — it predates \
-                 `GET /status` carrying one (design.md §3 decision 12's 2026-08-25 amendment). \
+                 `GET /status` carrying one (`embarch-study-designer` decision 12's 2026-08-25 amendment). \
                  Redeploy embarch-core.",
                 self.api_version
             ),
@@ -134,7 +134,7 @@ struct FlashRequest<'a> {
 }
 
 /// The manifest an `embarch-outpost` build leaves beside its artifact
-/// (`embarch-outpost/design.md` §5.4).
+/// (`embarch-outpost` decision 9).
 ///
 /// **Derived from the firmware path rather than passed in**, deliberately.
 /// That decision says the engineer never handles this file, "because the
@@ -174,7 +174,7 @@ pub struct ResetResponse {
     pub reset: bool,
 }
 
-/// `embarch-core/design.md` §3 decision 22's `POST /probes/enroll` — the
+/// `embarch-core` decision 22's `POST /probes/enroll` — the
 /// only sanctioned way to populate/update Core's local `known_boards`
 /// table. Thin request/response wrappers, matching every other Core call in
 /// this file: `embarch-api` holds no opinion on the shape of `known_boards`
@@ -185,8 +185,8 @@ struct EnrollProbeRequest<'a> {
     role: &'a str,
     chip: &'a str,
     /// Picks which currently-attached probe to enroll when more than one is
-    /// present (`embarch-core/design.md` §3 decision 22's own doc comment;
-    /// `embarch-topology/design.md` §3 decision 15) — omitted, Core falls
+    /// present (`embarch-core` decision 22's own doc comment;
+    /// `embarch-topology` decision 15) — omitted, Core falls
     /// back to its original "exactly one attached" requirement. Added
     /// 2026-08-24: this field existed on Core's side since decision 15 but
     /// had no way to reach it through this client until `embarch-ui`'s
@@ -208,7 +208,7 @@ pub struct EnrollProbeResponse {
     pub confirmed_at_utc_ms: u64,
 }
 
-/// `embarch-core/design.md` §3 decision 28's `POST /validate` — an
+/// `embarch-core` decision 28's `POST /validate` — an
 /// explicit, non-destructive re-check of an already-enrolled board's live
 /// identity, the same check `flash`/`reset`/`run_study` already run
 /// mid-attach, callable on its own without touching hardware otherwise.
@@ -260,7 +260,7 @@ struct TopologyMismatchBody {
 /// caller that wants to branch on "this specifically is a stale identity,
 /// not some other failure" can `e.downcast_ref::<TopologyMismatchError>()`
 /// for it, including `fix_it_url` to relay onward (never auto-opened here —
-/// `embarch-topology/design.md` §3 decision 12's "opening the UI is the
+/// `embarch-topology` decision 12's "opening the UI is the
 /// caller's job," and this crate's own posture is to relay it as text, same
 /// as `embarch-topology validate`'s own CLI never opening a browser).
 #[derive(Debug)]
@@ -285,7 +285,7 @@ impl std::error::Error for TopologyMismatchError {}
 /// One entry from `GET /alerts` — mirrors `embarch_topology::hardware::
 /// Alert`'s fields without depending on that crate's `hardware` feature
 /// (this crate deliberately never links `probe-rs`/`serialport`,
-/// `embarch-topology/design.md` §4's own "no hardware knowledge" boundary).
+/// `embarch-topology`'s own "no hardware knowledge" boundary).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AlertResponse {
     pub id: String,
@@ -298,10 +298,10 @@ pub struct AlertResponse {
     pub reason: String,
 }
 
-/// One entry from `GET /probes/enrolled` (`embarch-core/design.md` §3
-/// decision 25, `link_port_serial` added decision 27) — every currently
+/// One entry from `GET /probes/enrolled` (`embarch-core` decision 22,
+/// `link_port_serial` added decision 27) — every currently
 /// enrolled board. Added 2026-08-24 for `embarch-ui`'s Dashboard/Topology
-/// tabs (`embarch-ui/design.md` §3 decision 5's amendment): reading this
+/// tabs (`embarch-ui` decision 5's amendment): reading this
 /// over HTTP, rather than `embarch_topology::hardware::list_enrolled()`
 /// in-process, is what keeps it correct when Core runs on a different
 /// machine than whichever process is asking — the same "never link
@@ -327,13 +327,13 @@ pub struct EnrolledBoardResponse {
 }
 
 /// One declared DUT signal link — `POST /signals` / `GET /signals`
-/// (`embarch-topology/design.md` §3 decision 18 and its 2026-08-25
+/// (`embarch-topology` decision 18 and its 2026-08-25
 /// amendment).
 ///
 /// **A mirror of `embarch_topology::hardware::SignalLink`, not that type.**
 /// The `hardware` module is behind that crate's `hardware` feature, which is
 /// what pulls in `probe-rs`/`serialport` — the two dependencies this crate
-/// deliberately never links (`embarch-api/design.md` §11). Same reasoning
+/// deliberately never links (decisions 37, 38). Same reasoning
 /// [`AlertResponse`] and [`EnrolledBoardResponse`] already state, and the
 /// same obligation: the serde shape here has to match that type's byte for
 /// byte, since this is what Core parses on the way in.
@@ -386,7 +386,7 @@ pub enum SignalRoute {
 ///
 /// This is **Core's** enumeration, and that distinction is the point: a
 /// serial port on the machine running the asking process is not a serial port
-/// on the machine running Core (`embarch-ui/design.md` §3 decision 5).
+/// on the machine running Core (`embarch-ui` decision 5).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SerialPortResponse {
     pub port_name: String,
@@ -443,7 +443,7 @@ pub struct StudyStepEntry {
 
 /// `GET /study/{study_id}/streams`' body — what a study's taps captured, and
 /// **why a trace has no names when it has none**
-/// (`embarch-core/design.md` §3 decision 30(c)'s 2026-08-26 amendment).
+/// (`embarch-core` decision 30(c)'s 2026-08-26 amendment).
 #[derive(Debug, Clone, Deserialize)]
 pub struct StudyStreamIndex {
     pub streams: Vec<StudyStreamEntry>,
@@ -467,27 +467,27 @@ pub struct StudyStreamEntry {
     /// The one field this whole endpoint exists for. `None` is "nothing to
     /// report"; `Some` on an `OutpostTrace` tap means the trace decoded into
     /// structure but is missing its names, its times, or both — and a caller
-    /// must not present it as a complete one (`embarch-ui/design.md` §3
-    /// decision 10). **Prose, for a person:** branch on the two booleans
+    /// must not present it as a complete one (`embarch-ui` decision 10,
+    /// trace half). **Prose, for a person:** branch on the two booleans
     /// below, never on this text.
     #[serde(default)]
     pub note: Option<String>,
     /// Whether an applicable manifest named this trace's threads, ISRs and
-    /// markers (`embarch-outpost/design.md` §3 decision 9). `None` from a Core
+    /// markers (`embarch-outpost` decision 9). `None` from a Core
     /// that predates the field, or on a tap where the question is meaningless.
     #[serde(default)]
     pub named: Option<bool>,
     /// Whether this trace's frames carry Core's own receipt time — the clock
     /// that **places** a trace against the study's other streams, alongside
     /// the DUT's own per-record `cycles` that measures it
-    /// (`embarch-outpost/design.md` §3 decisions 4, 17). `Some(false)` is a
+    /// (`embarch-outpost` decisions 4, 17). `Some(false)` is a
     /// trace with no placement: real, and still fully measurable on the DUT's
     /// clock.
     #[serde(default)]
     pub timed: Option<bool>,
     /// Whether the firmware kept **itself** out of this trace — no record of
     /// the outpost's own drain thread or its own UART's interrupt
-    /// (`embarch-outpost/design.md` §3 decision 19,
+    /// (`embarch-outpost` decision 19,
     /// `CONFIG_EMBARCH_OUTPOST_TRACE_SELF=n`, the default).
     ///
     /// A third independent fact beside `named`/`timed`, and the only one the
@@ -519,7 +519,7 @@ impl StudyStreamEntry {
     }
 }
 
-/// `GET /dev-bench/port`'s success body (`embarch-core/design.md` §4/§5) —
+/// `GET /dev-bench/port`'s success body (`embarch-core` spec.md) —
 /// which serial port `embarch-dev-bench` is on right now. Every field but
 /// `port_name`/`detected_by` is nullable, matching Core's own endpoint doc:
 /// an explicitly-configured port need not be USB-enumerable.
@@ -534,10 +534,10 @@ pub struct DevBenchPortResponse {
     pub interface: Option<u8>,
 }
 
-/// `GET /logs/recent`'s body (`embarch-core/design.md` §4) — plain lines
+/// `GET /logs/recent`'s body (`embarch-core` spec.md) — plain lines
 /// exactly as `tracing_subscriber`'s own formatter wrote them, no
-/// server-side structuring/filtering (`embarch-ui/design.md` §3 decision
-/// 7's resolution of that open question).
+/// server-side structuring/filtering (`embarch-ui` decision 7's
+/// resolution of that open question).
 #[derive(Debug, Deserialize)]
 struct LogsRecentResponse {
     lines: Vec<String>,
@@ -559,8 +559,7 @@ struct ResolveChipResponse {
     chip: String,
 }
 
-/// `POST /study`'s success (200) body — `embarch-doc`'s `embarch-api/design.md`
-/// §5: `{ "study_id": "<uuid-string>", "status": "accepted" }`. Only
+/// `POST /study`'s success (200) body — this repo's `spec.md`: `{ "study_id": "<uuid-string>", "status": "accepted" }`. Only
 /// `study_id` is modeled — `run_study`/`run-study` return `{ study_id }`
 /// verbatim (per spec) and have no use for `status`, which is always
 /// `"accepted"` on a 200 anyway; serde ignores the extra field on
@@ -571,11 +570,10 @@ pub struct PostStudyResponse {
 }
 
 /// The two out-of-band run parameters `POST /study` accepts as **query
-/// parameters** (`embarch-core/design.md` §3 decision 31's amendment,
-/// `embarch-api/design.md` §3 decision 40).
+/// parameters** (`embarch-core` decision 31's amendment, decision 40).
 ///
-/// Neither can ride inside the `Study` body: `embarch-study-designer/design.md`
-/// §3 decision 40 settles that reflash is "a run parameter, not a study
+/// Neither can ride inside the `Study` body: `embarch-study-designer`
+/// decision 40 settles that reflash is "a run parameter, not a study
 /// field", so a saved study would otherwise carry a reflash instruction into
 /// every later re-read of its own results. Keeping them out of the body also
 /// leaves `Study`'s bytes — and therefore `steps_crc`/`streams_crc` — exactly
@@ -594,7 +592,7 @@ pub struct StudyRunOptions {
     /// what lets Core write `VersionSource::FlashedThisRun` honestly —
     /// `POST /flash` and `POST /study` are separate calls with nothing
     /// linking them, so the process that sequenced both is the only one that
-    /// can say so (`embarch-core/design.md` §3 decision 31's implementation
+    /// can say so (`embarch-core` decision 31's implementation
     /// note).
     pub flashed_firmware_version: Option<String>,
 }
@@ -842,7 +840,7 @@ impl std::fmt::Display for StudyConflictError {
 
 impl std::error::Error for StudyConflictError {}
 
-/// `GET /study/{study_id}`'s body — `embarch-api/design.md` §5. `status` is
+/// `GET /study/{study_id}`'s body — this repo's `spec.md`. `status` is
 /// left as a plain `String` (matching how `StatusResponse.status` above is
 /// already handled) rather than a closed enum, since this is a
 /// loosely-typed pass-through of whatever Core reports.
@@ -855,8 +853,7 @@ pub struct StudyStatusResponse {
     pub reason: Option<String>,
 }
 
-/// Core's structured non-2xx error body (`embarch-core/design.md` §3
-/// decision 12): `{"code": "...", "message": "...", "cause": "..."}`. Not
+/// Core's structured non-2xx error body (`embarch-core` decision 12): `{"code": "...", "message": "...", "cause": "..."}`. Not
 /// every Core error response uses this shape yet (existing endpoints still
 /// return plain text, per `send`'s doc comment above) — so parsing this is
 /// attempted, with a plain-text fallback, rather than assumed.
@@ -920,7 +917,7 @@ impl CoreClient {
                     Address::Auto { host, port } => (host.as_deref(), *port),
                 };
 
-                // embarch-topology/design.md decisions 2, 3: live, in-process,
+                // `embarch-topology` decisions 2, 3: live, in-process,
                 // every call — this crate no longer owns any of the WSL2/
                 // gateway/probe I/O itself (formerly `env.rs`/`probe.rs`/this
                 // module's own `topology.rs` mirror).
@@ -1019,7 +1016,7 @@ impl CoreClient {
     /// The winning topology class — `Local` for a declared address (no
     /// probing done), otherwise whichever candidate actually answered.
     /// `flash`'s only consumer: a `WslHost`/`Remote` Core can't be assumed
-    /// to share a filesystem with this process (`design.md` §9's 2026-08-18
+    /// to share a filesystem with this process (decision 15's 2026-08-18
     /// finding — a Session-0-service Core can't reach a `WslHost`'s
     /// `\\wsl.localhost` UNC path at all), so those classes get the
     /// artifact's bytes instead of a path.
@@ -1080,7 +1077,7 @@ impl CoreClient {
     }
 
     /// Formats a non-2xx `/study/*` error body: Core's new `{code, message,
-    /// cause}` shape (`embarch-core/design.md` §3 decision 12) if the body
+    /// cause}` shape (`embarch-core` decision 12) if the body
     /// parses as one, else the raw text — same fallback posture as `send`'s
     /// doc comment above, since not every endpoint has moved to the
     /// structured shape yet.
@@ -1105,7 +1102,7 @@ impl CoreClient {
     /// `firmware_path` is always a path *this process* can read — the
     /// WSL2-local artifact path, or a CLI `--firmware-path` override, never
     /// a UNC form the caller computed for Core. What gets sent to Core
-    /// depends on the resolved topology (`design.md` §9's 2026-08-18
+    /// depends on the resolved topology (decision 15's 2026-08-18
     /// finding): `Local` (same machine, or a declared dev-workflow address)
     /// sends the path as JSON, unchanged from before this decision — Core
     /// can just open it. `WslHost`/`Remote` — Core running natively on the
@@ -1118,7 +1115,7 @@ impl CoreClient {
     /// replaces for these classes: it works identically whether Core is
     /// foreground or an installed service, so callers no longer need to
     /// compute or send a `firmware_path_for_core`-style UNC form at all.
-    /// `base_address` (`embarch-core/design.md` §3 decision 18) is only
+    /// `base_address` (`embarch-core` decision 18) is only
     /// meaningful for `format = "bin"` — silently ignored by Core otherwise,
     /// same posture that decision's own text documents at Core's single call
     /// site, so a caller that always passes the same value regardless of
@@ -1131,7 +1128,7 @@ impl CoreClient {
     /// silently applied on one path but not the other would be worse than
     /// not offering it.
     ///
-    /// `probe_serial` (`embarch-core/design.md` §3 decision 9) disambiguates
+    /// `probe_serial` (`embarch-core` decision 9) disambiguates
     /// which attached debug probe to use when more than one is present —
     /// designed there well ahead of a real second probe existing, and never
     /// actually threaded through from this side until dev-bench's own
@@ -1220,8 +1217,8 @@ impl CoreClient {
             .await
     }
 
-    /// `POST /probes/enroll` (`embarch-core/design.md` §3 decision 22,
-    /// `embarch-api/design.md` §3 decision 34) — records which physical
+    /// `POST /probes/enroll` (`embarch-core` decision 22,
+    /// decision 34) — records which physical
     /// board `role`'s probe is. `probe_serial` picks a specific attached
     /// probe when more than one is present (given, e.g. by a drag-and-drop
     /// UI that already knows exactly which card was dropped); omitted,
@@ -1235,7 +1232,7 @@ impl CoreClient {
             .await
     }
 
-    /// `POST /validate` (`embarch-core/design.md` §3 decision 28) — the
+    /// `POST /validate` (`embarch-core` decision 28) — the
     /// explicit, non-destructive counterpart to the live re-check
     /// `flash`/`reset`/`run_study` already run mid-attach: same underlying
     /// `embarch_topology::hardware::validate_role` call, callable on its own
@@ -1292,7 +1289,7 @@ impl CoreClient {
         Err(anyhow!("embarch-core returned {status}: {body}"))
     }
 
-    /// `GET /alerts` (`embarch-core/design.md` §3 decision 28) — recent
+    /// `GET /alerts` (`embarch-core` decision 28) — recent
     /// topology-mismatch alerts from Core's durable log
     /// (`embarch_topology::hardware::recent_alerts`). Reuses
     /// `status_timeout`: a pure local-file read on Core's side, no hardware
@@ -1303,7 +1300,7 @@ impl CoreClient {
         self.send(request, self.status_timeout).await
     }
 
-    /// `GET /probes/enrolled` (`embarch-core/design.md` §3 decision 25) —
+    /// `GET /probes/enrolled` (`embarch-core` decision 22) —
     /// every currently enrolled board. Reuses `status_timeout`: a pure read
     /// of `embarch-topology`'s own storage on Core's side, no hardware
     /// touched — same posture as `alerts` above.
@@ -1312,7 +1309,7 @@ impl CoreClient {
         self.send(self.client.get(url), self.status_timeout).await
     }
 
-    /// `GET /dev-bench/port` (`embarch-core/design.md` §4/§5) — which
+    /// `GET /dev-bench/port` (`embarch-core` spec.md) — which
     /// serial port `embarch-dev-bench` is on right now, if any. Core's own
     /// `404` for "no port matches" is an expected state (bench unplugged),
     /// not a Core failure, so it's surfaced as `Ok(None)` rather than an
@@ -1343,8 +1340,8 @@ impl CoreClient {
         Err(anyhow!("embarch-core returned {status}: {body}"))
     }
 
-    /// `GET /logs/recent` (`embarch-core/design.md` §4, `embarch-ui/design.md`
-    /// §3 decision 7) — the tail of Core's own current daily log file.
+    /// `GET /logs/recent` (`embarch-core` spec.md, `embarch-ui` decision 7)
+    /// — the tail of Core's own current daily log file.
     /// Reuses `status_timeout`: a pure local-file read on Core's side, no
     /// hardware touched. `embarch-ui`'s own Debug tab is the first caller —
     /// never a direct filesystem read of Core's logfile, since Core can run
@@ -1371,9 +1368,9 @@ impl CoreClient {
     }
 
     /// Resolve a Zephyr SoC name to a probe-rs chip target string via
-    /// Core's `POST /resolve-chip` (`embarch-core/design.md` §3 decision 8) —
+    /// Core's `POST /resolve-chip` (`embarch-core` decision 8) —
     /// used by a `discovery = "zephyr-west"` project's per-call target
-    /// resolution (`resolve.rs`, `design.md` §3 decision 12), since Core
+    /// resolution (`resolve.rs`, decision 12), since Core
     /// owns the one copy of this mapping. Reuses `status_timeout`: this is
     /// as quick a call as `/status`, no hardware touched on either end.
     pub async fn resolve_chip(&self, soc: &str) -> Result<String> {
@@ -1386,7 +1383,7 @@ impl CoreClient {
     }
 
     /// Submit a `Study` for Core to run against whatever DUT is connected
-    /// through its one dev-bench serial link (`embarch-api/design.md` §5 —
+    /// through its one dev-bench serial link (this repo's `spec.md` —
     /// no `project` param, unlike `build`/`flash`, since a study isn't
     /// tied to one of this file's configured projects). Async: a `200`
     /// means Core accepted the study and started it, not that it finished
@@ -1398,7 +1395,7 @@ impl CoreClient {
     /// anything itself.
     /// Submits a `Study`, **after** confirming Core agrees about
     /// `embarch-study-designer`'s host type schema
-    /// (`embarch-study-designer/design.md` §3 decision 12 and its
+    /// (`embarch-study-designer` decision 12 and its
     /// 2026-08-25 amendment).
     ///
     /// The check lives here rather than at each caller because both the CLI
@@ -1501,7 +1498,7 @@ impl CoreClient {
     ///
     /// Deliberately **not** a "looks like CSV" branch anywhere: what a tap's
     /// bytes mean is its declared `StreamEncoding` and nothing else
-    /// (`embarch-study-designer/design.md` §3 decision 35), and Core has
+    /// (`embarch-study-designer` decision 39), and Core has
     /// already applied that declaration by the time these bytes are served.
     async fn get_study_csv(&self, endpoint: &str, study_id: &str, not_found: &str) -> Result<Bytes> {
         let url = format!("{}/study/{study_id}/{endpoint}", self.base_url().await?);
@@ -1554,8 +1551,7 @@ impl CoreClient {
     }
 
     /// `GET /study/{study_id}/gatt-data` — the study's whole GATT transcript
-    /// as raw CSV bytes (`embarch-study-designer/design.md` §3 decision 36,
-    /// §4.3b): every notification, indication, read, write, subscribe and
+    /// as raw CSV bytes (`embarch-study-designer` decision 36): every notification, indication, read, write, subscribe and
     /// connection event, across every step, uncapped.
     ///
     /// Distinct from what `GET /study/{id}` returns inline: that carries each
@@ -1572,8 +1568,8 @@ impl CoreClient {
         .await
     }
 
-    /// `GET /study/{study_id}/stream/{name}` (`embarch-core/design.md` §3
-    /// decision 30) — one declared stream tap's capture, as bytes. The
+    /// `GET /study/{study_id}/stream/{name}` (`embarch-core` decision 30)
+    /// — one declared stream tap's capture, as bytes. The
     /// parameterised route the three fixed-channel calls above are now
     /// aliases of.
     ///
@@ -1604,7 +1600,7 @@ impl CoreClient {
     }
 
     /// `POST /signals` — declares (or re-declares) where a named DUT signal
-    /// currently goes (`embarch-topology/design.md` §3 decision 18's
+    /// currently goes (`embarch-topology` decision 18's
     /// 2026-08-25 amendment).
     ///
     /// Idempotent by name, and that overwrite **is** the migration path the
@@ -1615,7 +1611,7 @@ impl CoreClient {
     /// Goes over HTTP rather than calling
     /// `embarch_topology::hardware::declare_signal` in-process for the same
     /// reason enrollment does: Core owns writes to that storage, and a write
-    /// from elsewhere would bypass its `hw_lock` (`embarch-topology/design.md`
+    /// from elsewhere would bypass its `hw_lock` (`embarch-topology`
     /// decision 14) — and on this suite's real primary deployment a plain-user
     /// process cannot write the file at all.
     ///
@@ -1668,7 +1664,7 @@ impl CoreClient {
     /// currently enumerates, unnarrowed.
     ///
     /// What a human picks a `Route::Direct` signal's carrier from
-    /// (`embarch-ui/design.md` §3 decision 10). Not
+    /// (`embarch-ui` decision 10, routing half). Not
     /// [`CoreClient::dev_bench_port`] with the filter off: that answers "which
     /// port is dev-bench's link" and VID-gates to do it, while a `Direct`
     /// route's USB-UART bridge is a wire's carrier and can carry any VID.
@@ -1751,7 +1747,7 @@ impl CoreClient {
         Err(anyhow!("embarch-core returned {status}: {body}"))
     }
 
-    /// `GET /dev-bench/hello` (`embarch-core/design.md` §4) — runs the
+    /// `GET /dev-bench/hello` (`embarch-core` spec.md) — runs the
     /// `Hello`/`HelloAck` handshake on its own and reports what the bench
     /// currently flashed actually says it is. No `Study` is involved and no
     /// study lock is taken beyond Core's own refusal while one is in flight.

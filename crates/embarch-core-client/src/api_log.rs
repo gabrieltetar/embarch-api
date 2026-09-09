@@ -2,7 +2,7 @@
 //! — the one fact `embarch-api` (which writes the file) and `embarch-ui`
 //! (whose Debug tab tails it) must never disagree about.
 //!
-//! `embarch-api/design.md` §3 decision 43 and `embarch-ui/design.md` §3
+//! decision 43 and `embarch-ui`
 //! decision 13. Core's `/logs/recent`+`/logs/stream` pattern doesn't
 //! transfer here: `embarch-api` is spawned per Claude Code session as an MCP
 //! server, or run once as a CLI and gone, so there is no process to ask and
@@ -15,7 +15,7 @@
 //! But `embarch-core-client` is the only crate `embarch-api` and
 //! `embarch-ui` both depend on, and a path that two repos resolve
 //! independently is a path they will eventually resolve differently — the
-//! duplication `embarch-topology/design.md` decisions 2/8/14 exist to
+//! duplication `embarch-topology` decisions 2/8/14 exist to
 //! prevent. One definition, two call sites, chosen over a tidier home.
 //!
 //! **Per-user, not machine-wide — a correction to decision 43 as written**
@@ -29,7 +29,7 @@
 //! on a one-time `sudo`, and probing "machine dir if writable, else
 //! per-user" lets the writer and the reader land in different places. The
 //! per-user directory is deterministic, always writable, and matches
-//! `embarch-api/design.md` §3 decision 1's scope exactly — one engineer,
+//! decision 1's scope exactly — one engineer,
 //! one stack, no multi-tenancy to be machine-wide *for*.
 
 use anyhow::{Context, Result};
@@ -49,7 +49,7 @@ pub fn log_dir() -> Result<PathBuf> {
 
 /// Moved to [`crate::user_dirs::user_data_dir`] when `embarch-ui` needed the
 /// same directory for something that is not a log (its recent-projects
-/// list, `embarch-ui/design.md` §3 decision 14). Re-exported through this
+/// list, `embarch-ui` decision 14). Re-exported through this
 /// alias rather than left duplicated, for exactly the reason this module's
 /// own header gives for living in this crate at all: a path two callers
 /// resolve independently is a path they will eventually resolve

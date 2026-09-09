@@ -3,7 +3,7 @@
 //!
 //! Lived in `embarch-api`'s own `reflash.rs` until 2026-08-26, and moved here
 //! when `embarch-ui`'s Study Designer needed the same answer for a different
-//! reason: `embarch-ui/design.md` §3 decision 11 prefills a `Study`'s
+//! reason: `embarch-ui` decision 11 prefills a `Study`'s
 //! `requires.firmware_version` from "the configured project's own
 //! `git describe`", and `embarch-ui` cannot depend on `embarch-api` (no such
 //! dependency direction exists in this suite). The alternative was a second
@@ -125,7 +125,7 @@ pub fn reject_tree_mutating_command(command: &[String]) -> Result<()> {
         anyhow::bail!(
             "refusing to run `git ... {subcommand} ...`: EmbArch never moves an engineer's \
              working tree to satisfy a study's version requirement \
-             (`embarch-api/design.md` §3 decision 40). A reflash builds the tree as it stands; if \
+             (decision 40). A reflash builds the tree as it stands; if \
              the study wants another revision, that checkout is yours to make."
         );
     }

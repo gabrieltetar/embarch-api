@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 // `CoreConfig` (base_url/host/port/token/token_env/*_timeout_secs) and its
 // `resolve_token`/`is_auto` moved into the shared `embarch-core-client`
-// crate 2026-08-24 — embarch-ui/design.md §3 decision 5's resolution,
-// embarch-ui/milestone-1.md §4.1 — so embarch-api and embarch-ui depend on
+// crate 2026-08-24 — `embarch-ui` decision 5's resolution,
+// `embarch-ui`'s milestone-1.md §4.1 — so embarch-api and embarch-ui depend on
 // one implementation of "how do I reach embarch-core" rather than each
 // carrying their own. Re-exported here so `crate::config::CoreConfig`
 // keeps working unchanged for every existing caller in this repo.
@@ -17,7 +17,7 @@ fn default_build_timeout_secs() -> u64 {
 }
 
 /// How a project's build command / chip / artifact path are determined
-/// (`design.md` §3 decision 12). `Static` is the default and today's
+/// (decision 12). `Static` is the default and today's
 /// fully-unchanged schema; `ZephyrWest` defers all of that to a live,
 /// per-call scan (`zephyr.rs`) instead of a hand-maintained config entry.
 #[derive(Debug, Default, Deserialize, PartialEq, Eq, Clone, Copy)]
@@ -29,7 +29,7 @@ pub enum Discovery {
 }
 
 /// A per-project **base** target selection for a `discovery =
-/// "zephyr-west"` project (`design.md` §3 decision 20). Every field is
+/// "zephyr-west"` project (decision 20). Every field is
 /// optional: what is set here fills in the corresponding call-time param
 /// when the call omits it, and a call that names a field wins over this one
 /// for that field alone.
@@ -83,11 +83,11 @@ pub struct ProjectConfig {
     pub artifact_path: Option<PathBuf>,
     /// Required when `discovery = "static"`; absent for `zephyr-west`,
     /// where it's resolved per call via Core's `POST /resolve-chip`
-    /// (`embarch-core/design.md` §3 decision 8).
+    /// (`embarch-core` decision 8).
     #[serde(default)]
     pub chip: Option<String>,
     pub flash_format: String,
-    /// Flash offset for this project's artifact (`design.md` §3 decision 42),
+    /// Flash offset for this project's artifact (decision 42),
     /// passed straight through to Core's `POST /flash` — a **build-config
     /// fact of the project**, not a per-call parameter, for the same reason
     /// `flash_format` isn't one: an agent should never have to know or
@@ -95,7 +95,7 @@ pub struct ProjectConfig {
     ///
     /// Required in practice for a `flash_format = "bin"` project, which has
     /// no self-describing load address of its own
-    /// (`embarch-core/design.md` §3 decision 18); silently ignored by Core
+    /// (`embarch-core` decision 18); silently ignored by Core
     /// for a self-locating format like `hex`/`elf`, so leaving it set across
     /// a format change is harmless.
     ///
@@ -115,7 +115,7 @@ pub struct ProjectConfig {
     #[serde(default)]
     pub serial_baud: Option<u32>,
     /// Disambiguates this project's own debug probe when more than one is
-    /// attached (`embarch-core/design.md` §3 decision 9) — matched against
+    /// attached (`embarch-core` decision 9) — matched against
     /// `ProbeInfo.serial_number` (`status`'s own `probes` list). Documented
     /// in this file's own §4 table since that decision was written, but
     /// never actually wired up here until dev-bench's own build/flash
@@ -129,13 +129,13 @@ pub struct ProjectConfig {
     pub west_binary: Option<PathBuf>,
     /// `discovery = "zephyr-west"` only: parent directory under which each
     /// distinct target gets its own build subdirectory
-    /// (`embarch-umbrella/design.md` §3 decision 10's no-shared-build-dir
+    /// (`embarch-umbrella` decision 10's no-shared-build-dir
     /// rule), named by `zephyr::Target::build_dir_name`. **Refused outright
     /// for a `static` project**, whose build directory is its
     /// `build_command`'s own business (decision 20).
     #[serde(default)]
     pub build_dir_root: Option<PathBuf>,
-    /// `[[projects.targets]]`, **retired** (`design.md` §3 decision 53).
+    /// `[[projects.targets]]`, **retired** (decision 53).
     /// Decision 12 added it as a selectable menu for a `static` project and
     /// nothing was ever wired to select from it: a build runs the
     /// project-level `build_command` regardless, and decision 51 made every
@@ -183,7 +183,7 @@ pub struct ProjectConfig {
     pub default_snippets: Vec<String>,
     /// Only meaningful for `discovery = "zephyr-west"`: the base
     /// (board, variant, revision, app) selection a call narrows from
-    /// (`design.md` §3 decision 20). See `DefaultTarget`; refused outright
+    /// (decision 20). See `DefaultTarget`; refused outright
     /// for a `static` project, which honours no selection at all
     /// (decision 51).
     #[serde(default)]
@@ -200,7 +200,7 @@ pub struct ProjectConfig {
     pub default_extra_args: Vec<String>,
     /// How to produce **this project's own firmware version string**, run in
     /// `source_path`, for `run_study --reflash dut|both`
-    /// (`design.md` §3 decision 40). Defaults to
+    /// (decision 40). Defaults to
     /// `["git", "describe", "--always", "--dirty", "--abbrev=8"]` — the same
     /// invocation `embarch-dev-bench`'s own build embeds and
     /// `embarch-umbrella`'s doctor check 13 compares against, so the default
@@ -212,7 +212,7 @@ pub struct ProjectConfig {
     /// it. If a project's build stamps something else (a `VERSION` file, a
     /// CI-supplied tag), declare the command that produces that instead;
     /// EmbArch is not going to guess at it, for the same reason
-    /// `embarch-study-designer/design.md` §3 decision 35 keeps firmware
+    /// `embarch-study-designer` decision 35 keeps firmware
     /// semantics out of anything this suite derives on its own.
     ///
     /// Only ever consulted when a run actually reflashes the DUT. A project
@@ -252,8 +252,8 @@ impl ProjectConfig {
 }
 
 /// The dev-bench build target this machine's bench is wired to —
-/// deliberately still not a `[[projects]]` entry (`design.md`'s dev-bench-
-/// flashing-pipeline decision): a DUT project is something a firmware
+/// deliberately still not a `[[projects]]` entry (decision
+/// 32): a DUT project is something a firmware
 /// engineer or an agent adds/discovers per repo, and dev-bench remains
 /// EmbArch's own test rig, one at a time, addressed by no project name.
 ///
@@ -274,18 +274,18 @@ impl ProjectConfig {
 /// A default would have to pick one of the two boards, and picking wrong
 /// means flashing the wrong image through the wrong debug interface at the
 /// wrong chip — the exact class of silent-wrong-answer this suite refuses
-/// to guess at elsewhere (`embarch-core/design.md` §7's
+/// to guess at elsewhere (decision 15's
 /// `artifact_path_for_core` retrospective). A missing field is a startup
 /// error naming it, which is cheap; a wrong default is not.
 #[derive(Debug, Deserialize)]
 pub struct DevBenchConfig {
     /// Absolute path to the `embarch-dev-bench` workspace this bench builds
     /// from — one of that repo's `workspaces/*` (per-vendor-family, see its
-    /// own `design.md` §2), matching `board` below. Not auto-derived from a
+    /// own `spec.md` §2), matching `board` below. Not auto-derived from a
     /// sibling-repo convention at runtime: an explicit, declared fact, same
     /// posture every DUT project's own `source_path` already has,
     /// deliberately not guessed the way an earlier `artifact_path_for_core`
-    /// UNC-guessing scheme was (`embarch-core/design.md` §7's retrospective
+    /// UNC-guessing scheme was (decision 15's retrospective
     /// on exactly that class of mistake).
     pub source_path: PathBuf,
     /// The west board target to build (e.g.
@@ -312,7 +312,7 @@ pub struct DevBenchConfig {
     pub artifact_path: PathBuf,
     /// Flash offset for the image, written as a TOML hex literal
     /// (`base_address = 0x2000`). Only meaningful for `flash_format =
-    /// "bin"` (`embarch-core/design.md` §3 decision 18) — and
+    /// "bin"` (`embarch-core` decision 18) — and
     /// [`Config::validate`] *requires* it there, since a `bin` written at
     /// the wrong offset is a bricked bench, not an error message.
     #[serde(default)]
@@ -326,7 +326,7 @@ pub struct DevBenchConfig {
     #[serde(default)]
     pub env: HashMap<String, String>,
     /// Disambiguates dev-bench's own debug probe from a DUT's, whenever both
-    /// are attached at once (`embarch-core/design.md` §3 decision 9) — a
+    /// are attached at once (`embarch-core` decision 9) — a
     /// real, not hypothetical, need the moment a DUT probe is also plugged
     /// in: Core's default `open_first_probe()` isn't guaranteed to pick the
     /// right one, and picking wrong fails outright (wrong debug interface

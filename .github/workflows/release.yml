@@ -122,7 +122,7 @@ jobs:
           cargo build --release --target ${{ matrix.target }}
 
       # windows-latest already ships the VS Build Tools "Desktop development
-      # with C++" workload an MSVC link needs (embarch-core/design.md §7,
+      # with C++" workload an MSVC link needs (`embarch-core` decision 7,
       # which applies to every crate in the suite built for this target) —
       # nothing extra to install there.
 
