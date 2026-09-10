@@ -2,6 +2,7 @@
 name = "embarch-core-client"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 # Extracted from embarch-api's own `core_client.rs`/`config.rs::CoreConfig`/
 # `token_discovery.rs` (2026-08-24, `embarch-ui` decision 5's
