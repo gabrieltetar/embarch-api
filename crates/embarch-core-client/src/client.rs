@@ -216,6 +216,12 @@ pub struct EnrollProbeResponse {
     pub probe_serial: String,
     pub role: String,
     pub chip: String,
+    /// The **probe/JTAG-read** hardware ID — the one Core read off the chip
+    /// through the debug probe while enrolling, not anything the bench
+    /// reported about itself. Unprefixed is the suite's default spelling for
+    /// this concept (`embarch-core` decision 56, `tasks/api/044`); the only
+    /// prefixed one is `probe_hardware_id` on `GET /dev-bench/hello`, where
+    /// it sits beside `self_reported_hardware_id` and has to say which it is.
     pub hardware_id: String,
     pub confirmed_at_utc_ms: u64,
 }
@@ -234,6 +240,9 @@ pub struct ValidateResponse {
     pub role: String,
     pub probe_serial: String,
     pub chip: String,
+    /// The **probe/JTAG-read** hardware ID, same concept and same spelling as
+    /// `EnrollProbeResponse::hardware_id` — see `embarch-core` decision 56 for
+    /// why this stays unprefixed while `GET /dev-bench/hello` prefixes its own.
     pub hardware_id: String,
     pub confirmed_at_utc_ms: u64,
     /// The instant *this* live check's hardware-ID compare passed — distinct
@@ -323,6 +332,10 @@ pub struct EnrolledBoardResponse {
     pub probe_serial: String,
     pub role: String,
     pub chip: String,
+    /// The **probe/JTAG-read** hardware ID recorded at enrolment — not a live
+    /// re-read, and not the bench's self-reported ID. `embarch-core` decision
+    /// 56 settles the spelling; `surfaces.md`'s decision 54 covers why the timestamp beside it
+    /// is enrolment time rather than freshness.
     pub hardware_id: String,
     pub confirmed_at_utc_ms: u64,
     #[serde(default)]
@@ -674,9 +687,12 @@ fn urlencode(raw: &str) -> String {
 /// `/probes/enroll`, `/probes/enrolled` and `POST /validate` — this route's
 /// own `probe_hardware_id` field is that same JTAG-read value, spelled
 /// differently *within this one route* on purpose (see those three structs'
-/// own `hardware_id` fields and `tasks/api/044`, which is about renaming
-/// *their* spelling, not this one — this route never used the ambiguous name
-/// so nothing here needed changing).
+/// own `hardware_id` fields — this route never used the ambiguous name so
+/// nothing here needed changing). **That rename is now cancelled rather than
+/// pending**: `embarch-core` decision 56 (`tasks/api/044`) settles unprefixed
+/// `hardware_id` as the suite's name for the probe-read ID, and keeps the
+/// `probe_hardware_id` prefix confined to this route, where the two IDs are
+/// neighbours in one body.
 ///
 /// **The three identity fields are `Option<String>` with `#[serde(default)]`,
 /// per `embarch-api` decision 58** — every response field this crate
