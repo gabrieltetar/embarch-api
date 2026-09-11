@@ -29,6 +29,7 @@ use std::time::{Duration, Instant};
 
 use embarch_core_client::sse::{SseDecoder, SseFrame};
 use embarch_core_client::{
+    StudyStreamItem, StudyStreamNext,
     CoreClient, CoreConfig, FollowItem, FollowMode, FollowOptions, StudyEvent,
 };
 use serde_json::json;
@@ -653,4 +654,54 @@ fn follow_items_render_with_a_type_discriminator() {
     .to_json();
     assert_eq!(transport["type"], "transport");
     assert_eq!(transport["mode"], "polling");
+}
+
+// ---------------------------------------------------------------------------
+// No `reqwest` per-request timeout reaches the stream
+// ---------------------------------------------------------------------------
+
+/// `open_study_events` must survive a gap between chunks longer than a
+/// plausible per-request timeout, because decisions 48/49 depend on
+/// `dispatch(_, None)` meaning no such timeout applies to this route.
+///
+/// This does not prove the property for every mutation: a `reqwest`
+/// per-request timeout covers the whole request including the body, so a
+/// mutation that reintroduced one at 30 s (the value most other routes use)
+/// would need this test to hold a mock stream open for 30+ seconds to catch
+/// it, which is not a cost worth paying in this suite. What it does catch is
+/// the cheap, close mutation — a timeout small enough to fire inside a test
+/// budget, which is also the shape most likely to be introduced by accident
+/// (copying a nearby `dispatch(_, Some(default_timeout))` call). Catching the
+/// full range needs a real Core and is `tasks/api/001-sse-client.md`'s debt.
+#[tokio::test]
+async fn open_study_events_survives_a_gap_longer_than_a_typical_short_timeout() {
+    let mock = MockCore::start(routed(
+        Behavior::EventStream {
+            chunks: vec![
+                sse_frame(None, &step_completed(0, "connect")),
+                sse_frame(None, &status_changed("completed", None)),
+            ],
+            // Longer than a mutated `Some(Duration::from_millis(500))` would
+            // survive, short enough not to slow this suite down.
+            gap: Duration::from_millis(700),
+            then: StreamTail::Hold,
+        },
+        poll_reply("running"),
+    ))
+    .await;
+
+    let core = CoreClient::new(&config(mock.base_url())).expect("client");
+    let mut stream = core
+        .open_study_events(STUDY, Duration::from_secs(5))
+        .await
+        .expect("opening the stream must not fail");
+
+    let mut frames = Vec::new();
+    for _ in 0..2 {
+        match stream.next().await {
+            StudyStreamNext::Item(StudyStreamItem::Event(event)) => frames.push(event),
+            other => panic!("expected two events past the gap, got {other:?}"),
+        }
+    }
+    assert_eq!(frames.len(), 2, "both frames must arrive across the gap");
 }

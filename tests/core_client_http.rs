@@ -359,6 +359,11 @@ fn the_sweep_calls_every_networked_method() {
 /// The one method allowed to authenticate a request and put it on the wire.
 const AUTH_FUNNEL: &str = "dispatch";
 
+/// The one file `AUTH_FUNNEL` may live in. Matching the function name alone
+/// would license a free `fn dispatch(...)` anywhere else in the crate that
+/// sends unauthenticated — the guard has to name both.
+const AUTH_FUNNEL_FILE: &str = "client.rs";
+
 /// **The structural half of decision 55**, and the reason the sweep above is
 /// now a guard on one funnel rather than an audit of twenty-five call sites.
 ///
@@ -380,7 +385,12 @@ const AUTH_FUNNEL: &str = "dispatch";
 /// `.execute(` as "puts a request on the wire", which is what `reqwest` gives
 /// this crate and nothing else; a channel `send` takes an argument and so
 /// does not collide. And it says nothing about *which* token — that is
-/// `the_resolved_token_is_the_one_that_is_sent`'s job.
+/// `the_resolved_token_is_the_one_that_is_sent`'s job. Two shapes reach the
+/// wire unauthenticated and stay invisible to both scans: a bare
+/// `reqwest::get(url)` call (no `.send()`/`.execute(` and no
+/// `reqwest::Client::builder(`/`::new(`, so it also defeats the
+/// one-client assertion above), and any source file one level under `src/`
+/// (`client_sources` reads `src/` non-recursively).
 #[test]
 fn every_outbound_request_is_sent_through_the_one_funnel() {
     let mut auth_sites: Vec<String> = Vec::new();
@@ -403,15 +413,17 @@ fn every_outbound_request_is_sent_through_the_one_funnel() {
     }
 
     let expected = format!("(in `{AUTH_FUNNEL}`)");
-    let stray: Vec<&String> = auth_sites
-        .iter()
-        .filter(|site| !site.ends_with(&expected))
-        .collect();
+    let is_the_funnel = |site: &&String| {
+        site.ends_with(&expected) && site.contains(&format!("/{AUTH_FUNNEL_FILE}:"))
+    };
+    let stray: Vec<&String> = auth_sites.iter().filter(|site| !is_the_funnel(site)).collect();
     assert!(
         stray.is_empty(),
         "these sites apply the bearer token themselves: {stray:?}. `CoreClient::{AUTH_FUNNEL}` \
-         is the only place that may — a route needing typed status handling passes it its \
-         `RequestBuilder` and reads the status off what comes back."
+         in `{AUTH_FUNNEL_FILE}` is the only place that may — a route needing typed status \
+         handling passes it its `RequestBuilder` and reads the status off what comes back. \
+         (Matched by function name *and* file, so a same-named `dispatch` elsewhere in the \
+         crate does not pass here.)"
     );
     assert_eq!(
         auth_sites.len(),
@@ -421,10 +433,7 @@ fn every_outbound_request_is_sent_through_the_one_funnel() {
         auth_sites.len()
     );
 
-    let stray: Vec<&String> = wire_sites
-        .iter()
-        .filter(|site| !site.ends_with(&expected))
-        .collect();
+    let stray: Vec<&String> = wire_sites.iter().filter(|site| !is_the_funnel(site)).collect();
     assert!(
         stray.is_empty(),
         "these sites send a request without going through `CoreClient::{AUTH_FUNNEL}`: \
