@@ -64,6 +64,22 @@ const EVERY_SUBCOMMAND: &[&[&str]] = &[
     &["validate", "--role", "some-role"],
     &["alerts"],
     &["list-serial-ports"],
+    &[
+        "declare-signal",
+        "--name",
+        "some-signal",
+        "--origin-role",
+        "dut",
+        "--direction",
+        "dut-to-host",
+        "--route-kind",
+        "direct",
+        "--port-serial",
+        "ABC123",
+    ],
+    &["list-signals"],
+    &["remove-signal", "no-such-signal"],
+    &["dev-bench-link", "--interface", "2"],
     &["versions"],
 ];
 

@@ -123,6 +123,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.serial_log("COM7", 115_200, 250).await;
     let _ = client.declare_signal(&signal).await;
     let _ = client.remove_signal("outpost").await;
+    let _ = client.set_dev_bench_link(Some("MOCK-BRIDGE-0001"), Some(2)).await;
     let _ = client.get_study_status("study-1").await;
     let _ = client.study_streams("study-1").await;
     let _ = client.study_steps("study-1").await;
@@ -193,6 +194,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
         ("GET", "/serial-log"),
         ("POST", "/signals"),
         ("DELETE", "/signals/outpost"),
+        ("POST", "/dev-bench/link"),
         ("GET", "/study/study-1"),
         ("GET", "/study/study-1/streams"),
         ("GET", "/study/study-1/steps"),

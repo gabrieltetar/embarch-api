@@ -399,6 +399,64 @@ pub enum Commands {
     /// the suite's own primary topology. An empty list is a real answer —
     /// nothing plugged into Core's machine — not an error.
     ListSerialPorts,
+    /// Declare (or re-declare) where a named DUT signal currently goes, via
+    /// embarch-core (`embarch-topology` decision 18's 2026-08-25 amendment).
+    /// Idempotent by name: re-declaring an existing name overwrites it — the
+    /// migration path for moving a signal from a Direct route onto
+    /// dev-bench pins or back, with no saved Study change, since a study
+    /// names the signal and never its carrier.
+    DeclareSignal {
+        /// What a Study names when it taps this signal. Unique within the
+        /// table.
+        #[arg(long)]
+        name: String,
+        /// The enrollment role the signal comes out of (e.g. "dut").
+        #[arg(long)]
+        origin_role: String,
+        /// dut-to-host, host-to-dut, or bidirectional.
+        #[arg(long)]
+        direction: String,
+        /// direct (needs --port-serial) or via-dev-bench (needs --rx-pin
+        /// and --tx-pin).
+        #[arg(long = "route-kind")]
+        route_kind: String,
+        /// Required when --route-kind is direct: the USB-UART bridge's own
+        /// serial number, one of list-serial-ports's serial_number values.
+        #[arg(long)]
+        port_serial: Option<String>,
+        /// Required when --route-kind is via-dev-bench: the declared
+        /// dev-bench pin the signal's RX side terminates on.
+        #[arg(long)]
+        rx_pin: Option<String>,
+        /// Required when --route-kind is via-dev-bench: the declared
+        /// dev-bench pin the signal's TX side terminates on.
+        #[arg(long)]
+        tx_pin: Option<String>,
+    },
+    /// List every declared signal link via embarch-core. An empty list is
+    /// the normal starting state — nothing has been wired yet.
+    ListSignals,
+    /// Un-declare a signal via embarch-core. Reports removed=false, not an
+    /// error, when nothing was declared under that name.
+    RemoveSignal {
+        /// The declared signal's name, as given to declare-signal.
+        name: String,
+    },
+    /// Declare dev-bench's runtime-link USB serial port via embarch-core,
+    /// by the bridge's own USB serial number and/or which interface of it.
+    /// At least one of --serial/--interface must be given. dev-bench must
+    /// already be enrolled via enroll-probe first — this only ever amends
+    /// that existing row.
+    DevBenchLink {
+        /// The link bridge's own USB serial number.
+        #[arg(long)]
+        serial: Option<String>,
+        /// Which interface of that bridge is the link — needed when the
+        /// bridge exposes more than one VCOM port under the same serial
+        /// (the nRF54L15DK's own case, interface 2).
+        #[arg(long)]
+        interface: Option<u8>,
+    },
     /// Print the version numbers compiled into THIS binary: its crate
     /// version, the `embarch-study-designer` host type schema version it
     /// submits studies under, and its `--json` shape version.

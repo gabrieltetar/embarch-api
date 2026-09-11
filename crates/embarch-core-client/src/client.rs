@@ -174,6 +174,18 @@ pub struct ResetResponse {
     pub reset: bool,
 }
 
+/// Request body for [`CoreClient::set_dev_bench_link`] — mirrors Core's own
+/// `SetDevBenchLinkRequest` (`embarch-core`'s `api.rs`). Write-only: no
+/// `GET` echoes this back, unlike [`SignalLink`], so this is a plain
+/// `Serialize` struct rather than a round-trip type.
+#[derive(Debug, Serialize)]
+struct SetDevBenchLinkRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    serial: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    interface: Option<u8>,
+}
+
 /// `embarch-core` decision 22's `POST /probes/enroll` — the
 /// only sanctioned way to populate/update Core's local `known_boards`
 /// table. Thin request/response wrappers, matching every other Core call in
@@ -1658,6 +1670,33 @@ impl CoreClient {
             .await
             .unwrap_or_else(|_| "<no response body>".to_string());
         Err(anyhow!("embarch-core returned {status}: {body}"))
+    }
+
+    /// `POST /dev-bench/link` — declares dev-bench's runtime-link USB
+    /// serial, by the bridge's own USB serial number and/or which interface
+    /// of it (`embarch-core`'s `set_dev_bench_link_handler`). At least one of
+    /// `serial`/`interface` must be given — checked here rather than making
+    /// a doomed round trip, since Core's own 400 for neither says exactly
+    /// this.
+    ///
+    /// dev-bench must already be enrolled via [`CoreClient::enroll_probe`]
+    /// first — this only ever amends that existing row, same posture
+    /// [`CoreClient::declare_signal`] documents for its own write. Reuses
+    /// `status_timeout`: a plain enrollment-file write on Core's side, no
+    /// hardware touched.
+    pub async fn set_dev_bench_link(&self, serial: Option<&str>, interface: Option<u8>) -> Result<()> {
+        if serial.is_none() && interface.is_none() {
+            return Err(anyhow!(
+                "set_dev_bench_link needs at least one of serial or interface"
+            ));
+        }
+        let url = format!("{}/dev-bench/link", self.base_url().await?);
+        let body = SetDevBenchLinkRequest {
+            serial: serial.map(str::to_string),
+            interface,
+        };
+        self.send_no_content(self.client.post(url).json(&body), self.status_timeout)
+            .await
     }
 
     /// `GET /serial-ports` — every USB serial port **Core's** machine

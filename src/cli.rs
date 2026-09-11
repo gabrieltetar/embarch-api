@@ -97,6 +97,20 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         Commands::Validate { role } => validate(&core, &role, json).await,
         Commands::Alerts { limit } => alerts(&core, limit, json).await,
         Commands::ListSerialPorts => serial_ports(&core, json).await,
+        Commands::DeclareSignal {
+            name,
+            origin_role,
+            direction,
+            route_kind,
+            port_serial,
+            rx_pin,
+            tx_pin,
+        } => declare_signal(&core, name, origin_role, &direction, &route_kind, port_serial, rx_pin, tx_pin, json).await,
+        Commands::ListSignals => list_signals(&core, json).await,
+        Commands::RemoveSignal { name } => remove_signal(&core, &name, json).await,
+        Commands::DevBenchLink { serial, interface } => {
+            dev_bench_link(&core, serial, interface, json).await
+        }
         // Normally intercepted by `main` before a config is even looked for
         // (decision 52). Kept here so the subcommand surface is exhaustive
         // from either entry point, and so it behaves identically if a future
@@ -902,6 +916,84 @@ async fn serial_ports(core: &CoreClient, json: bool) -> i32 {
 }
 
 #[allow(clippy::too_many_arguments)]
+async fn declare_signal(
+    core: &CoreClient,
+    name: String,
+    origin_role: String,
+    direction: &str,
+    route_kind: &str,
+    port_serial: Option<String>,
+    rx_pin: Option<String>,
+    tx_pin: Option<String>,
+    json: bool,
+) -> i32 {
+    let link = match crate::tools::parse_signal_link(name, origin_role, direction, route_kind, port_serial, rx_pin, tx_pin) {
+        Ok(l) => l,
+        Err(e) => return error_result(json, e),
+    };
+    match core.declare_signal(&link).await {
+        Ok(()) => finish(
+            json,
+            true,
+            serde_json::json!({ "success": true, "signal": link }),
+            format!("declared signal '{}'", link.name),
+        ),
+        Err(e) => error_result(json, format!("declare-signal failed: {e:#}")),
+    }
+}
+
+async fn list_signals(core: &CoreClient, json: bool) -> i32 {
+    match core.list_signals().await {
+        Ok(signals) => {
+            let human = if signals.is_empty() {
+                "no signals declared".to_string()
+            } else {
+                signals
+                    .iter()
+                    .map(|s| format!("{} (origin_role={}, direction={:?}, route={:?})", s.name, s.origin_role, s.direction, s.route))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            finish(
+                json,
+                true,
+                serde_json::json!({ "success": true, "signals": signals }),
+                human,
+            )
+        }
+        Err(e) => error_result(json, format!("list-signals failed: {e:#}")),
+    }
+}
+
+async fn remove_signal(core: &CoreClient, name: &str, json: bool) -> i32 {
+    match core.remove_signal(name).await {
+        Ok(removed) => finish(
+            json,
+            true,
+            serde_json::json!({ "success": true, "removed": removed, "name": name }),
+            if removed {
+                format!("removed signal '{name}'")
+            } else {
+                format!("no signal named '{name}' was declared")
+            },
+        ),
+        Err(e) => error_result(json, format!("remove-signal failed: {e:#}")),
+    }
+}
+
+async fn dev_bench_link(core: &CoreClient, serial: Option<String>, interface: Option<u8>, json: bool) -> i32 {
+    match core.set_dev_bench_link(serial.as_deref(), interface).await {
+        Ok(()) => finish(
+            json,
+            true,
+            serde_json::json!({ "success": true, "serial": serial, "interface": interface }),
+            "dev-bench link updated".to_string(),
+        ),
+        Err(e) => error_result(json, format!("dev-bench-link failed: {e:#}")),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn serial_log(
     config: &Config,
     core: &CoreClient,
@@ -1482,7 +1574,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 25,
+            arms, 29,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."

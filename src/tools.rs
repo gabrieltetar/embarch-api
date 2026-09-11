@@ -426,6 +426,116 @@ pub struct AlertsParams {
     pub limit: Option<usize>,
 }
 
+/// `embarch-topology` decision 18's `POST /signals` — declares (or
+/// re-declares) where a named DUT signal currently goes. Plain strings
+/// rather than the client's own `SignalDirection`/`SignalRoute` enums: those
+/// derive `Serialize`/`Deserialize` but not `schemars::JsonSchema` (this
+/// crate deliberately never links `probe-rs`/`serialport`, the reason those
+/// types live behind a mirror in the first place), so this is the one place
+/// that spells out and validates the string forms by hand, in
+/// [`parse_signal_link`].
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DeclareSignalParams {
+    /// What a Study names when it taps this signal (StreamSource::Signal {
+    /// name }). Unique within the table; re-declaring an existing name
+    /// overwrites it — the migration path for moving a signal onto a
+    /// different carrier.
+    pub name: String,
+    /// The enrollment role the signal comes out of — "dut" for the
+    /// outpost's UART.
+    pub origin_role: String,
+    /// Which way the signal travels: "dut-to-host", "host-to-dut", or
+    /// "bidirectional". The outpost is dut-to-host.
+    pub direction: String,
+    /// "direct" (needs port_serial) or "via-dev-bench" (needs rx_pin and
+    /// tx_pin).
+    pub route_kind: String,
+    /// Required when route_kind is "direct": the USB-UART bridge's own
+    /// serial number, one of list_serial_ports's serial_number values.
+    #[serde(default)]
+    pub port_serial: Option<String>,
+    /// Required when route_kind is "via-dev-bench": the declared dev-bench
+    /// pin the signal's RX side terminates on.
+    #[serde(default)]
+    pub rx_pin: Option<String>,
+    /// Required when route_kind is "via-dev-bench": the declared dev-bench
+    /// pin the signal's TX side terminates on.
+    #[serde(default)]
+    pub tx_pin: Option<String>,
+}
+
+/// `embarch-topology` decision 18's `DELETE /signals/{name}`.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RemoveSignalParams {
+    /// The declared signal's name, as given to declare_signal.
+    pub name: String,
+}
+
+/// `embarch-core`'s `POST /dev-bench/link` — declares dev-bench's
+/// runtime-link USB serial, by the bridge's own USB serial number and/or
+/// which interface of it. At least one of the two must be given.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct DevBenchLinkParams {
+    /// The link bridge's own USB serial number.
+    #[serde(default)]
+    pub serial: Option<String>,
+    /// Which interface of that bridge is the link — needed when the bridge
+    /// exposes more than one VCOM port under the same serial (the
+    /// nRF54L15DK's own case, interface 2).
+    #[serde(default)]
+    pub interface: Option<u8>,
+}
+
+/// Shared by `declare_signal`'s tool and CLI subcommand: turns the string
+/// forms [`DeclareSignalParams`] (and its CLI mirror in `main.rs`) carry
+/// into `embarch-core-client`'s typed `SignalLink`, naming exactly what a
+/// bad value expected instead of a raw enum-parse error.
+pub(crate) fn parse_signal_link(
+    name: String,
+    origin_role: String,
+    direction: &str,
+    route_kind: &str,
+    port_serial: Option<String>,
+    rx_pin: Option<String>,
+    tx_pin: Option<String>,
+) -> Result<embarch_core_client::SignalLink, String> {
+    use embarch_core_client::{SignalDirection, SignalLink, SignalRoute};
+
+    let direction = match direction {
+        "dut-to-host" => SignalDirection::DutToHost,
+        "host-to-dut" => SignalDirection::HostToDut,
+        "bidirectional" => SignalDirection::Bidirectional,
+        other => {
+            return Err(format!(
+                "unknown direction '{other}': expected one of dut-to-host, host-to-dut, bidirectional"
+            ))
+        }
+    };
+
+    let route = match route_kind {
+        "direct" => {
+            let port_serial = port_serial.ok_or_else(|| {
+                "route_kind 'direct' needs port_serial (find one via list_serial_ports)".to_string()
+            })?;
+            SignalRoute::Direct { port_serial }
+        }
+        "via-dev-bench" => {
+            let rx_pin = rx_pin
+                .ok_or_else(|| "route_kind 'via-dev-bench' needs rx_pin".to_string())?;
+            let tx_pin = tx_pin
+                .ok_or_else(|| "route_kind 'via-dev-bench' needs tx_pin".to_string())?;
+            SignalRoute::ViaDevBench { rx_pin, tx_pin }
+        }
+        other => {
+            return Err(format!(
+                "unknown route_kind '{other}': expected one of direct, via-dev-bench"
+            ))
+        }
+    };
+
+    Ok(SignalLink { name, origin_role, direction, route })
+}
+
 #[tool_router]
 impl EmbarchApi {
     #[tool(description = "List every project configured in embarch-api's config file, with its chip, flash format, and source path. chip is omitted for a discovery = \"zephyr-west\" project, since it's resolved per call via list_targets/build/flash instead of stored.")]
@@ -918,6 +1028,59 @@ impl EmbarchApi {
                 })).collect::<Vec<_>>(),
             })),
             Err(e) => Self::err_text(format!("list_serial_ports failed: {e:#}")),
+        }
+    }
+
+    #[tool(description = "Declare (or re-declare) where a named DUT signal currently goes, via embarch-core's POST /signals (embarch-topology decision 18's 2026-08-25 amendment). Idempotent by name: re-declaring an existing name overwrites it, which is the migration path for moving a signal from a Direct route (straight to a serial port, port_serial from list_serial_ports) onto dev-bench pins (via-dev-bench, rx_pin/tx_pin) or back — no saved Study changes, since a study names the signal and never its carrier. direction is one of dut-to-host, host-to-dut, bidirectional. route_kind is direct (needs port_serial) or via-dev-bench (needs rx_pin and tx_pin).")]
+    async fn declare_signal(
+        &self,
+        Parameters(DeclareSignalParams {
+            name,
+            origin_role,
+            direction,
+            route_kind,
+            port_serial,
+            rx_pin,
+            tx_pin,
+        }): Parameters<DeclareSignalParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let link = match parse_signal_link(name, origin_role, &direction, &route_kind, port_serial, rx_pin, tx_pin) {
+            Ok(l) => l,
+            Err(e) => return Self::err_text(e),
+        };
+        match self.core.declare_signal(&link).await {
+            Ok(()) => Self::ok_json(serde_json::json!({ "declared": true, "signal": link })),
+            Err(e) => Self::err_text(format!("declare_signal failed: {e:#}")),
+        }
+    }
+
+    #[tool(description = "List every declared signal link via embarch-core's GET /signals. An empty list is the normal starting state, not a failure: nothing has been wired yet.")]
+    async fn list_signals(&self) -> Result<CallToolResult, McpError> {
+        match self.core.list_signals().await {
+            Ok(signals) => Self::ok_json(serde_json::json!({ "signals": signals })),
+            Err(e) => Self::err_text(format!("list_signals failed: {e:#}")),
+        }
+    }
+
+    #[tool(description = "Un-declare a signal via embarch-core's DELETE /signals/{name}. removed is false, not an error, when nothing was declared under that name.")]
+    async fn remove_signal(
+        &self,
+        Parameters(RemoveSignalParams { name }): Parameters<RemoveSignalParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match self.core.remove_signal(&name).await {
+            Ok(removed) => Self::ok_json(serde_json::json!({ "removed": removed, "name": name })),
+            Err(e) => Self::err_text(format!("remove_signal failed: {e:#}")),
+        }
+    }
+
+    #[tool(description = "Declare dev-bench's runtime-link USB serial port via embarch-core's POST /dev-bench/link, by the bridge's own USB serial number and/or which interface of it. At least one of serial/interface must be given. dev-bench must already be enrolled via enroll_probe first — this only ever amends that existing row. interface answers a question serial structurally cannot: a debug probe exposing two VCOM ports gives both the same USB serial, so only the interface number picks between them (the nRF54L15DK's own case: zephyr,console is uart20, wired to VCOM1 at interface 2).")]
+    async fn dev_bench_link(
+        &self,
+        Parameters(DevBenchLinkParams { serial, interface }): Parameters<DevBenchLinkParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match self.core.set_dev_bench_link(serial.as_deref(), interface).await {
+            Ok(()) => Self::ok_json(serde_json::json!({ "linked": true, "serial": serial, "interface": interface })),
+            Err(e) => Self::err_text(format!("dev_bench_link failed: {e:#}")),
         }
     }
 
