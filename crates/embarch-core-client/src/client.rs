@@ -1796,8 +1796,20 @@ impl CoreClient {
     /// check uses it rather than deriving the bench's version from a local
     /// checkout the way `embarch-umbrella`'s doctor check 13 has to.
     ///
-    /// Reuses `status_timeout`: like `/status`, this is one short serial
-    /// exchange, not a flash.
+    /// Reuses `serial_timeout`, not `status_timeout`: unlike every other
+    /// `status_timeout` caller in this file, Core does not just read a local
+    /// file or an OS-cached USB descriptor before it can answer here — it
+    /// opens the bench's serial link, runs the `Hello`/`HelloAck` handshake,
+    /// and only then reads the boot log the bench flushes after that ack
+    /// (`embarch-core` decision 37), before closing the link. That is link
+    /// setup plus a live exchange with the board, the same shape of cost
+    /// `serial_log` budgets for on the same physical link, so this route
+    /// reuses that budget rather than `status_timeout`'s "no hardware"
+    /// justification, which does not hold here. No handshake duration has
+    /// been measured on any bench, so 15 s is **assumed**, not measured —
+    /// carried over from `serial_log` rather than sized for this route in
+    /// particular. A timed authenticated `curl` of this endpoint on the
+    /// primary bench would size both at once.
     ///
     /// Goes through [`CoreClient::dispatch`] directly rather than `send`,
     /// because this route gives two non-2xx statuses two entirely different
@@ -1809,7 +1821,7 @@ impl CoreClient {
     /// what would send an operator to the wrong place.
     pub async fn dev_bench_hello(&self) -> Result<HelloAckResponse> {
         let url = format!("{}/dev-bench/hello", self.base_url().await?);
-        let response = self.dispatch(self.client.get(url), Some(self.status_timeout)).await?;
+        let response = self.dispatch(self.client.get(url), Some(self.serial_timeout)).await?;
 
         let status = response.status();
         if status.is_success() {
