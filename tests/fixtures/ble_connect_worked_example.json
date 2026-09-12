@@ -1,0 +1,19 @@
+{
+  "name": "ble-connect-worked-example",
+  "requires": { "dev_bench_version": "any", "firmware_version": "any" },
+  "steps": [
+    {
+      "name": "connect-dut-by-address",
+      "action": {
+        "BleConnect": {
+          "role": "Central",
+          "target_address": { "bytes": [1, 2, 3, 4, 5, 6], "kind": "Random" },
+          "target_name": null
+        }
+      },
+      "timeout_ms": 15000,
+      "continue_on_fail": false
+    }
+  ],
+  "steps_crc": 0
+}
