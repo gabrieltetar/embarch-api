@@ -127,9 +127,6 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.get_study_status("study-1").await;
     let _ = client.study_streams("study-1").await;
     let _ = client.study_steps("study-1").await;
-    let _ = client.get_study_power_data("study-1").await;
-    let _ = client.get_study_waveform_data("study-1").await;
-    let _ = client.get_study_gatt_data("study-1").await;
     let _ = client.get_study_stream("study-1", "ppg", true).await;
     // A declared `base_url` resolves as `TopologyClass::Local`, so `flash`
     // takes its send-a-path branch and needs no artifact on disk.
@@ -198,9 +195,6 @@ async fn every_outbound_call_carries_the_bearer_token() {
         ("GET", "/study/study-1"),
         ("GET", "/study/study-1/streams"),
         ("GET", "/study/study-1/steps"),
-        ("GET", "/study/study-1/power-data"),
-        ("GET", "/study/study-1/waveform-data"),
-        ("GET", "/study/study-1/gatt-data"),
         ("GET", "/study/study-1/stream/ppg"),
         ("POST", "/flash"),
         ("POST", "/study"),
@@ -656,7 +650,7 @@ async fn each_endpoint_family_waits_on_its_own_timeout() {
         (outcome.is_err(), started.elapsed())
     };
     let serial = tokio::time::timeout(PATIENCE, client.serial_log("COM7", 115_200, 250));
-    let study = tokio::time::timeout(PATIENCE, client.get_study_power_data("study-1"));
+    let study = tokio::time::timeout(PATIENCE, client.get_study_stream("study-1", "ppg", false));
 
     let ((status_failed, status_took), (reset_failed, reset_took), serial, study) =
         tokio::join!(status, reset, serial, study);
@@ -681,7 +675,7 @@ async fn each_endpoint_family_waits_on_its_own_timeout() {
     );
     assert!(
         study.is_err(),
-        "/study/*/power-data has a 30s timeout but gave up inside {PATIENCE:?} — it is sharing a shorter knob"
+        "/study/*/stream/* has a 30s timeout but gave up inside {PATIENCE:?} — it is sharing a shorter knob"
     );
 }
 
@@ -761,7 +755,7 @@ async fn a_study_endpoint_falls_back_to_the_raw_body() {
             .expect("client did not build");
 
         let error = client
-            .get_study_power_data("study-1")
+            .get_study_stream("study-1", "ppg", false)
             .await
             .expect_err("a 500 was reported as success")
             .to_string();

@@ -67,15 +67,6 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
                 study_status(&core, &study_id, json).await
             }
         }
-        Commands::StudyPowerData { study_id, out } => {
-            study_power_data(&core, &study_id, out.as_deref(), json).await
-        }
-        Commands::StudyWaveformData { study_id, out } => {
-            study_waveform_data(&core, &study_id, out.as_deref(), json).await
-        }
-        Commands::StudyGattData { study_id, out } => {
-            study_gatt_data(&core, &study_id, out.as_deref(), json).await
-        }
         Commands::StudyStreamData { study_id, name, raw, out } => {
             study_stream_data(&core, &study_id, &name, raw, out.as_deref(), json).await
         }
@@ -1353,7 +1344,7 @@ fn render_follow_item(item: &FollowItem) -> String {
     }
 }
 
-/// Shared by `study-power-data`/`study-waveform-data`/`study-gatt-data`: write `bytes` to
+/// Used by `study-stream-data`: write `bytes` to
 /// `out` if given, else straight to stdout. Raw payload data, unlike every
 /// other subcommand's output — `--json` only changes how *status* is
 /// reported (below, for the `--out` case), it never wraps a CSV payload as
@@ -1386,27 +1377,6 @@ fn write_study_csv(json: bool, kind: &str, study_id: &str, bytes: &[u8], out: Op
                 Err(e) => error_result(json, format!("failed to write {kind} to stdout: {e}")),
             }
         }
-    }
-}
-
-async fn study_power_data(core: &CoreClient, study_id: &str, out: Option<&Path>, json: bool) -> i32 {
-    match core.get_study_power_data(study_id).await {
-        Ok(bytes) => write_study_csv(json, "power-data", study_id, &bytes, out),
-        Err(e) => error_result(json, format!("study-power-data failed for '{study_id}': {e:#}")),
-    }
-}
-
-async fn study_waveform_data(core: &CoreClient, study_id: &str, out: Option<&Path>, json: bool) -> i32 {
-    match core.get_study_waveform_data(study_id).await {
-        Ok(bytes) => write_study_csv(json, "waveform-data", study_id, &bytes, out),
-        Err(e) => error_result(json, format!("study-waveform-data failed for '{study_id}': {e:#}")),
-    }
-}
-
-async fn study_gatt_data(core: &CoreClient, study_id: &str, out: Option<&Path>, json: bool) -> i32 {
-    match core.get_study_gatt_data(study_id).await {
-        Ok(bytes) => write_study_csv(json, "gatt-data", study_id, &bytes, out),
-        Err(e) => error_result(json, format!("study-gatt-data failed for '{study_id}': {e:#}")),
     }
 }
 
@@ -1595,7 +1565,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 29,
+            arms, 26,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."

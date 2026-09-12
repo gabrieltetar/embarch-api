@@ -525,8 +525,6 @@ pub struct StudyStreamEntry {
     pub id: u8,
     pub name: String,
     pub encoding: StreamEncoding,
-    #[serde(default)]
-    pub alias: Option<String>,
     /// Whether a decoded rendering exists — i.e. whether
     /// [`CoreClient::get_study_stream`] with `raw = false` hands back a
     /// decoded rendering or the raw bytes.
@@ -1599,53 +1597,15 @@ impl CoreClient {
         Err(anyhow!(Self::format_study_error(status, &body)))
     }
 
-    /// `GET /study/{study_id}/power-data` — raw CSV bytes. A `404` is an
-    /// expected outcome for many studies (no step declared a
-    /// `power_sample`), not an exceptional one, so it's worded as such
-    /// rather than as a generic request failure.
-    pub async fn get_study_power_data(&self, study_id: &str) -> Result<Bytes> {
-        self.get_study_csv(
-            "power-data",
-            study_id,
-            "no power data captured for this study",
-        )
-        .await
-    }
-
-    /// `GET /study/{study_id}/waveform-data` — raw CSV bytes. Same "expected,
-    /// not exceptional" `404` posture as `get_study_power_data`: many studies
-    /// have no `GattOperation::StreamCapture` step at all.
-    pub async fn get_study_waveform_data(&self, study_id: &str) -> Result<Bytes> {
-        self.get_study_csv(
-            "waveform-data",
-            study_id,
-            "no waveform data captured for this study",
-        )
-        .await
-    }
-
-    /// `GET /study/{study_id}/gatt-data` — the study's whole GATT transcript
-    /// as raw CSV bytes (`embarch-study-designer` decision 36): every notification, indication, read, write, subscribe and
-    /// connection event, across every step, uncapped.
-    ///
-    /// Distinct from what `GET /study/{id}` returns inline: that carries each
-    /// step's `gatt_activity`, a bounded per-step summary (at most
-    /// `MAX_GATT_ACTIVITY_RECORDS` inbound notifications, nothing outbound).
-    /// Same "expected, not exceptional" `404` posture as the two above — a
-    /// study with no GATT steps captured no transcript.
-    pub async fn get_study_gatt_data(&self, study_id: &str) -> Result<Bytes> {
-        self.get_study_csv(
-            "gatt-data",
-            study_id,
-            "no GATT transcript captured for this study",
-        )
-        .await
-    }
-
     /// `GET /study/{study_id}/stream/{name}` (`embarch-core` decision 30)
-    /// — one declared stream tap's capture, as bytes. The
-    /// parameterised route the three fixed-channel calls above are now
-    /// aliases of.
+    /// — one declared stream tap's capture, as bytes.
+    ///
+    /// **This replaced three fixed-channel calls** —
+    /// `get_study_power_data`/`get_study_waveform_data`/`get_study_gatt_data`
+    /// over `/power-data`, `/waveform-data` and `/gatt-data` — which were kept
+    /// as aliases for one release and are now retired. They could not report a
+    /// truncated capture, which is why [`CoreClient::study_streams`] exists;
+    /// call that to learn a study's tap names rather than guessing one.
     ///
     /// `raw` picks the byte-for-byte `.bin` over the tap's rendered file.
     /// Rendered is the default *when the tap's declared `StreamEncoding` has
@@ -2280,7 +2240,6 @@ mod tests {
             id: 0,
             name: "outpost".to_string(),
             encoding: StreamEncoding::OutpostTrace,
-            alias: None,
             rendered,
             note: note.map(str::to_string),
             named,

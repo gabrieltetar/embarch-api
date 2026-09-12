@@ -221,53 +221,15 @@ pub enum Commands {
         #[arg(long = "follow-timeout")]
         follow_timeout: Option<u64>,
     },
-    /// Alias for study-stream-data, kept for one release: fetches whichever
-    /// declared tap answers the "power" alias (a Samples-encoded tap on a
-    /// PowerFrontEnd source). Prefer `study-stream-data <study_id> --name
-    /// <tap>`, and see `list-study-streams` for what a study actually
-    /// captured. Writes to stdout, or to --out if given. A study that
-    /// declared no power tap has no power data, and that's reported as an
-    /// error naming study_id, not silently empty output.
-    StudyPowerData {
-        study_id: String,
-        /// Write the CSV to this file instead of stdout.
-        #[arg(long)]
-        out: Option<PathBuf>,
-    },
-    /// Alias for study-stream-data, kept for one release: fetches whichever
-    /// declared tap answers the "waveform" alias (a Samples-encoded tap on
-    /// any source other than PowerFrontEnd). Same stdout/--out behavior as
-    /// study-power-data.
-    StudyWaveformData {
-        study_id: String,
-        /// Write the CSV to this file instead of stdout.
-        #[arg(long)]
-        out: Option<PathBuf>,
-    },
-    /// Alias for study-stream-data, kept for one release: fetches whichever
-    /// declared tap answers the "gatt" alias (a GattTranscript-encoded tap)
-    /// — every notification, indication, read, write, subscribe and connect
-    /// event across every step, uncapped, with each payload rendered as both
-    /// hex and printable ASCII. This is the exhaustive record, and every
-    /// study with a monitor step now declares this tap automatically —
-    /// `StepResult.gatt_activity`, the capped per-step summary this used to
-    /// be contrasted with, is retired at schema v14. Same stdout/--out
-    /// behavior as study-power-data.
-    StudyGattData {
-        study_id: String,
-        /// Write the CSV to this file instead of stdout.
-        #[arg(long)]
-        out: Option<PathBuf>,
-    },
     /// Fetch one declared stream tap's capture from a study, by the name the
-    /// Study gave it. Replaces study-power-data/study-waveform-data/
-    /// study-gatt-data, which are now aliases over the same mechanism. Serves
-    /// the tap's rendered file when its declared StreamEncoding has one (CSV
-    /// for Samples and GattTranscript), or its byte-for-byte capture when it
-    /// doesn't (Raw, OutpostTrace) or when --raw is given. Same stdout/--out
-    /// behavior as study-power-data — and --out is the way to get a binary
-    /// capture out intact. Run list-study-streams first rather than guessing
-    /// a name.
+    /// Study gave it. Serves the tap's rendered file when its declared
+    /// StreamEncoding has one (CSV for Samples and GattTranscript), or its
+    /// byte-for-byte capture when it doesn't (Raw, OutpostTrace) or when
+    /// --raw is given. Writes to stdout, or to --out if given — and --out is
+    /// the way to get a binary capture out intact. Run list-study-streams
+    /// first rather than guessing a name: it also reports whether a capture
+    /// was truncated. A study that declared no such tap is reported as an
+    /// error naming study_id, not silently empty output.
     StudyStreamData {
         study_id: String,
         /// The tap's declared name — StreamTap.name in the submitted Study.

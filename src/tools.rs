@@ -1330,49 +1330,7 @@ impl EmbarchApi {
         }))
     }
 
-    #[tool(description = "Alias for study_stream_data, kept for one release: fetches whichever declared tap answers the 'power' alias (a Samples-encoded tap on a PowerFrontEnd source), as rendered CSV text. Prefer study_stream_data { study_id, name } — a study can declare several taps and only one of them can answer this alias. Call list_study_streams to see what a completed study actually captured, including whether a capture was truncated, which this tool cannot tell you. A study that declared no power tap has no power data, and that's a clear error naming study_id, not empty output.")]
-    async fn study_power_data(
-        &self,
-        Parameters(StudyIdParams { study_id }): Parameters<StudyIdParams>,
-    ) -> Result<CallToolResult, McpError> {
-        match self.core.get_study_power_data(&study_id).await {
-            Ok(bytes) => match String::from_utf8(bytes.to_vec()) {
-                Ok(csv) => Ok(CallToolResult::success(vec![ContentBlock::text(csv)])),
-                Err(e) => Self::err_text(format!("power-data response wasn't valid UTF-8: {e}")),
-            },
-            Err(e) => Self::err_text(format!("study_power_data failed for '{study_id}': {e:#}")),
-        }
-    }
-
-    #[tool(description = "Alias for study_stream_data, kept for one release: fetches whichever declared tap answers the 'waveform' alias (a Samples-encoded tap on any source other than PowerFrontEnd), as rendered CSV text. Prefer study_stream_data { study_id, name }, and call list_study_streams to see what a study actually captured and whether it was truncated. A study that declared no such tap has no waveform data — that's a clear error naming study_id, not empty output.")]
-    async fn study_waveform_data(
-        &self,
-        Parameters(StudyIdParams { study_id }): Parameters<StudyIdParams>,
-    ) -> Result<CallToolResult, McpError> {
-        match self.core.get_study_waveform_data(&study_id).await {
-            Ok(bytes) => match String::from_utf8(bytes.to_vec()) {
-                Ok(csv) => Ok(CallToolResult::success(vec![ContentBlock::text(csv)])),
-                Err(e) => Self::err_text(format!("waveform-data response wasn't valid UTF-8: {e}")),
-            },
-            Err(e) => Self::err_text(format!("study_waveform_data failed for '{study_id}': {e:#}")),
-        }
-    }
-
-    #[tool(description = "Alias for study_stream_data, kept for one release: fetches whichever declared tap answers the 'gatt' alias (a GattTranscript-encoded tap), as rendered CSV text. This is the exhaustive record — every notification, indication, read, write, subscribe and connect/disconnect event across every step, with each payload in both hex and printable-ASCII columns — Every study with a monitor step gets one automatically as of schema v14 (embarch-study-designer decision 54, which retired the capped per-step gatt_activity that used to be the only inline record). Prefer study_stream_data { study_id, name }, and call list_study_streams to see what a study captured and whether it was truncated. A study with no GATT transcript tap has none; that's a clear error naming study_id, not empty output.")]
-    async fn study_gatt_data(
-        &self,
-        Parameters(StudyIdParams { study_id }): Parameters<StudyIdParams>,
-    ) -> Result<CallToolResult, McpError> {
-        match self.core.get_study_gatt_data(&study_id).await {
-            Ok(bytes) => match String::from_utf8(bytes.to_vec()) {
-                Ok(csv) => Ok(CallToolResult::success(vec![ContentBlock::text(csv)])),
-                Err(e) => Self::err_text(format!("gatt-data response wasn't valid UTF-8: {e}")),
-            },
-            Err(e) => Self::err_text(format!("study_gatt_data failed for '{study_id}': {e:#}")),
-        }
-    }
-
-    #[tool(description = "Fetch one declared stream tap's capture from a study, by the name the Study gave it. Replaces study_power_data/study_waveform_data/study_gatt_data, which are now aliases over the same mechanism and each answer for at most one tap. Returns the tap's rendered file when its declared StreamEncoding has one (CSV for Samples and GattTranscript), or its byte-for-byte capture when it doesn't (Raw, OutpostTrace) or when raw is true. What a tap's bytes mean is declared in the Study, never guessed from their content. Call list_study_streams first rather than guessing a name: a 404 names the taps the study did declare, and also covers the separate case of a declared tap that captured nothing.")]
+    #[tool(description = "Fetch one declared stream tap's capture from a study, by the name the Study gave it. Returns the tap's rendered file when its declared StreamEncoding has one (CSV for Samples and GattTranscript), or its byte-for-byte capture when it doesn't (Raw, OutpostTrace) or when raw is true. What a tap's bytes mean is declared in the Study, never guessed from their content. Call list_study_streams first rather than guessing a name: a 404 names the taps the study did declare, and also covers the separate case of a declared tap that captured nothing.")]
     async fn study_stream_data(
         &self,
         Parameters(StudyStreamParams { study_id, name, raw }): Parameters<StudyStreamParams>,
