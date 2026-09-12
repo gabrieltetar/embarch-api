@@ -16,7 +16,16 @@ license = "MIT"
 anyhow = "1.0.103"
 bytes = "1"
 embarch-study-designer = { path = "../../../embarch-study-designer" }
-embarch-topology = { path = "../../../embarch-topology" }
+# `wire` alongside `software` since 2026-09-12 (`suite/035`), spelled out
+# rather than left to `default` so the absence of `hardware` is visible at the
+# one place a future edit would add it. `software` is what
+# `client.rs`'s `ProbeOutcome`/`TopologyClass` need; `wire` is what makes
+# `hardware::{EnrolledBoard, Alert, DetectedPort, SignalLink, Route,
+# SignalDirection}` nameable here — pure serde, no `probe-rs`, no
+# `serialport`, no C toolchain (`embarch-topology` decision 31). This crate
+# still must never link the hardware half, and now it no longer pays for that
+# rule with seven hand-maintained mirrors.
+embarch-topology = { path = "../../../embarch-topology", default-features = false, features = ["software", "wire"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "query", "rustls", "multipart"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"

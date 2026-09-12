@@ -347,21 +347,36 @@ impl std::fmt::Display for TopologyMismatchError {
 
 impl std::error::Error for TopologyMismatchError {}
 
-/// One entry from `GET /alerts` — mirrors `embarch_topology::hardware::
-/// Alert`'s fields without depending on that crate's `hardware` feature
-/// (this crate deliberately never links `probe-rs`/`serialport`,
-/// `embarch-topology`'s own "no hardware knowledge" boundary).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AlertResponse {
-    pub id: String,
-    pub occurred_at_utc_ms: u64,
-    pub role: String,
-    pub probe_serial: String,
-    pub chip: String,
-    pub recorded_hardware_id: String,
-    pub live_hardware_id: Option<String>,
-    pub reason: String,
-}
+// ---------------------------------------------------------------------------
+// The topology wire types Core serves, named rather than mirrored.
+//
+// Until 2026-09-12 the six types below were hand-written copies of
+// `embarch_topology::hardware`'s, because that module sat behind the
+// `hardware` feature and this crate must never link `probe-rs`/`serialport`
+// (decisions 37, 38). `embarch-topology` decision 31 split a `wire` feature
+// out of `hardware` — the plain data types, pure serde, no C toolchain — so
+// the originals are reachable here now and the copies are gone (`suite/035`).
+//
+// **What used to guard the copies, and what guards this instead.** A block of
+// mirror-pinning tests asserted field-for-field that each copy still matched
+// its original's serde shape, because nothing else could: two structs in two
+// crates that never meet are not comparable by any compiler. Those tests are
+// retired with the types they pinned — the guarantee is now structural, since
+// there is one type and Core and this crate both name it (`embarch-api`
+// decision 72).
+//
+// The old names are kept as aliases. They are what `embarch-api` and
+// `embarch-ui` spell at their call sites, and this crate is shipped, so
+// renaming every one of them is churn that buys nothing; a `*Response` suffix
+// is also still an honest name for "the shape `GET /alerts` returns".
+pub use embarch_topology::hardware::{
+    Alert, DetectedPort, EnrolledBoard, Route, SignalDirection, SignalLink,
+};
+
+/// One entry from `GET /alerts`. Alias of
+/// [`embarch_topology::hardware::Alert`] — the type Core raises and serves,
+/// not a copy of it.
+pub type AlertResponse = Alert;
 
 /// One entry from `GET /probes/enrolled` (`embarch-core` decision 22,
 /// `link_port_serial` added decision 27) — every currently
@@ -371,106 +386,36 @@ pub struct AlertResponse {
 /// in-process, is what keeps it correct when Core runs on a different
 /// machine than whichever process is asking — the same "never link
 /// probe-rs/serialport directly" rule §11 already states for this crate.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct EnrolledBoardResponse {
-    pub probe_serial: String,
-    pub role: String,
-    pub chip: String,
-    /// The **probe/JTAG-read** hardware ID recorded at enrolment — not a live
-    /// re-read, and not the bench's self-reported ID. `embarch-core` decision
-    /// 56 settles the spelling; `surfaces.md`'s decision 54 covers why the timestamp beside it
-    /// is enrolment time rather than freshness.
-    pub hardware_id: String,
-    pub confirmed_at_utc_ms: u64,
-    #[serde(default)]
-    pub link_port_serial: Option<String>,
-    /// Which USB interface of the link-port device carries the runtime link,
-    /// when the serial alone cannot say (a debug probe exposing two VCOM
-    /// ports shares one USB serial across both) —
-    /// `embarch_topology::hardware::EnrolledBoard::link_port_interface`'s own
-    /// doc comment has the nRF54L15DK two-VCOM story that made this a real
-    /// field, not a speculative one (`embarch-topology` decision 20). Added
-    /// here 2026-09-07 after the mirror silently dropped it for a release.
-    #[serde(default)]
-    pub link_port_interface: Option<u8>,
-}
-
-/// One declared DUT signal link — `POST /signals` / `GET /signals`
-/// (`embarch-topology` decision 18 and its 2026-08-25
-/// amendment).
 ///
-/// **A mirror of `embarch_topology::hardware::SignalLink`, not that type.**
-/// The `hardware` module is behind that crate's `hardware` feature, which is
-/// what pulls in `probe-rs`/`serialport` — the two dependencies this crate
-/// deliberately never links (decisions 37, 38). Same reasoning
-/// [`AlertResponse`] and [`EnrolledBoardResponse`] already state, and the
-/// same obligation: the serde shape here has to match that type's byte for
-/// byte, since this is what Core parses on the way in.
+/// Alias of [`embarch_topology::hardware::EnrolledBoard`]. **This one is the
+/// case for the whole change**: the mirror it replaces dropped
+/// `link_port_interface` for a release and nothing failed — a field the
+/// nRF54L15DK's two-VCOM story had made real (`embarch-topology` decision 20)
+/// was simply absent from the copy, and `tasks/api/032` exists because of it.
+/// A type that is the original cannot drift from itself.
+pub type EnrolledBoardResponse = EnrolledBoard;
+
+/// Where a signal currently goes — alias of
+/// [`embarch_topology::hardware::Route`], kept under this crate's older name.
 ///
-/// `Serialize` **and** `Deserialize` on one type rather than a request/
-/// response pair, because the write and the read genuinely carry the same
-/// thing: `declare_signal` is idempotent by name, so what comes back out of
-/// `GET /signals` is exactly what went in.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SignalLink {
-    /// What a `Study` names when it taps this signal
-    /// (`StreamSource::Signal { name }`). Unique within the table.
-    pub name: String,
-    /// The enrollment role the signal comes out of — `"dut"` for the
-    /// outpost's UART.
-    pub origin_role: String,
-    pub direction: SignalDirection,
-    pub route: SignalRoute,
-}
+/// The `tag = "kind"` representation is part of the wire contract rather than
+/// a styling choice: it is what Core's `Json<SignalLink>` extractor matches
+/// on. That is now a property of the one type both sides name, instead of a
+/// convention two copies had to agree on.
+pub type SignalRoute = Route;
 
-/// Which way a signal travels. The outpost is `DutToHost` and TX-only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum SignalDirection {
-    DutToHost,
-    HostToDut,
-    Bidirectional,
-}
-
-/// Where a signal currently goes. Mirrors
-/// `embarch_topology::hardware::Route`, including its `tag = "kind"`
-/// representation — the tag is what Core's `Json<SignalLink>` extractor
-/// matches on, so it is part of the wire contract rather than a local
-/// styling choice.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case", tag = "kind")]
-pub enum SignalRoute {
-    /// Straight to a serial port on the Core machine, **bypassing dev-bench
-    /// entirely** — what the outpost uses today. `port_serial` is the
-    /// bridge's own USB serial, one of [`SerialPortResponse::serial_number`].
-    Direct { port_serial: String },
-    /// Terminates on declared dev-bench pins, relayed over dev-bench's
-    /// existing Core link.
-    ViaDevBench { rx_pin: String, tx_pin: String },
-}
-
-/// One serial port from `GET /serial-ports` — mirrors
-/// `embarch_topology::hardware::DetectedPort`, for the same
-/// no-`probe-rs`/`serialport`-here reason [`SignalLink`] does.
+/// One serial port from `GET /serial-ports` — alias of
+/// [`embarch_topology::hardware::DetectedPort`].
 ///
 /// This is **Core's** enumeration, and that distinction is the point: a
 /// serial port on the machine running the asking process is not a serial port
 /// on the machine running Core (`embarch-ui` decision 5).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SerialPortResponse {
-    pub port_name: String,
-    /// Which rule produced this entry. Always `"enumerated"` from
-    /// `GET /serial-ports`, which narrows nothing — the VID-match values come
-    /// from `/dev-bench/port`, which answers a different question.
-    pub detected_by: String,
-    pub vendor_id: Option<u16>,
-    pub product_id: Option<u16>,
-    /// What a `Route::Direct` is declared by. A port reporting `None` here
-    /// cannot be declared as one, since nothing could resolve it later.
-    pub serial_number: Option<String>,
-    pub product: Option<String>,
-    pub interface: Option<u8>,
-}
+///
+/// Naming the original gained a field the mirror never had: `guessed_among`,
+/// which says a port was picked among equally-plausible candidates rather
+/// than determined. A caller that used to read a confident-looking answer can
+/// now see it was a guess.
+pub type SerialPortResponse = DetectedPort;
 
 /// `GET /study/{study_id}/steps`' body — every step the study recorded, with
 /// the two edges of the window embarch-core waited for each across.
@@ -1871,19 +1816,28 @@ impl CoreClient {
 mod tests {
     use super::*;
 
-    /// **The mirror's contract, written out.**
+    /// **The wire shape, written out** — re-scoped 2026-09-12 by `suite/035`
+    /// (`embarch-api` decision 72), not retired with the mirror it used to
+    /// guard.
     ///
-    /// [`SignalLink`] is a hand-maintained mirror of
-    /// `embarch_topology::hardware::SignalLink`, and no crate in the suite can
-    /// see both: the real type is behind that crate's `hardware` feature,
-    /// which is what pulls in `probe-rs`/`serialport`, and this crate never
-    /// links those. So the coupling is pinned from each side against the same
-    /// literal instead — `embarch-core`'s
-    /// `the_signal_link_wire_shape_is_what_clients_send` asserts the other
-    /// half against this exact string.
+    /// [`SignalLink`] is no longer a hand-maintained copy: it is
+    /// `embarch_topology::hardware::SignalLink` itself, reachable here since
+    /// that crate's `wire` feature (`embarch-topology` decision 31). The
+    /// drift this literal was written for — two structs in two crates that no
+    /// compiler can compare — is gone, and it would have been easy to delete
+    /// these three round-trip tests along with the copies.
     ///
-    /// If you change this literal, change that test too; a silent drift here
-    /// is a `POST /signals` that fails only against a live Core.
+    /// **That would have removed a guarantee nothing else provides.** The
+    /// compiler now proves the client and Core agree with *each other*; it
+    /// proves nothing about agreeing with a Core that is already deployed.
+    /// Rename a field on the shared type and both sides change together,
+    /// silently and compatibly — and every running Core, every
+    /// `enrollment.toml` on disk, speaks the old spelling. This literal is
+    /// what notices.
+    ///
+    /// `embarch-core`'s `the_signal_link_wire_shape_is_what_clients_send`
+    /// pins the same string from the other side. If you change this literal,
+    /// change that test too, and understand that you are changing the wire.
     const SIGNAL_LINK_JSON: &str = concat!(
         r#"{"name":"outpost","origin_role":"dut","direction":"dut-to-host","#,
         r#""route":{"kind":"direct","port_serial":"ABC123"}}"#
@@ -1907,7 +1861,7 @@ mod tests {
         );
     }
 
-    /// [`AlertResponse`]'s half of the same mirror contract
+    /// [`AlertResponse`]'s half of the same wire contract
     /// [`SIGNAL_LINK_JSON`] documents. `embarch-core`'s own
     /// `alert_round_trips_against_the_client_s_pinned_shape` (`src/api.rs`,
     /// `tasks/core/024`) pins the same literal from the other side; if the
@@ -1941,9 +1895,10 @@ mod tests {
         );
     }
 
-    /// [`EnrolledBoardResponse`]'s half of the same mirror contract, pinning
+    /// [`EnrolledBoardResponse`]'s half of the same wire contract, pinning
     /// `link_port_interface` in particular (`embarch-topology` decision 20)
-    /// — the field this task exists to stop the mirror from dropping.
+    /// — the field the retired mirror dropped for a release, which is the
+    /// concrete reason `suite/035` stopped mirroring this type at all.
     /// `embarch-core`'s own
     /// `enrolled_board_round_trips_against_the_client_s_pinned_shape`
     /// (`src/api.rs`, `tasks/core/024`) pins the same literal from the other
