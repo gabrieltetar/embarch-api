@@ -822,18 +822,39 @@ async fn validate(core: &CoreClient, role: &str, json: bool) -> i32 {
             // same; `embarch-topology` decision 12). The URL is
             // a fixed `embarch-ui` Topology-tab link as of decision 19 there,
             // not a discovered one — still opaque from here either way.
+            //
+            // Branches on `kind` (`embarch-core` decision 59), not on
+            // `reason`'s wording: a probe that can't be opened at all
+            // (ordinarily just unplugged) is not the same condition as a
+            // live identity that disagrees with what's recorded, and the two
+            // used to be rendered under the same "topology mismatch" lead.
+            Some(mismatch) if mismatch.is_not_attached() => error_result(
+                json,
+                format!(
+                    "probe not attached for role '{}' (probe {}, chip '{}'): {} (recorded \
+                     hardware_id {}) — plug it in; this is not a topology mismatch",
+                    mismatch.role,
+                    mismatch.probe_serial,
+                    mismatch.chip,
+                    mismatch.reason,
+                    mismatch.recorded_hardware_id,
+                ),
+            ),
             Some(mismatch) => error_result(
                 json,
                 format!(
                     "topology mismatch for role '{}' (probe {}, chip '{}'): {} (recorded \
-                     hardware_id {}, live {:?}) — fix it at {}",
+                     hardware_id {}, live {:?}){}",
                     mismatch.role,
                     mismatch.probe_serial,
                     mismatch.chip,
                     mismatch.reason,
                     mismatch.recorded_hardware_id,
                     mismatch.live_hardware_id,
-                    mismatch.fix_it_url
+                    match &mismatch.fix_it_url {
+                        Some(url) => format!(" — fix it at {url}"),
+                        None => String::new(),
+                    }
                 ),
             ),
             None => error_result(json, format!("validate failed: {e:#}")),

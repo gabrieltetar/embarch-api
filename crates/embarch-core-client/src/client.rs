@@ -263,8 +263,12 @@ pub struct ValidateResponse {
     pub validated_at_utc_ms: Option<u64>,
 }
 
-/// `POST /validate`'s `409 Conflict` body — the enrolled board's live
-/// identity no longer matches what's recorded.
+/// `POST /validate`'s `409 Conflict`/`503 Service Unavailable` body — the
+/// enrolled board's live identity no longer matches what's recorded
+/// (`"mismatch"`, `409`), or the enrolled probe could not be opened at all
+/// (`"not_attached"`, `503`) — `embarch-core` decision 59 split what used to
+/// be one shape rendered under one `topology mismatch` lead regardless of
+/// which condition actually held.
 #[derive(Debug, Deserialize)]
 struct TopologyMismatchBody {
     role: String,
@@ -273,17 +277,35 @@ struct TopologyMismatchBody {
     recorded_hardware_id: String,
     live_hardware_id: Option<String>,
     reason: String,
-    fix_it_url: String,
+    /// `"not_attached"` or `"mismatch"` (`embarch-core` decision 59). Defaults
+    /// to `"mismatch"` so a Core older than that decision — which only ever
+    /// sent this shape for a genuine mismatch — still parses; never inferred
+    /// from `live_hardware_id.is_none()` here, since that inference is
+    /// exactly what decision 59 moved server-side into a real field.
+    #[serde(default = "default_mismatch_kind")]
+    kind: String,
+    /// `None` on the `"not_attached"` arm (decision 59): the fix for a
+    /// detached probe is a USB cable, not the Topology tab, and serving the
+    /// same URL both times invited the same lead-conflation this shape
+    /// exists to end.
+    #[serde(default)]
+    fix_it_url: Option<String>,
 }
 
-/// Distinct error for `POST /validate`'s `409 Conflict` — kept as its own
+fn default_mismatch_kind() -> String {
+    "mismatch".to_string()
+}
+
+/// Distinct error for `POST /validate`'s `409`/`503` — kept as its own
 /// downcastable type (`StudyConflictError`'s own precedent above) so a
-/// caller that wants to branch on "this specifically is a stale identity,
-/// not some other failure" can `e.downcast_ref::<TopologyMismatchError>()`
-/// for it, including `fix_it_url` to relay onward (never auto-opened here —
-/// `embarch-topology` decision 12's "opening the UI is the
+/// caller that wants to branch on "this specifically is a stale identity or
+/// an absent probe, not some other failure" can
+/// `e.downcast_ref::<TopologyMismatchError>()` for it, then branch further on
+/// [`kind`](Self::kind) — never on `reason`'s wording (`embarch-core`
+/// decision 59). `fix_it_url` is relayed onward when present, never
+/// auto-opened here — `embarch-topology` decision 12's "opening the UI is the
 /// caller's job," and this crate's own posture is to relay it as text, same
-/// as `embarch-topology validate`'s own CLI never opening a browser).
+/// as `embarch-topology validate`'s own CLI never opening a browser.
 #[derive(Debug)]
 pub struct TopologyMismatchError {
     pub role: String,
@@ -292,12 +314,35 @@ pub struct TopologyMismatchError {
     pub recorded_hardware_id: String,
     pub live_hardware_id: Option<String>,
     pub reason: String,
-    pub fix_it_url: String,
+    /// `"not_attached"` or `"mismatch"` — the field a caller branches on
+    /// (`embarch-core` decision 59). Use [`Self::is_not_attached`] rather
+    /// than comparing this string directly, so a caller need not know the
+    /// literal spelling.
+    pub kind: String,
+    /// `None` on the `"not_attached"` arm — no fix-it URL applies to an
+    /// unplugged probe.
+    pub fix_it_url: Option<String>,
+}
+
+impl TopologyMismatchError {
+    /// Whether this is the "probe couldn't be opened at all" condition
+    /// (unplugged, ordinarily) rather than a genuine identity mismatch —
+    /// the one distinction `embarch-core` decision 59 exists to carry as a
+    /// field instead of leaving a caller to parse `reason`.
+    pub fn is_not_attached(&self) -> bool {
+        self.kind == "not_attached"
+    }
 }
 
 impl std::fmt::Display for TopologyMismatchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "topology mismatch: {} — fix it at {}", self.reason, self.fix_it_url)
+        if self.is_not_attached() {
+            write!(f, "probe not attached: {}", self.reason)
+        } else if let Some(url) = &self.fix_it_url {
+            write!(f, "topology mismatch: {} — fix it at {url}", self.reason)
+        } else {
+            write!(f, "topology mismatch: {}", self.reason)
+        }
     }
 }
 
@@ -1289,7 +1334,7 @@ impl CoreClient {
             .await
             .unwrap_or_else(|_| "<no response body>".to_string());
 
-        if status == reqwest::StatusCode::CONFLICT {
+        if status == reqwest::StatusCode::CONFLICT || status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
             return match serde_json::from_str::<TopologyMismatchBody>(&body) {
                 Ok(m) => Err(anyhow::Error::new(TopologyMismatchError {
                     role: m.role,
@@ -1298,11 +1343,12 @@ impl CoreClient {
                     recorded_hardware_id: m.recorded_hardware_id,
                     live_hardware_id: m.live_hardware_id,
                     reason: m.reason,
+                    kind: m.kind,
                     fix_it_url: m.fix_it_url,
                 })),
                 Err(_) => Err(anyhow!(
-                    "embarch-core returned 409 Conflict (a topology mismatch), but its response \
-                     body didn't parse as expected: {body}"
+                    "embarch-core returned {status} (a topology mismatch or an unattached \
+                     probe), but its response body didn't parse as expected: {body}"
                 )),
             };
         }
@@ -2006,6 +2052,85 @@ mod tests {
         let resp: ValidateResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.confirmed_at_utc_ms, 1725000000000);
         assert_eq!(resp.validated_at_utc_ms, None);
+    }
+
+    /// `embarch-core` decision 59: `kind: "not_attached"` and
+    /// `kind: "mismatch"` are opposite conditions, and this task exists
+    /// because a wrapper conflated them under one "topology mismatch" lead.
+    /// Constructs both shapes and asserts the two `Display`ed leads differ —
+    /// and that `is_not_attached()` reads the field, not `reason`'s wording.
+    #[test]
+    fn not_attached_and_mismatch_render_distinct_leads() {
+        let not_attached = TopologyMismatchError {
+            role: "dev-bench".to_string(),
+            probe_serial: "001057729826".to_string(),
+            chip: "nRF54L15".to_string(),
+            recorded_hardware_id: "6fcddc36cb781b71".to_string(),
+            live_hardware_id: None,
+            reason: "probe '001057729826' enrolled as role 'dev-bench' is not currently \
+                      attached"
+                .to_string(),
+            kind: "not_attached".to_string(),
+            fix_it_url: None,
+        };
+        let mismatch = TopologyMismatchError {
+            role: "dev-bench".to_string(),
+            probe_serial: "001057729826".to_string(),
+            chip: "nRF54L15".to_string(),
+            recorded_hardware_id: "6fcddc36cb781b71".to_string(),
+            live_hardware_id: Some("aaaaaaaaaaaaaaaa".to_string()),
+            reason: "live hardware_id disagrees with the recorded one".to_string(),
+            kind: "mismatch".to_string(),
+            fix_it_url: Some("http://127.0.0.1:4890/#topology".to_string()),
+        };
+
+        assert!(not_attached.is_not_attached());
+        assert!(!mismatch.is_not_attached());
+
+        let not_attached_text = not_attached.to_string();
+        let mismatch_text = mismatch.to_string();
+        assert_ne!(not_attached_text, mismatch_text);
+        assert!(
+            !not_attached_text.starts_with("topology mismatch"),
+            "not_attached must not lead with 'topology mismatch': {not_attached_text}"
+        );
+        assert!(mismatch_text.starts_with("topology mismatch"), "{mismatch_text}");
+        assert!(
+            !not_attached_text.contains("fix it at"),
+            "not_attached must not offer a fix_it_url: {not_attached_text}"
+        );
+        assert!(mismatch_text.contains("fix it at"), "{mismatch_text}");
+    }
+
+    /// A `409`/`503` body without a `kind` field (a Core older than decision
+    /// 59) defaults to `"mismatch"` — the only condition such a Core ever
+    /// sent this shape for — and `fix_it_url` still parses as required.
+    #[test]
+    fn an_older_core_mismatch_body_missing_kind_defaults_to_mismatch() {
+        let json = concat!(
+            r#"{"role":"dev-bench","probe_serial":"ABC123","chip":"nrf54l15","#,
+            r#""recorded_hardware_id":"AAAA","live_hardware_id":"BBBB","#,
+            r#""reason":"live hardware_id disagrees","#,
+            r#""fix_it_url":"http://127.0.0.1:4890/#topology"}"#
+        );
+        let body: TopologyMismatchBody = serde_json::from_str(json).unwrap();
+        assert_eq!(body.kind, "mismatch");
+        assert_eq!(body.fix_it_url, Some("http://127.0.0.1:4890/#topology".to_string()));
+    }
+
+    /// `embarch-core` decision 59's `"not_attached"` arm: `fix_it_url` is
+    /// `null` and `kind` names the condition explicitly.
+    #[test]
+    fn a_not_attached_body_has_no_fix_it_url() {
+        let json = concat!(
+            r#"{"role":"dev-bench","probe_serial":"ABC123","chip":"nrf54l15","#,
+            r#""recorded_hardware_id":"AAAA","live_hardware_id":null,"#,
+            r#""reason":"probe is not currently attached","kind":"not_attached","#,
+            r#""fix_it_url":null}"#
+        );
+        let body: TopologyMismatchBody = serde_json::from_str(json).unwrap();
+        assert_eq!(body.kind, "not_attached");
+        assert_eq!(body.fix_it_url, None);
     }
 
     /// An older Core that predates `link_port_interface` (and, in

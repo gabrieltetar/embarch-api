@@ -376,9 +376,12 @@ pub enum Commands {
     /// Explicit, non-destructive re-check of an already-enrolled board's
     /// live identity via embarch-core (`embarch-core` decision 28) — the same
     /// check flash/reset/run-study already run mid-attach, callable on its
-    /// own. A topology mismatch exits nonzero with the recorded/live
+    /// own. A genuine identity mismatch exits nonzero with the recorded/live
     /// hardware IDs and a fix_it_url printed to stderr — never opened
     /// automatically (`embarch-topology`'s own `validate` CLI does the same).
+    /// A probe that cannot be opened at all (ordinarily just unplugged) is a
+    /// distinct condition, reported with its own lead and no fix_it_url
+    /// (`embarch-core` decision 59).
     Validate {
         /// The enrollment role to re-check (e.g. "dev-bench").
         #[arg(long)]
