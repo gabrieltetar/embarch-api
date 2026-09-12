@@ -30,6 +30,22 @@ MCP client --stdio(spawn)--> embarch-api --HTTP+Bearer--> embarch-core --probe-r
 
 Requires a running [`embarch-core`](https://github.com/gabrieltetar/embarch-core) instance and its `EMBARCH_TOKEN`.
 
+**This repo does not build on its own.** Two sibling repos must be cloned into the
+same parent directory, because they are depended on by relative path:
+
+| Sibling | Why |
+|---|---|
+| [`embarch-study-designer`](https://github.com/gabrieltetar/embarch-study-designer) | the shared study/registry type model, named by this repo's own `Cargo.toml` |
+| [`embarch-topology`](https://github.com/gabrieltetar/embarch-topology) | the board registry — named not here but by `crates/embarch-core-client`, this repo's own sub-crate, so it is easy to miss |
+
+So the layout cargo expects is `<parent>/embarch-api`, `<parent>/embarch-study-designer`,
+`<parent>/embarch-topology`. Clone this repo on its own and `cargo build` fails with
+`failed to read ../../../embarch-topology/Cargo.toml` — an error naming a path outside
+this repo, which means nothing more than "the sibling is not there".
+
+Path dependencies rather than git or registry ones is a deliberate choice, not an
+oversight: `embarch-study-designer` decision 8 and `embarch-topology` decision 13.
+
 ```sh
 cargo build --release
 cp config.example.toml ~/.config/embarch/api.toml
