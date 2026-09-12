@@ -15,12 +15,11 @@ pub fn resolve_token(explicit_token: Option<String>, explicit_token_env: Option<
             return Ok(value);
         }
         // token_env configured but not actually present in the environment
-        // does not resolve — per embarch-token.md §2 / milestone-2.md §3.1,
-        // that falls through to `token` and then file discovery below,
-        // rather than failing immediately. A stale `token_env` left over in
-        // config (e.g. from before the machine-wide token file existed)
-        // would otherwise permanently block the fallback this milestone
-        // exists to provide.
+        // does not resolve — per embarch-token.md §2, that falls through to
+        // `token` and then file discovery below, rather than failing
+        // immediately. A stale `token_env` left over in config (e.g. from
+        // before the machine-wide token file existed) would otherwise
+        // permanently block that fallback.
     }
     if let Some(token) = explicit_token {
         return Ok(token);

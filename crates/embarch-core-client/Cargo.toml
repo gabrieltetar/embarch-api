@@ -6,7 +6,7 @@ license = "MIT"
 
 # Extracted from embarch-api's own `core_client.rs`/`config.rs::CoreConfig`/
 # `token_discovery.rs` (2026-08-24, `embarch-ui` decision 5's
-# resolution, `embarch-ui`'s milestone-1.md §4.1): the one implementation of
+# resolution): the one implementation of
 # "how do I reach embarch-core over HTTP+Bearer," shared by embarch-api and
 # embarch-ui rather than duplicated between them — the same "one
 # implementation, multiple call sites" shape `embarch-topology`

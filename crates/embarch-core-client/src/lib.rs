@@ -3,8 +3,7 @@
 //! `embarch-api`'s own `core_client.rs`/`config.rs::CoreConfig`/
 //! `token_discovery.rs` so `embarch-api` and `embarch-ui` depend on the same
 //! crate instead of `embarch-ui` growing an independent, duplicated client.
-//! See `embarch-ui` decision 5 and
-//! `embarch-ui`'s milestone-1.md §4.1 for the full rationale.
+//! See `embarch-ui` decision 5 for the full rationale.
 
 use anyhow::Result;
 use serde::Deserialize;

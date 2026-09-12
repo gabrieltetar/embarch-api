@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 
 // `CoreConfig` (base_url/host/port/token/token_env/*_timeout_secs) and its
 // `resolve_token`/`is_auto` moved into the shared `embarch-core-client`
-// crate 2026-08-24 — `embarch-ui` decision 5's resolution,
-// `embarch-ui`'s milestone-1.md §4.1 — so embarch-api and embarch-ui depend on
-// one implementation of "how do I reach embarch-core" rather than each
+// crate 2026-08-24 — `embarch-ui` decision 5's resolution — so embarch-api
+// and embarch-ui depend on one implementation of "how do I reach
+// embarch-core" rather than each
 // carrying their own. Re-exported here so `crate::config::CoreConfig`
 // keeps working unchanged for every existing caller in this repo.
 pub use embarch_core_client::CoreConfig;

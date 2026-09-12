@@ -47,10 +47,9 @@ pub struct CoreClient {
 // `Serialize`/`Clone` added 2026-08-24 (`ProbeInfo`, `StatusResponse`,
 // `EnrolledBoardResponse`, `AlertResponse`, `DevBenchPortResponse`) —
 // `embarch-ui`'s Dashboard/Topology tabs re-serialize what they deserialize
-// from Core, to hand it back to the browser as JSON/SSE payloads
-// (`embarch-ui/milestone-1.md` §4.4). `embarch-api` itself never needed
-// either derive, but adding them is behavior-neutral for every existing
-// deserialize-only caller.
+// from Core, to hand it back to the browser as JSON/SSE payloads.
+// `embarch-api` itself never needed either derive, but adding them is
+// behavior-neutral for every existing deserialize-only caller.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProbeInfo {
     pub identifier: String,
@@ -203,14 +202,14 @@ struct EnrollProbeRequest<'a> {
     /// 2026-08-24: this field existed on Core's side since decision 15 but
     /// had no way to reach it through this client until `embarch-ui`'s
     /// Enroll tab needed to send exactly what its drag-and-drop UI already
-    /// knows (`embarch-ui/milestone-1.md` §4.5).
+    /// knows.
     #[serde(skip_serializing_if = "Option::is_none")]
     probe_serial: Option<&'a str>,
 }
 
 // `Serialize` added 2026-08-24 alongside decision 5's amendment — the
-// Enroll tab (`embarch-ui/milestone-1.md` §4.5) hands this straight back to
-// the browser as JSON after a successful enroll.
+// Enroll tab hands this straight back to the browser as JSON after a
+// successful enroll.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct EnrollProbeResponse {
     pub probe_serial: String,

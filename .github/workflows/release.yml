@@ -1,4 +1,4 @@
-# Release CI for embarch-api (embarch-umbrella/milestone-6.md §3.7).
+# Release CI for embarch-api (`embarch-umbrella` decision 14).
 #
 # Same four-target shape as embarch-core's release.yml, but simpler:
 # embarch-api has no C dependency at all (rustls, not OpenSSL; no
@@ -76,7 +76,7 @@ jobs:
             linker: aarch64-linux-gnu-gcc
           # GitHub's macos-14 runner is natively Apple Silicon, so this is a
           # native build, not a cross-compile — and unsigned, which the user
-          # guide has to mention (milestone-6.md §3.7, §5 open questions).
+          # guide has to mention (`embarch-umbrella` decision 14).
           - target: aarch64-apple-darwin
             os: macos-14
     runs-on: ${{ matrix.os }}
