@@ -1562,11 +1562,11 @@ impl CoreClient {
         Err(anyhow!(Self::format_study_error(status, &body)))
     }
 
-    /// Shared by every "fetch a study's captured bytes" call: the three
-    /// fixed-channel aliases (`get_study_power_data` and friends) and the
-    /// parameterised [`CoreClient::get_study_stream`] they are aliases of.
-    /// All are `GET /study/{study_id}/<endpoint>` returning a raw body,
-    /// differing only in the endpoint and in what a `404` means there.
+    /// Shared by every "fetch a study's captured bytes" call — since the three
+    /// fixed-channel aliases were retired, that is
+    /// [`CoreClient::get_study_stream`] alone. `GET /study/{study_id}/<endpoint>`
+    /// returning a raw body; kept split out because the endpoint and the
+    /// meaning of a `404` are the only things that ever varied.
     ///
     /// Deliberately **not** a "looks like CSV" branch anywhere: what a tap's
     /// bytes mean is its declared `StreamEncoding` and nothing else
