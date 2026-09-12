@@ -1903,9 +1903,11 @@ mod tests {
     }
 
     /// [`AlertResponse`]'s half of the same mirror contract
-    /// [`SIGNAL_LINK_JSON`] documents. The Core-side counterpart test that
-    /// pins `embarch_topology::hardware::Alert` against this exact string
-    /// does not exist yet — this only pins the client's own read of it.
+    /// [`SIGNAL_LINK_JSON`] documents. `embarch-core`'s own
+    /// `alert_round_trips_against_the_client_s_pinned_shape` (`src/api.rs`,
+    /// `tasks/core/024`) pins the same literal from the other side; if the
+    /// two ever disagree, that disagreement — not just a red test here — is
+    /// the finding.
     const ALERT_RESPONSE_JSON: &str = concat!(
         r#"{"id":"18f3a2-4242","occurred_at_utc_ms":1725000000000,"role":"dut","#,
         r#""probe_serial":"ABC123","chip":"nrf54l15","recorded_hardware_id":"AAAA","#,
@@ -1936,9 +1938,12 @@ mod tests {
 
     /// [`EnrolledBoardResponse`]'s half of the same mirror contract, pinning
     /// `link_port_interface` in particular (`embarch-topology` decision 20)
-    /// — the field this task exists to stop the mirror from dropping. The
-    /// Core-side counterpart test that pins `embarch_topology::hardware::
-    /// EnrolledBoard` against this exact string does not exist yet.
+    /// — the field this task exists to stop the mirror from dropping.
+    /// `embarch-core`'s own
+    /// `enrolled_board_round_trips_against_the_client_s_pinned_shape`
+    /// (`src/api.rs`, `tasks/core/024`) pins the same literal from the other
+    /// side, `link_port_interface` included; if the two ever disagree, that
+    /// disagreement — not just a red test here — is the finding.
     const ENROLLED_BOARD_RESPONSE_JSON: &str = concat!(
         r#"{"probe_serial":"ABC123","role":"dev-bench","chip":"nrf54l15","#,
         r#""hardware_id":"AAAA","confirmed_at_utc_ms":1725000000000,"#,
