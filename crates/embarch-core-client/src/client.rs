@@ -668,7 +668,8 @@ fn urlencode(raw: &str) -> String {
 /// decision 47 did with `hardware_id` on this same route — is open as
 /// `tasks/suite/036`, and the cost that keeps it open is this client:
 /// `firmware_version` is a plain `String` here, so a renamed Core would
-/// need the same `Option` tolerance decision 58 gave the identity fields.
+/// need the same `Option` tolerance decision 60 gave the identity fields
+/// under decision 58's general rule.
 ///
 /// **`link_identity` is the whole point of this route being served at
 /// all** — `self_reported_hardware_id` compared against `probe_hardware_id`
