@@ -196,11 +196,11 @@ struct EnrollProbeRequest<'a> {
     role: &'a str,
     chip: &'a str,
     /// Picks which currently-attached probe to enroll when more than one is
-    /// present (`embarch-core` decision 22's own doc comment;
-    /// `embarch-topology` decision 15) — omitted, Core falls
-    /// back to its original "exactly one attached" requirement. Added
-    /// 2026-08-24: this field existed on Core's side since decision 15 but
-    /// had no way to reach it through this client until `embarch-ui`'s
+    /// present (`embarch-topology` decision 14's "exactly one attached"
+    /// requirement; the optional override itself is decision 15) — omitted,
+    /// Core falls back to its original "exactly one attached" requirement.
+    /// Added 2026-08-24: this field existed on Core's side since decision 15
+    /// but had no way to reach it through this client until `embarch-ui`'s
     /// Enroll tab needed to send exactly what its drag-and-drop UI already
     /// knows.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -378,8 +378,8 @@ pub use embarch_topology::hardware::{
 /// not a copy of it.
 pub type AlertResponse = Alert;
 
-/// One entry from `GET /probes/enrolled` (`embarch-core` decision 22,
-/// `link_port_serial` added decision 27) — every currently
+/// One entry from `embarch-topology` decision 14's `GET /probes/enrolled`
+/// (`link_port_serial` added decision 27) — every currently
 /// enrolled board. Added 2026-08-24 for `embarch-ui`'s Dashboard/Topology
 /// tabs (`embarch-ui` decision 5's amendment): reading this
 /// over HTTP, rather than `embarch_topology::hardware::list_enrolled()`
@@ -1246,7 +1246,7 @@ impl CoreClient {
             .await
     }
 
-    /// `POST /probes/enroll` (`embarch-core` decision 22,
+    /// `embarch-topology` decision 14's `POST /probes/enroll` (wrapped per
     /// decision 34) — records which physical
     /// board `role`'s probe is. `probe_serial` picks a specific attached
     /// probe when more than one is present (given, e.g. by a drag-and-drop
@@ -1330,8 +1330,8 @@ impl CoreClient {
         self.send(request, self.status_timeout).await
     }
 
-    /// `GET /probes/enrolled` (`embarch-core` decision 22) —
-    /// every currently enrolled board. Reuses `status_timeout`: a pure read
+    /// `embarch-topology` decision 14's `GET /probes/enrolled` — every
+    /// currently enrolled board. Reuses `status_timeout`: a pure read
     /// of `embarch-topology`'s own storage on Core's side, no hardware
     /// touched — same posture as `alerts` above.
     pub async fn list_enrolled(&self) -> Result<Vec<EnrolledBoardResponse>> {
