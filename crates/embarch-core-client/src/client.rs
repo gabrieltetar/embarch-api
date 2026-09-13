@@ -185,9 +185,11 @@ struct SetDevBenchLinkRequest {
     interface: Option<u8>,
 }
 
-/// `embarch-topology` decision 14's `POST /probes/enroll` — the
+/// `embarch-core`'s `POST /probes/enroll` — the
 /// only sanctioned way to populate/update embarch-topology's enrollment
-/// storage. Thin request/response wrappers, matching every other Core call in
+/// storage, which `embarch-topology` decision 14 moved into that crate while
+/// leaving the route itself Core's (that crate's decision 28 names this route
+/// as "the Core route that owns the mutation"). Thin request/response wrappers, matching every other Core call in
 /// this file: `embarch-api` holds no opinion on the shape of that enrollment
 /// record itself, just relays this one call (decision 34's own rationale for why
 /// this stays a two-layer wrapper rather than growing config of its own).
@@ -196,8 +198,9 @@ struct EnrollProbeRequest<'a> {
     role: &'a str,
     chip: &'a str,
     /// Picks which currently-attached probe to enroll when more than one is
-    /// present (`embarch-topology` decision 14's "exactly one attached"
-    /// requirement; the optional override itself is decision 15) — omitted,
+    /// present (`embarch-topology` decision 15's optional override; the
+    /// "exactly one attached" requirement it relaxes is `embarch-core`
+    /// decision 22's, whose mechanism decision 14 moved) — omitted,
     /// Core falls back to its original "exactly one attached" requirement.
     /// Added 2026-08-24: this field existed on Core's side since decision 15
     /// but had no way to reach it through this client until `embarch-ui`'s
@@ -378,7 +381,8 @@ pub use embarch_topology::hardware::{
 /// not a copy of it.
 pub type AlertResponse = Alert;
 
-/// One entry from `embarch-topology` decision 14's `GET /probes/enrolled`
+/// One entry from `embarch-core`'s `GET /probes/enrolled`, a thin read over the
+/// enrollment storage `embarch-topology` decision 14 moved into that crate
 /// (`link_port_serial` added decision 27) — every currently
 /// enrolled board. Added 2026-08-24 for `embarch-ui`'s Dashboard/Topology
 /// tabs (`embarch-ui` decision 5's amendment): reading this
@@ -1246,7 +1250,9 @@ impl CoreClient {
             .await
     }
 
-    /// `embarch-topology` decision 14's `POST /probes/enroll` (wrapped per
+    /// `embarch-core`'s `POST /probes/enroll` — the route that owns the
+    /// mutation into the storage `embarch-topology` decision 14 moved into
+    /// that crate (wrapped per
     /// decision 34) — records which physical
     /// board `role`'s probe is. `probe_serial` picks a specific attached
     /// probe when more than one is present (given, e.g. by a drag-and-drop
@@ -1330,9 +1336,10 @@ impl CoreClient {
         self.send(request, self.status_timeout).await
     }
 
-    /// `embarch-topology` decision 14's `GET /probes/enrolled` — every
+    /// `embarch-core`'s `GET /probes/enrolled` — every
     /// currently enrolled board. Reuses `status_timeout`: a pure read
-    /// of `embarch-topology`'s own storage on Core's side, no hardware
+    /// of the storage `embarch-topology` decision 14 moved into that crate,
+    /// served from Core's side, no hardware
     /// touched — same posture as `alerts` above.
     pub async fn list_enrolled(&self) -> Result<Vec<EnrolledBoardResponse>> {
         let url = format!("{}/probes/enrolled", self.base_url().await?);
