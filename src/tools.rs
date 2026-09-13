@@ -386,7 +386,7 @@ pub struct StudyWatchParams {
     pub include_samples: Option<bool>,
 }
 
-/// `embarch-core` decision 22's `POST /probes/enroll`, wrapped
+/// `embarch-topology` decision 14's `POST /probes/enroll`, wrapped
 /// per decision 34. No `project`/`board`/`variant`/etc. — enrollment isn't
 /// build-target selection, it's "record which physical probe I mean,"
 /// matching `run_study`'s own "no project param when the concept genuinely
@@ -1216,7 +1216,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Watch a running study live via embarch-core's SSE event stream (GET /study/{id}/events) instead of polling: returns every step completion, status change and (optionally) sample batch that happened while watching, in order, as they were pushed. Bounded by wait_secs (default 60) — this is a request/response call, so it returns what happened in that window and you call it again to keep watching; `complete: true` means the study reached a terminal status and there is nothing left to watch.\n\nThis is an addition to study_status, not a replacement: study_status is still the way to get one snapshot or the finished StudyResult, and this tool falls back to polling it automatically if the live stream will not open or drops mid-study (`transport` says which happened).\n\nTwo different kinds of incompleteness are reported separately and must not be confused. `lagged` is embarch-core telling you IT dropped events because this subscriber could not keep up — the study is unaffected and its own record on disk is complete, so re-read it with study_status/study_steps. `events_omitted` is this tool's own max_events cap. Neither is an error.")]
+    #[tool(description = "Watch a running study live via embarch-core's SSE event stream (GET /study/{id}/events) instead of polling: returns every step completion, status change and (optionally) sample batch that happened while watching, in order, as they were pushed. Bounded by wait_secs (default 60) — this is a request/response call, so it returns what happened in that window and you call it again to keep watching; `complete: true` means the study reached a terminal status and there is nothing left to watch.\n\nThis is an addition to study_status, not a replacement: study_status is still the way to get one snapshot or the finished StudyResult, and this tool falls back to polling it automatically if the live stream will not open or drops mid-study (`transport` says which happened).\n\nTwo different kinds of incompleteness are reported separately and must not be confused. `lagged` is embarch-core telling you IT dropped events because this subscriber could not keep up — the study is unaffected and its own record on disk is complete, so re-read it with study_status/list_study_streams. `events_omitted` is this tool's own max_events cap. Neither is an error.")]
     async fn study_watch(
         &self,
         Parameters(StudyWatchParams {
@@ -1384,7 +1384,7 @@ impl EmbarchApi {
     }
 }
 
-/// `StudyResult.streams` as JSON (`embarch-study-designer` spec.md §4.8).
+/// `StudyResult.streams` as JSON (`embarch-study-designer/interfaces/result-types.md`).
 ///
 /// Carries `truncated` through verbatim, which is the field this listing
 /// exists for: `StreamRef.truncated` is set both when a retention rotation

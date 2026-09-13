@@ -185,11 +185,11 @@ struct SetDevBenchLinkRequest {
     interface: Option<u8>,
 }
 
-/// `embarch-core` decision 22's `POST /probes/enroll` — the
-/// only sanctioned way to populate/update Core's local `known_boards`
-/// table. Thin request/response wrappers, matching every other Core call in
-/// this file: `embarch-api` holds no opinion on the shape of `known_boards`
-/// itself, just relays this one call (decision 34's own rationale for why
+/// `embarch-topology` decision 14's `POST /probes/enroll` — the
+/// only sanctioned way to populate/update embarch-topology's enrollment
+/// storage. Thin request/response wrappers, matching every other Core call in
+/// this file: `embarch-api` holds no opinion on the shape of that enrollment
+/// record itself, just relays this one call (decision 34's own rationale for why
 /// this stays a two-layer wrapper rather than growing config of its own).
 #[derive(Debug, Serialize)]
 struct EnrollProbeRequest<'a> {

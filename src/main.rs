@@ -317,8 +317,8 @@ pub enum Commands {
     /// declared identity mismatch, or reporting itself schema-incompatible)
     /// — that is a real bench problem to go look at, not a busy signal.
     DevBenchHello,
-    /// Enroll a physical probe with embarch-core's known_boards table
-    /// (`embarch-core` decision 22), recording which board its serial number is
+    /// Enroll a physical probe with embarch-topology's enrollment storage
+    /// (`embarch-topology` decision 14), recording which board its serial number is
     /// wired to. Requires exactly one debug probe currently attached.
     EnrollProbe {
         /// A human-chosen label for this board (e.g.
