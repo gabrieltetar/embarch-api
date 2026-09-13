@@ -78,13 +78,14 @@ pub struct CoreConfig {
     pub flash_timeout_secs: u64,
     #[serde(default = "default_serial_timeout_secs")]
     pub serial_timeout_secs: u64,
-    /// Shared by every `/study` endpoint (`post_study`, `get_study_status`,
-    /// `study_streams`, `get_study_stream`) — unlike
-    /// build/flash/reset/serial-log, these don't warrant separate knobs:
-    /// `POST /study` returns immediately (async, `embarch-study-designer`
-    /// decision 9), status polling is a cheap read, and a capture download is
-    /// bounded by the same `limits::MAX_STEPS_PER_STUDY`-sized study that
-    /// produced it.
+    /// Shared by `post_study`, `get_study_status` and `get_study_stream` —
+    /// unlike build/flash/reset/serial-log, these don't warrant separate
+    /// knobs: `POST /study` returns immediately (async,
+    /// `embarch-study-designer` decision 9), status polling is a cheap read,
+    /// and a capture download is bounded by the same
+    /// `limits::MAX_STEPS_PER_STUDY`-sized study that produced it.
+    /// **Not** `study_streams`, which reuses `status_timeout` instead (a
+    /// small on-disk index read, not a capture download).
     #[serde(default = "default_study_timeout_secs")]
     pub study_timeout_secs: u64,
 }
