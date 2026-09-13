@@ -657,6 +657,19 @@ fn urlencode(raw: &str) -> String {
 /// actually reports, which is the only version in this suite that is
 /// genuinely read back off the thing it describes.
 ///
+/// **It is the *bench's* build, and the `Study` field it corresponds to is
+/// `requires.dev_bench_version` — not the identically named
+/// `requires.firmware_version`, which is the DUT's**
+/// (`embarch-study-designer` decision 74). Writing this value into
+/// `requires.firmware_version` is accepted silently, because that
+/// requirement is only compared when a run supplies
+/// `flashed_firmware_version`; `reflash.rs` does the correct crossing by
+/// hand. Whether this route should rename the field — as `embarch-core`
+/// decision 47 did with `hardware_id` on this same route — is open as
+/// `tasks/suite/036`, and the cost that keeps it open is this client:
+/// `firmware_version` is a plain `String` here, so a renamed Core would
+/// need the same `Option` tolerance decision 58 gave the identity fields.
+///
 /// **`link_identity` is the whole point of this route being served at
 /// all** — `self_reported_hardware_id` compared against `probe_hardware_id`
 /// is the only place in the suite that surfaces both the JTAG-read and the
