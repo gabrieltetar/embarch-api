@@ -831,6 +831,25 @@ async fn validate(core: &CoreClient, role: &str, json: bool) -> i32 {
                     mismatch.recorded_hardware_id,
                 ),
             ),
+            // Branches on `is_unknown()`, not `is_not_attached()`'s inverse:
+            // a Core old enough to predate `kind` entirely gets a third,
+            // distinctly-worded lead rather than being folded into the
+            // mismatch arm below — `embarch-api` decision 73.
+            Some(mismatch) if mismatch.is_unknown() => error_result(
+                json,
+                format!(
+                    "cannot classify role '{}' (probe {}, chip '{}'): this Core predates \
+                     kind classification, so whether it's a mismatch or an unplugged probe \
+                     can't be told apart here; treat as unresolved rather than re-enrolling \
+                     (recorded hardware_id {}, live {:?}); {} (embarch-api decision 73)",
+                    mismatch.role,
+                    mismatch.probe_serial,
+                    mismatch.chip,
+                    mismatch.recorded_hardware_id,
+                    mismatch.live_hardware_id,
+                    mismatch.reason,
+                ),
+            ),
             Some(mismatch) => error_result(
                 json,
                 format!(
