@@ -679,6 +679,58 @@ async fn each_endpoint_family_waits_on_its_own_timeout() {
     );
 }
 
+/// `dispatch` names the configured bound only when `reqwest::Error::is_timeout()`
+/// says the failure actually was one (`embarch-api` decision 74, amended
+/// `tasks/api/092`). A connection-refused must not read the same as a timeout —
+/// that conflation is exactly the coarse, unconfirmed classification decision 50
+/// refused.
+#[tokio::test]
+async fn the_timeout_parenthetical_names_only_a_real_timeout() {
+    let mock = MockCore::start(Behavior::BlackHole).await;
+    let client = CoreClient::new(&config(json!({
+        "base_url": mock.base_url(),
+        "status_timeout_secs": 1,
+    })))
+    .expect("client did not build");
+
+    let error = client
+        .status()
+        .await
+        .expect_err("the black-hole mock somehow answered /status")
+        .to_string();
+
+    assert!(
+        error.contains("request timeout 1s"),
+        "a real timeout must still name its bound: {error}"
+    );
+}
+
+/// The other half of the same guarantee: a failure that never reached Core at
+/// all — refused, not timed out — must say so and nothing else. Port 1 rather
+/// than a random high port, same reasoning as `json_surface.rs`'s
+/// `write_config`: privileged, so nothing on the test machine can be holding
+/// it, and a loopback connection to a closed port is refused immediately
+/// rather than timing out.
+#[tokio::test]
+async fn a_connection_refused_never_reads_as_a_timeout() {
+    let client = CoreClient::new(&config(json!({
+        "base_url": "http://127.0.0.1:1",
+        "status_timeout_secs": 30,
+    })))
+    .expect("client did not build");
+
+    let error = client
+        .status()
+        .await
+        .expect_err("port 1 answered — this host has something bound there")
+        .to_string();
+
+    assert!(
+        !error.contains("request timeout"),
+        "a connection-refused was misreported as a timeout: {error}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Criterion 3 — plain-text body surfaced on a non-2xx response
 // ---------------------------------------------------------------------------
