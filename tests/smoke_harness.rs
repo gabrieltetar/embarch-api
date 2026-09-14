@@ -84,6 +84,16 @@ fn tempdir(tag: &str) -> TempDir {
 /// (`fixture-fw`) whose build command is a shell one-liner writing a fake
 /// artifact — no toolchain, no `west`, no real firmware. `core.base_url`
 /// points at the throwaway `MockCore` this test started.
+///
+/// `status_timeout_secs` is set well above `CoreConfig`'s own default (10s,
+/// `crates/embarch-core-client/src/lib.rs`) because this suite's one HTTP
+/// call — `status` — has to survive a subprocess spawn, an OS scheduler
+/// pass over the mock's accept task, and a real TCP round trip, all under
+/// whatever CPU contention the host happens to be under at the moment this
+/// runs (`embarch-api` decision 74). Nothing here waits for the mock to
+/// *become* reachable — `MockCore::start` binds its listener before
+/// returning, so there is no separate startup race to poll for — this is
+/// solely the existing per-request budget on the one call this test makes.
 fn write_fixture_config(dir: &std::path::Path, core_base_url: &str) -> PathBuf {
     let artifact = dir.join("build/fixture-fw.hex");
     let config_path = dir.join("embarch-api.toml");
@@ -91,6 +101,7 @@ fn write_fixture_config(dir: &std::path::Path, core_base_url: &str) -> PathBuf {
         r#"
 [core]
 base_url = "{core_base_url}"
+status_timeout_secs = 60
 
 [[projects]]
 name = "fixture-fw"

@@ -1084,10 +1084,18 @@ impl CoreClient {
             Some(timeout) => request.timeout(timeout),
             None => request,
         };
-        request
-            .send()
-            .await
-            .context("request to embarch-core failed")
+        // Names the configured budget on every failure, not only a timeout:
+        // `reqwest`'s own error already says "operation timed out" when that
+        // is what happened (`decision 74`), but not *how long it waited*,
+        // which is the fact a reader actually needs to tell a slow-but-alive
+        // Core from a dead one without re-running the call.
+        request.send().await.with_context(|| match timeout {
+            Some(timeout) => format!(
+                "request to embarch-core failed (request timeout {}s)",
+                timeout.as_secs()
+            ),
+            None => "request to embarch-core failed".to_string(),
+        })
     }
 
     /// The winning topology class — `Local` for a declared address (no
