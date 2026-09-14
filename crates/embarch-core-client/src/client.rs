@@ -579,6 +579,64 @@ impl StudyStreamEntry {
     }
 }
 
+/// `GET /study/{id}/stream/{name}/load`'s success body (`embarch-core`
+/// decision 62, `decisions/streams.md`) — field-for-field mirror of Core's
+/// own `outpost_load::LoadAnswer`, plus what a caller needs to judge
+/// whether the rendered CSV was read in full. See
+/// [`CoreClient::get_study_load`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoadAnswer {
+    pub rows: usize,
+    /// Rows past Core's row cap — counted, never silently dropped from this
+    /// number even though they were dropped from the computation itself.
+    pub rows_dropped_by_cap: usize,
+    pub row_cap: usize,
+    /// Rows Core's parser refused outright: a line short of nine fields, or
+    /// a `frame_index` that did not parse.
+    pub rows_unparsed: usize,
+    pub summary: LoadSummary,
+}
+
+/// The whole capture's load repartition, plus the coverage line: how much
+/// of the window is in a state a reader must doubt before trusting the
+/// rest. Field-for-field mirror of Core's own `outpost_load::LoadSummary`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoadSummary {
+    pub unit: String,
+    pub window_extent: u64,
+    pub gap_extent: u64,
+    pub gap_fraction: f64,
+    pub records_lost: u64,
+    pub has_time_base: bool,
+    pub thread_extent: u64,
+    pub idle_record_extent: u64,
+    pub isr_extent: u64,
+    pub unaccounted_extent: u64,
+    pub below_resolution_spans: usize,
+    pub subjects: Vec<LoadSubject>,
+}
+
+/// One traced subject's share of the window — a thread, the CPU's idle
+/// state, or one interrupt vector. Field-for-field mirror of Core's own
+/// `outpost_load::LoadSubject`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoadSubject {
+    pub key: String,
+    pub label: String,
+    pub unnamed: bool,
+    pub kind: String,
+    pub entries: usize,
+    pub measured_spans: usize,
+    pub total_extent: u64,
+    pub share: f64,
+    pub excluded_spans: usize,
+    pub excluded_extent: u64,
+    pub gap_crossing_spans: usize,
+    pub open_ended_spans: usize,
+    pub open_started_spans: usize,
+    pub below_resolution_spans: usize,
+}
+
 /// `GET /dev-bench/port`'s success body (`embarch-core` spec.md) —
 /// which serial port `embarch-dev-bench` is on right now. Every field but
 /// `port_name`/`detected_by` is nullable, matching Core's own endpoint doc:
@@ -1652,6 +1710,56 @@ impl CoreClient {
         .await
     }
 
+    /// `GET /study/{study_id}/stream/{name}/load` (`embarch-core` decision
+    /// 62, `decisions/streams.md`) — an `OutpostTrace` tap's load
+    /// repartition: per-subject load shares and the coverage line, computed
+    /// once on Core rather than re-implemented here (suite decision 4,
+    /// `../../embarch-doc/suite/decisions.md`). This is the property that
+    /// decision closes: an agent reaching the same answer a human already
+    /// gets through `embarch-ui`'s Trace tab, without a second
+    /// implementation of the timeline arithmetic on this side of the wire.
+    ///
+    /// A sibling of [`CoreClient::get_study_stream`], not a variant of it —
+    /// `?raw=1` already picks between two *files* the byte route serves,
+    /// while this is a computed result over the rendered one and gets its
+    /// own path segment rather than a second, unrelated meaning on the same
+    /// query string.
+    ///
+    /// Three refusals, and callers must relay each rather than smooth it
+    /// into an empty answer: a `400` names the tap's real encoding when it
+    /// isn't `OutpostTrace` — there is no timeline to repartition in a
+    /// `Samples`/`GattTranscript`/`Raw`/`Text` tap; a `404` covers "no such
+    /// tap" and "declared but not rendered yet", the same two cases
+    /// [`CoreClient::get_study_stream`]'s own `404` covers; a `422` means
+    /// the rendered CSV's column list didn't match this build's
+    /// `outpost::csv_header()` (`embarch-ui` decision 10 (trace)'s pin,
+    /// carried across deliberately — reversals row 86 is why) and is a real
+    /// refusal, not a capture that happened to be empty.
+    pub async fn get_study_load(&self, study_id: &str, name: &str) -> Result<LoadAnswer> {
+        let url = format!(
+            "{}/study/{study_id}/stream/{}/load",
+            self.base_url().await?,
+            urlencode(name)
+        );
+        let response = self
+            .dispatch(self.client.get(url), Some(self.study_timeout))
+            .await?;
+
+        let status = response.status();
+        if status.is_success() {
+            return response
+                .json::<LoadAnswer>()
+                .await
+                .context("failed to parse embarch-core's response as JSON");
+        }
+
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "<no response body>".to_string());
+        Err(anyhow!(Self::format_study_error(status, &body)))
+    }
+
     /// `POST /signals` — declares (or re-declares) where a named DUT signal
     /// currently goes (`embarch-topology` decision 18's
     /// 2026-08-25 amendment).
@@ -2417,5 +2525,57 @@ mod tests {
     fn urlencode_leaves_the_unreserved_set_alone() {
         assert_eq!(urlencode("g1a2b3c-dirty_x.y~z"), "g1a2b3c-dirty_x.y~z");
         assert_eq!(urlencode("a/b"), "a%2Fb");
+    }
+
+    /// `LoadAnswer`'s wire shape, written out — Core's `outpost_load::LoadAnswer`
+    /// is `#[derive(Serialize)]` only, so nothing here can pin agreement by
+    /// sharing the type the way `SignalLink`/`AlertResponse` do. This is what
+    /// notices a field renamed on one side and not the other: it fails to
+    /// deserialize a realistic body rather than silently defaulting a field
+    /// away, which a JSON literal missing a key would do instead.
+    #[test]
+    fn a_load_answer_deserializes_from_a_realistic_core_body() {
+        let body = serde_json::json!({
+            "rows": 9205,
+            "rows_dropped_by_cap": 0,
+            "row_cap": 250_000,
+            "rows_unparsed": 3,
+            "summary": {
+                "unit": "us",
+                "window_extent": 1_500_000,
+                "gap_extent": 12_000,
+                "gap_fraction": 0.008,
+                "records_lost": 2,
+                "has_time_base": true,
+                "thread_extent": 1_200_000,
+                "idle_record_extent": 250_000,
+                "isr_extent": 38_000,
+                "unaccounted_extent": 0,
+                "below_resolution_spans": 1,
+                "subjects": [{
+                    "key": "thread:main",
+                    "label": "main",
+                    "unnamed": false,
+                    "kind": "thread",
+                    "entries": 42,
+                    "measured_spans": 40,
+                    "total_extent": 1_100_000,
+                    "share": 0.7333,
+                    "excluded_spans": 0,
+                    "excluded_extent": 0,
+                    "gap_crossing_spans": 1,
+                    "open_ended_spans": 0,
+                    "open_started_spans": 0,
+                    "below_resolution_spans": 0,
+                }],
+            },
+        });
+
+        let answer: LoadAnswer = serde_json::from_value(body).expect("a realistic Core body parses");
+        assert_eq!(answer.rows, 9205);
+        assert_eq!(answer.summary.unit, "us");
+        assert_eq!(answer.summary.subjects.len(), 1);
+        assert_eq!(answer.summary.subjects[0].label, "main");
+        assert!((answer.summary.subjects[0].share - 0.7333).abs() < f64::EPSILON);
     }
 }

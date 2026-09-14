@@ -73,6 +73,9 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         Commands::ListStudyStreams { study_id } => {
             list_study_streams(&core, &study_id, json).await
         }
+        Commands::StudyStreamLoad { study_id, name } => {
+            study_stream_load(&core, &study_id, &name, json).await
+        }
         Commands::BuildDevBench => build_dev_bench(&config, json).await,
         Commands::FlashDevBench { firmware_path, erase } => {
             flash_dev_bench(&config, &core, firmware_path, erase, json).await
@@ -1495,6 +1498,64 @@ async fn list_study_streams(core: &CoreClient, study_id: &str, json: bool) -> i3
     }
 }
 
+/// `GET /study/{id}/stream/{name}/load`'s CLI twin — the same call
+/// `study_stream_load` (MCP) makes, so this and the tool are one
+/// implementation with two front-ends (decisions 3/10; `suite/features.md`'s
+/// `api-040 — CLI subcommands for every tool` row).
+async fn study_stream_load(core: &CoreClient, study_id: &str, name: &str, json: bool) -> i32 {
+    match core.get_study_load(study_id, name).await {
+        Ok(answer) => {
+            let summary = &answer.summary;
+            let subjects_human = if summary.subjects.is_empty() {
+                "no subjects".to_string()
+            } else {
+                summary
+                    .subjects
+                    .iter()
+                    .map(|s| {
+                        format!(
+                            "  {} ({}) — share {:.1}%, {} measured span(s)",
+                            s.label,
+                            s.kind,
+                            s.share * 100.0,
+                            s.measured_spans
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            finish(
+                json,
+                true,
+                serde_json::json!({
+                    "success": true,
+                    "study_id": study_id,
+                    "name": name,
+                    "rows": answer.rows,
+                    "rows_dropped_by_cap": answer.rows_dropped_by_cap,
+                    "row_cap": answer.row_cap,
+                    "rows_unparsed": answer.rows_unparsed,
+                    "summary": summary,
+                }),
+                format!(
+                    "stream '{name}' of study '{study_id}': {} rows, window {} {unit}, gap {:.1}% \
+                     ({} {unit}), records_lost {}\n{subjects_human}",
+                    answer.rows,
+                    summary.window_extent,
+                    summary.gap_fraction * 100.0,
+                    summary.gap_extent,
+                    summary.records_lost,
+                    unit = summary.unit,
+                ),
+            )
+        }
+        Err(e) => error_result(
+            json,
+            format!("study-stream-load failed for '{study_id}' stream '{name}': {e:#}"),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// The two source files that make up this crate's machine-readable
@@ -1584,7 +1645,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 26,
+            arms, 27,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."

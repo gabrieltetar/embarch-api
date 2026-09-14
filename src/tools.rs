@@ -317,6 +317,20 @@ pub struct StudyStreamParams {
     pub raw: Option<bool>,
 }
 
+/// `study_stream_load`'s params — one declared `OutpostTrace` tap, by the
+/// name the `Study` gave it. No `raw`: the load answer is always the same
+/// computed result, never a byte choice the way `study_stream_data`'s
+/// rendered-vs-raw split is.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct StudyStreamLoadParams {
+    /// The study_id returned by run_study.
+    pub study_id: String,
+    /// The tap's declared name — `StreamTap.name` in the submitted Study.
+    /// Call list_study_streams to see what a completed study actually
+    /// captured rather than guessing.
+    pub name: String,
+}
+
 /// `schemars(schema_with)` override for [`RunStudyParams::study`] — see that
 /// field's doc comment for why `serde_json::Value`'s own default schema
 /// (the literal `true`) isn't enough for at least one real MCP client to
@@ -1392,6 +1406,27 @@ impl EmbarchApi {
                 })),
             },
             Err(e) => Self::err_text(format!("list_study_streams failed for '{study_id}': {e:#}")),
+        }
+    }
+
+    #[tool(description = "An outpost OutpostTrace tap's own load repartition: per-subject load shares and the coverage line, computed once on embarch-core rather than re-implemented here (suite decision 4) — the same answer embarch-ui's Trace tab already renders for a person, now reachable by an agent. Returns rows/rows_dropped_by_cap/row_cap/rows_unparsed alongside a summary object: unit, window_extent, gap_extent, gap_fraction, records_lost, has_time_base, thread_extent, idle_record_extent, isr_extent, unaccounted_extent, below_resolution_spans, and subjects (one entry per thread/idle-state/ISR with its own share, spans and exclusion counts). Fails rather than returning empty or zero: a tap that is not an OutpostTrace, a tap that has not rendered yet (call list_study_streams to see why), or a rendered CSV whose columns don't match this build's expectation are all reported as a refusal with its reason, never smoothed into an empty answer. Call list_study_streams first rather than guessing a name.")]
+    async fn study_stream_load(
+        &self,
+        Parameters(StudyStreamLoadParams { study_id, name }): Parameters<StudyStreamLoadParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match self.core.get_study_load(&study_id, &name).await {
+            Ok(answer) => Self::ok_json(serde_json::json!({
+                "study_id": study_id,
+                "name": name,
+                "rows": answer.rows,
+                "rows_dropped_by_cap": answer.rows_dropped_by_cap,
+                "row_cap": answer.row_cap,
+                "rows_unparsed": answer.rows_unparsed,
+                "summary": answer.summary,
+            })),
+            Err(e) => Self::err_text(format!(
+                "study_stream_load failed for '{study_id}' stream '{name}': {e:#}"
+            )),
         }
     }
 }

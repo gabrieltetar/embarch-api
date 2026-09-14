@@ -52,6 +52,7 @@ const EVERY_SUBCOMMAND: &[&[&str]] = &[
     &["study-status", "no-such-study", "--follow", "--follow-timeout", "1"],
     &["study-stream-data", "no-such-study", "--name", "some-tap"],
     &["list-study-streams", "no-such-study"],
+    &["study-stream-load", "no-such-study", "--name", "some-tap"],
     &["build-dev-bench"],
     &["flash-dev-bench"],
     &["build-and-flash-dev-bench"],

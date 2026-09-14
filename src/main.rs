@@ -251,6 +251,21 @@ pub enum Commands {
     /// declared and captured nothing, which is a different fact from a tap
     /// that was never declared.
     ListStudyStreams { study_id: String },
+    /// An outpost OutpostTrace tap's own load repartition: per-subject load
+    /// shares and the coverage line, computed once on embarch-core rather
+    /// than re-implemented here (suite decision 4) — the same answer
+    /// embarch-ui's Trace tab already renders for a person. Fails rather
+    /// than returning empty or zero: a tap that is not an OutpostTrace, one
+    /// that has not rendered yet, or a rendered CSV whose columns don't
+    /// match this build's expectation are all reported as an error naming
+    /// why, never silently empty output. Run list-study-streams first
+    /// rather than guessing a name.
+    StudyStreamLoad {
+        study_id: String,
+        /// The tap's declared name — StreamTap.name in the submitted Study.
+        #[arg(long)]
+        name: String,
+    },
     /// Build embarch-dev-bench's own firmware by running `west build`.
     /// No project — dev-bench isn't a `[[projects]]` entry, see config.rs's
     /// `DevBenchConfig`. Which board gets built comes from [dev_bench]
