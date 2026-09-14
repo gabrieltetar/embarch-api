@@ -98,8 +98,8 @@ pub struct ProjectParams {
     pub project: String,
 }
 
-/// The four `discovery = "zephyr-west"` selection params (decision 12,
-/// decision 12), shared by every tool that resolves a build target. A
+/// The four `discovery = "zephyr-west"` selection params (decision
+/// 12), shared by every tool that resolves a build target. A
 /// `discovery = "static"` project **refuses** any of them, naming which were
 /// given (decision 51) — it builds its configured
 /// `build_command` verbatim and has nowhere to apply them.
@@ -1055,7 +1055,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Declare (or re-declare) where a named DUT signal currently goes, via embarch-core's POST /signals (embarch-topology decision 18's 2026-08-25 amendment). Idempotent by name: re-declaring an existing name overwrites it, which is the migration path for moving a signal from a Direct route (straight to a serial port, port_serial from list_serial_ports) onto dev-bench pins (via-dev-bench, rx_pin/tx_pin) or back — no saved Study changes, since a study names the signal and never its carrier. direction is one of dut-to-host, host-to-dut, bidirectional. route_kind is direct (needs port_serial) or via-dev-bench (needs rx_pin and tx_pin).")]
+    #[tool(description = "Declare (or re-declare) where a named DUT signal currently goes, via embarch-core's POST /signals (embarch-topology decision 18, wrapped per embarch-api decision 67). Idempotent by name: re-declaring an existing name overwrites it, which is the migration path for moving a signal from a Direct route (straight to a serial port, port_serial from list_serial_ports) onto dev-bench pins (via-dev-bench, rx_pin/tx_pin) or back — no saved Study changes, since a study names the signal and never its carrier. direction is one of dut-to-host, host-to-dut, bidirectional. route_kind is direct (needs port_serial) or via-dev-bench (needs rx_pin and tx_pin).")]
     async fn declare_signal(
         &self,
         Parameters(DeclareSignalParams {
