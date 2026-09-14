@@ -1,6 +1,6 @@
 //! Decision 30's named smoke-harness tier — a throwaway Core instance plus a
 //! synthetic fixture repo, re-running a fixed sequence of calls. It was
-//! named in `decisions/tests.md` 30 and never written; `open.md` carried it
+//! named in decision 30 and never written; `open.md` carried it
 //! as a standing "named, unwritten" entry until this file.
 //!
 //! # What this tier covers, and how it differs from decision 46's tier
