@@ -200,7 +200,7 @@ struct EnrollProbeRequest<'a> {
     /// Picks which currently-attached probe to enroll when more than one is
     /// present (`embarch-topology` decision 15's optional override; the
     /// "exactly one attached" requirement it relaxes is `embarch-core`
-    /// decision 22's, whose mechanism decision 14 moved) — omitted,
+    /// decision 22's, whose mechanism `embarch-topology` decision 14 moved) — omitted,
     /// Core falls back to its original "exactly one attached" requirement.
     /// Added 2026-08-24: this field existed on Core's side since decision 15
     /// but had no way to reach it through this client until `embarch-ui`'s
@@ -210,8 +210,8 @@ struct EnrollProbeRequest<'a> {
     probe_serial: Option<&'a str>,
 }
 
-// `Serialize` added 2026-08-24 alongside decision 5's amendment — the
-// Enroll tab hands this straight back to the browser as JSON after a
+// `Serialize` added 2026-08-24 alongside `embarch-ui` decision 5's amendment
+// — the Enroll tab hands this straight back to the browser as JSON after a
 // successful enroll.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct EnrollProbeResponse {
@@ -630,7 +630,7 @@ pub struct PostStudyResponse {
 }
 
 /// The two out-of-band run parameters `POST /study` accepts as **query
-/// parameters** (`embarch-core` decision 31's amendment, decision 40).
+/// parameters** (`embarch-core` decision 31's amendment, `embarch-study-designer` decision 40).
 ///
 /// Neither can ride inside the `Study` body: `embarch-study-designer`
 /// decision 40 settles that reflash is "a run parameter, not a study
@@ -756,7 +756,7 @@ fn urlencode(raw: &str) -> String {
 /// instead of an answer. `None` means "this Core did not send it", which is
 /// a fact about the Core, not about the bench — never conflate it with the
 /// bench's own `"not-reported"` (a real, declared answer) — see the two
-/// rendering states in `embarch-api decision 59`'s tool.
+/// rendering states in `embarch-api` decision 60's tool.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct HelloAckResponse {
     pub schema_version: u32,
@@ -771,7 +771,7 @@ pub struct HelloAckResponse {
 }
 
 /// Renders a [`HelloAckResponse`] for a reader, per `embarch-api` decision
-/// 59 — the rendering call settled after this unit was refused once for
+/// 60 — the rendering call settled after this unit was refused once for
 /// treating a missing field as a pass.
 ///
 /// **Two states that must not be reachable from each other:**
@@ -792,7 +792,7 @@ pub struct HelloAckResponse {
 /// This function never computes a verdict of its own from the two hardware
 /// ids — `link_identity` is Core's own answer to the cross-check and is
 /// surfaced, not replaced (`embarch-topology` decision 20's failure mode,
-/// named in `embarch-api` decision 59).
+/// named in `embarch-api` decision 60).
 ///
 /// A `None` field renders as exactly one thing, a sentence, never a token:
 /// never an empty string, `null`, `-`, `"unknown"`, and — the one that
@@ -841,7 +841,7 @@ pub fn render_hello_ack(info: &HelloAckResponse) -> String {
              embarch-core decision 47 (tasks/core/020) renamed hardware_id to \
              self_reported_hardware_id; a Core older than that rename does not serve these \
              fields under these names. embarch-api decision 58 is why this client tolerates the \
-             missing field(s) rather than failing the call outright, and decision 59 is why this \
+             missing field(s) rather than failing the call outright, and decision 60 is why this \
              tool renders \"unavailable\" here rather than a partial pass.\n\n\
              Fields this Core did report (not a cross-check — the comparison itself is \
              unavailable):\n{core_fields}\n{identity_fields}",
