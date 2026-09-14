@@ -557,6 +557,16 @@ pub struct StudyStreamEntry {
     /// did. `None` from a Core that predates the field.
     #[serde(default)]
     pub self_excluded: Option<bool>,
+    /// Whether this tap was declared against a source `embarch-dev-bench` has
+    /// no front end for (`embarch-dev-bench` decision 24) — power sampling,
+    /// today. `Some(true)` means the tap's `bytes_written: 0` is an **accepted
+    /// but unsupported** declaration, not a mis-named signal or an authoring
+    /// mistake; `Some(false)` is a tap against a source the bench does serve.
+    /// `None` from a Core that predates the field — read it the same as
+    /// `Some(false)`, since a Core that cannot say this yet cannot have
+    /// deferred anything either.
+    #[serde(default)]
+    pub source_deferred: Option<bool>,
 }
 
 impl StudyStreamEntry {
@@ -2409,6 +2419,7 @@ mod tests {
     fn named_and_timed_are_independent_and_neither_is_read_off_the_note() {
         let entry = |rendered: bool, note: Option<&str>, named, timed| StudyStreamEntry {
             self_excluded: None,
+            source_deferred: None,
             id: 0,
             name: "outpost".to_string(),
             encoding: StreamEncoding::OutpostTrace,
@@ -2443,6 +2454,39 @@ mod tests {
         assert!(!old.is_timed());
         assert!(!entry(true, Some("decoded but NOT named: …"), None, None).is_named());
         assert!(!entry(false, None, None, None).is_named());
+    }
+
+    /// `embarch-core` decision 63: a tap declared against a source this bench
+    /// has no front end for says so via `source_deferred`, a fourth
+    /// `#[serde(default)] Option<bool>` beside `named`/`timed`/`self_excluded`.
+    /// This is the client-crate half of that decision, so what is pinned here
+    /// is only what this repo does with the wire field — a Core that omits it
+    /// deserializes as `None`, and a Core that sends `true` deserializes as
+    /// `Some(true)` — never what Core actually puts there (`tasks/core/061`).
+    #[test]
+    fn source_deferred_defaults_to_none_and_round_trips_some_true() {
+        let without_it = serde_json::json!({
+            "id": 0,
+            "name": "power",
+            "encoding": "Raw",
+            "rendered": false,
+            "note": "power sampling has no dev-bench front end yet",
+        });
+        let entry: StudyStreamEntry =
+            serde_json::from_value(without_it).expect("a pre-decision-63 Core body still parses");
+        assert_eq!(entry.source_deferred, None, "a Core that predates the field says nothing");
+
+        let with_it = serde_json::json!({
+            "id": 0,
+            "name": "power",
+            "encoding": "Raw",
+            "rendered": false,
+            "note": "power sampling has no dev-bench front end yet",
+            "source_deferred": true,
+        });
+        let entry: StudyStreamEntry =
+            serde_json::from_value(with_it).expect("a decision-63 Core body parses");
+        assert_eq!(entry.source_deferred, Some(true));
     }
 
     /// The manifest travels because it *sits beside the artifact*, not because
