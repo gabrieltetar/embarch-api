@@ -289,10 +289,10 @@ struct TopologyMismatchBody {
     /// field (`embarch-api` decision 73).
     #[serde(default)]
     kind: Option<String>,
-    /// `None` on the `"not_attached"` arm (decision 59): the fix for a
-    /// detached probe is a USB cable, not the Topology tab, and serving the
-    /// same URL both times invited the same lead-conflation this shape
-    /// exists to end.
+    /// `None` on the `"not_attached"` arm (`embarch-core` decision 59): the
+    /// fix for a detached probe is a USB cable, not the Topology tab, and
+    /// serving the same URL both times invited the same lead-conflation this
+    /// shape exists to end.
     #[serde(default)]
     fix_it_url: Option<String>,
 }
@@ -341,8 +341,8 @@ impl TopologyMismatchError {
     /// Whether the Core that answered predates `kind` entirely (a fact
     /// about *which Core answered*, read from the wire body's own absence
     /// of the field — never inferred from `live_hardware_id.is_none()`,
-    /// which is the condition-guessing decision 59 already forbids
-    /// client-side). Distinct from [`Self::is_not_attached`]: this says
+    /// which is the condition-guessing `embarch-core` decision 59 already
+    /// forbids client-side). Distinct from [`Self::is_not_attached`]: this says
     /// "unclassifiable", never "safe to carry on" (`embarch-api` decision
     /// 73).
     pub fn is_unknown(&self) -> bool {
@@ -354,8 +354,8 @@ impl From<TopologyMismatchBody> for TopologyMismatchError {
     /// A `kind` absent from the wire body becomes `"unknown"`, not the
     /// `"mismatch"` this crate defaulted to before `embarch-api` decision
     /// 73 — and `fix_it_url` is dropped on that arm regardless of what the
-    /// body carried, for the same reason decision 59 drops it on
-    /// `"not_attached"`.
+    /// body carried, for the same reason `embarch-core` decision 59 drops
+    /// it on `"not_attached"`.
     fn from(m: TopologyMismatchBody) -> Self {
         let (kind, fix_it_url) = match m.kind {
             Some(k) => (k, m.fix_it_url),
