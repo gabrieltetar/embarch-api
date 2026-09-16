@@ -590,7 +590,7 @@ impl StudyStreamEntry {
 }
 
 /// `GET /study/{id}/stream/{name}/load`'s success body (`embarch-core`
-/// decision 62, `decisions/streams.md`) — field-for-field mirror of Core's
+/// decision 62) — field-for-field mirror of Core's
 /// own `outpost_load::LoadAnswer`, plus what a caller needs to judge
 /// whether the rendered CSV was read in full. See
 /// [`CoreClient::get_study_load`].
@@ -1721,7 +1721,7 @@ impl CoreClient {
     }
 
     /// `GET /study/{study_id}/stream/{name}/load` (`embarch-core` decision
-    /// 62, `decisions/streams.md`) — an `OutpostTrace` tap's load
+    /// 62) — an `OutpostTrace` tap's load
     /// repartition: per-subject load shares and the coverage line, computed
     /// once on Core rather than re-implemented here (suite decision 4,
     /// `../../embarch-doc/suite/decisions.md`). This is the property that
