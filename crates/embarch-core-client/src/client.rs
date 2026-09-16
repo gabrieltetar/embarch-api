@@ -202,8 +202,8 @@ struct EnrollProbeRequest<'a> {
     /// "exactly one attached" requirement it relaxes is `embarch-core`
     /// decision 22's, whose mechanism `embarch-topology` decision 14 moved) — omitted,
     /// Core falls back to its original "exactly one attached" requirement.
-    /// Added 2026-08-24: this field existed on Core's side since decision 15
-    /// but had no way to reach it through this client until `embarch-ui`'s
+    /// Added 2026-08-24: this field existed on Core's side since
+    /// `embarch-topology` decision 15 but had no way to reach it through this client until `embarch-ui`'s
     /// Enroll tab needed to send exactly what its drag-and-drop UI already
     /// knows.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -427,7 +427,7 @@ pub type AlertResponse = Alert;
 
 /// One entry from `embarch-core`'s `GET /probes/enrolled`, a thin read over the
 /// enrollment storage `embarch-topology` decision 14 moved into that crate
-/// (`link_port_serial` added decision 17) — every currently
+/// (`link_port_serial` added `embarch-topology` decision 17) — every currently
 /// enrolled board. Added 2026-08-24 for `embarch-ui`'s Dashboard/Topology
 /// tabs (`embarch-ui` decision 5's amendment): reading this
 /// over HTTP, rather than `embarch_topology::hardware::list_enrolled()`
@@ -1771,8 +1771,7 @@ impl CoreClient {
     }
 
     /// `POST /signals` — declares (or re-declares) where a named DUT signal
-    /// currently goes (`embarch-topology` decision 18's
-    /// 2026-08-25 amendment).
+    /// currently goes (`embarch-topology` decision 18).
     ///
     /// Idempotent by name, and that overwrite **is** the migration path the
     /// decision promises: moving the outpost from a `Direct` route onto
