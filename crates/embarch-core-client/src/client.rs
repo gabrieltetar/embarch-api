@@ -427,7 +427,7 @@ pub type AlertResponse = Alert;
 
 /// One entry from `embarch-core`'s `GET /probes/enrolled`, a thin read over the
 /// enrollment storage `embarch-topology` decision 14 moved into that crate
-/// (`link_port_serial` added decision 27) — every currently
+/// (`link_port_serial` added decision 17) — every currently
 /// enrolled board. Added 2026-08-24 for `embarch-ui`'s Dashboard/Topology
 /// tabs (`embarch-ui` decision 5's amendment): reading this
 /// over HTTP, rather than `embarch_topology::hardware::list_enrolled()`
@@ -664,8 +664,8 @@ pub struct DevBenchPortResponse {
 
 /// `GET /logs/recent`'s body (`embarch-core` spec.md) — plain lines
 /// exactly as `tracing_subscriber`'s own formatter wrote them, no
-/// server-side structuring/filtering (`embarch-ui` decision 7's
-/// resolution of that open question).
+/// server-side structuring/filtering (`embarch-core` decision 16's
+/// choice of a plain-text body over reformatting into JSON for one client).
 #[derive(Debug, Deserialize)]
 struct LogsRecentResponse {
     lines: Vec<String>,
