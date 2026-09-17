@@ -21,7 +21,7 @@
 //! are actually wired into the build path, and need a POSIX shell, so they
 //! are `#[cfg(unix)]`.
 //!
-//! Decision 19's `target.json` is pinned the same two ways, and for the
+//! Decision 69's `target.json` is pinned the same two ways, and for the
 //! same reason: the doc claimed the file for months while nothing wrote it,
 //! so a direct round-trip test alone would only prove the writer works, not
 //! that a build ever calls it.
@@ -489,7 +489,7 @@ async fn a_build_that_never_produced_the_artifact_is_not_ready_to_flash() {
 }
 
 // ---------------------------------------------------------------------------
-// Decision 19 — the build directory's `target.json`
+// Decision 69 — the build directory's `target.json`
 // ---------------------------------------------------------------------------
 
 /// The round trip that makes the file worth writing: whatever `resolve`
