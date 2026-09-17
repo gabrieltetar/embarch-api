@@ -504,9 +504,10 @@ fn main() -> Result<()> {
     // `study.rs`'s own tests — same fix, now applied to the real binary).
     // The actual fix: spawn the runtime itself, `block_on` included, on a
     // dedicated thread with an explicit stack size, since that's the only
-    // lever that covers the calling thread too. 64 MiB matches the
-    // `RUST_MIN_STACK` value this repo's tests already use for the same
-    // underlying cause.
+    // lever that covers the calling thread too. 512 MiB is what empirical
+    // testing required: 64 MiB — matching the `RUST_MIN_STACK` value this
+    // repo's tests already use for the same underlying cause — still
+    // overflowed against this real GATT-heavy payload.
     std::thread::Builder::new()
         .stack_size(512 * 1024 * 1024)
         .spawn(|| {
