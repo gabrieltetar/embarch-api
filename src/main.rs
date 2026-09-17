@@ -42,8 +42,8 @@ struct Cli {
     command: Option<Commands>,
 }
 
-/// The four `discovery = "zephyr-west"` selection flags (decision 12,
-/// decision 12), shared by every subcommand that runs a build or needs a
+/// The four `discovery = "zephyr-west"` selection flags (decision 12),
+/// shared by every subcommand that runs a build or needs a
 /// chip. A `discovery = "static"` project **refuses** any of them, naming
 /// which were given (decision 51) — it builds its configured
 /// `build_command` verbatim and has nowhere to apply them.

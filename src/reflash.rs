@@ -235,7 +235,7 @@ pub async fn run_study(
         .await
         .context("dev-bench flash failed")?;
         // Flashing halts the core rather than starting it running
-        // (decision 32's `reset_dev_bench` note), so a bench
+        // (decision 40's `reset_dev_bench` note), so a bench
         // that is never reset never replies to `Hello` and every check below
         // would time out against a chip sitting halted.
         core.reset(&resolved.chip, resolved.probe_serial.as_deref())
