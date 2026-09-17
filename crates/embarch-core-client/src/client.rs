@@ -407,10 +407,10 @@ impl std::error::Error for TopologyMismatchError {}
 // **What used to guard the copies, and what guards this instead.** A block of
 // mirror-pinning tests asserted field-for-field that each copy still matched
 // its original's serde shape, because nothing else could: two structs in two
-// crates that never meet are not comparable by any compiler. Those tests are
-// retired with the types they pinned — the guarantee is now structural, since
-// there is one type and Core and this crate both name it (`embarch-api`
-// decision 72).
+// crates that never meet are not comparable by any compiler. That comparison
+// is gone now that there is one type Core and this crate both name — but the
+// tests themselves are kept, re-scoped from "our copy matches theirs" to "the
+// wire has not moved under a deployed Core" (`embarch-api` decision 72).
 //
 // The old names are kept as aliases. They are what `embarch-api` and
 // `embarch-ui` spell at their call sites, and this crate is shipped, so
