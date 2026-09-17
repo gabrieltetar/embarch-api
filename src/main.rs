@@ -356,9 +356,10 @@ pub enum Commands {
     /// own. A genuine identity mismatch exits nonzero with the recorded/live
     /// hardware IDs and a fix_it_url printed to stderr — never opened
     /// automatically (`embarch-topology`'s own `validate` CLI does the same).
-    /// A probe that cannot be opened at all (ordinarily just unplugged) is a
-    /// distinct condition, reported with its own lead and no fix_it_url
-    /// (`embarch-core` decision 59).
+    /// A probe that is unavailable — not found, or found but unable to
+    /// open, power-check, attach, core-select, or read a hardware ID from —
+    /// is a distinct condition, reported with its own lead and no
+    /// fix_it_url (`embarch-core` decision 59, `embarch-api` decision 76).
     Validate {
         /// The enrollment role to re-check (e.g. "dev-bench").
         #[arg(long)]

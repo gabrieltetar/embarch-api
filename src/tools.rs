@@ -973,7 +973,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Explicit, non-destructive re-check of an already-enrolled board's live identity via embarch-core's POST /validate (embarch-core decision 28) — the same check flash/reset/run_study already run mid-attach, callable on its own without touching hardware otherwise. On a match, returns the enrolled board's fields, including two distinct timestamps: confirmed_at_utc_ms is enrolment time and does not move on a re-check, validated_at_utc_ms is when this call's live check passed (embarch-topology decision 26) — read the latter for freshness, not the former, when it is present. validated_at_utc_ms is null against a Core older than the one that added it (embarch-api decision 58): null means this Core did not report a live-check time, not that the check happened at an unknown time. On a genuine topology mismatch (the attached chip no longer matches what was recorded), returns an error naming both the recorded and live hardware IDs plus a fix_it_url pointing at embarch-ui's Topology tab — relayed as text, never auto-opened (embarch-topology decision 12: opening/focusing the UI is the caller's job). On a probe that could not be opened at all (ordinarily just unplugged), returns a distinctly-worded error with no fix_it_url — that is not a mismatch (embarch-core decision 59). Against a Core old enough to predate that field entirely, returns a third, distinctly-worded error saying the condition is unclassifiable rather than guessing — also with no fix_it_url, since that link is not offered on an answer this client could not classify (embarch-api decision 73). On no board enrolled under role yet, returns a plain not-enrolled error.")]
+    #[tool(description = "Explicit, non-destructive re-check of an already-enrolled board's live identity via embarch-core's POST /validate (embarch-core decision 28) — the same check flash/reset/run_study already run mid-attach, callable on its own without touching hardware otherwise. On a match, returns the enrolled board's fields, including two distinct timestamps: confirmed_at_utc_ms is enrolment time and does not move on a re-check, validated_at_utc_ms is when this call's live check passed (embarch-topology decision 26) — read the latter for freshness, not the former, when it is present. validated_at_utc_ms is null against a Core older than the one that added it (embarch-api decision 58): null means this Core did not report a live-check time, not that the check happened at an unknown time. On a genuine topology mismatch (the attached chip no longer matches what was recorded), returns an error naming both the recorded and live hardware IDs plus a fix_it_url pointing at embarch-ui's Topology tab — relayed as text, never auto-opened (embarch-topology decision 12: opening/focusing the UI is the caller's job). On a probe that is unavailable — not found, or found but unable to open, power-check, attach, core-select, or read a hardware ID from — returns a distinctly-worded error with no fix_it_url; the error's own text names which of those applies (embarch-core decision 59, embarch-api decision 76). Against a Core old enough to predate that field entirely, returns a third, distinctly-worded error saying the condition is unclassifiable rather than guessing — also with no fix_it_url, since that link is not offered on an answer this client could not classify (embarch-api decision 73). On no board enrolled under role yet, returns a plain not-enrolled error.")]
     async fn validate(
         &self,
         Parameters(ValidateParams { role }): Parameters<ValidateParams>,
@@ -989,9 +989,16 @@ impl EmbarchApi {
                 "validated_at_utc_ms": resp.validated_at_utc_ms,
             })),
             Err(e) => match e.downcast_ref::<TopologyMismatchError>() {
+                // Lead says "unavailable", not "not attached", and carries
+                // no fixed instruction of its own (`embarch-api` decision
+                // 76): `kind: "not_attached"` now also covers a probe that
+                // was found but failed to open, power-check, attach,
+                // core-select, or read a hardware ID from — none of which
+                // "plug it in" fixes, and all of which `reason` already
+                // names correctly.
                 Some(mismatch) if mismatch.is_not_attached() => Self::err_text(format!(
-                    "probe not attached for role '{}' (probe {}, chip '{}'): {} (recorded \
-                     hardware_id {}) — plug it in; this is not a topology mismatch",
+                    "probe unavailable for role '{}' (probe {}, chip '{}'): {} (recorded \
+                     hardware_id {}) — this is not a topology mismatch",
                     mismatch.role,
                     mismatch.probe_serial,
                     mismatch.chip,

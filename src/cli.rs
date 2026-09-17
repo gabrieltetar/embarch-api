@@ -818,15 +818,22 @@ async fn validate(core: &CoreClient, role: &str, json: bool) -> i32 {
             // not a discovered one — still opaque from here either way.
             //
             // Branches on `kind` (`embarch-core` decision 59), not on
-            // `reason`'s wording: a probe that can't be opened at all
-            // (ordinarily just unplugged) is not the same condition as a
-            // live identity that disagrees with what's recorded, and the two
-            // used to be rendered under the same "topology mismatch" lead.
+            // `reason`'s wording: a probe that is unavailable is not the
+            // same condition as a live identity that disagrees with what's
+            // recorded, and the two used to be rendered under the same
+            // "topology mismatch" lead.
+            //
+            // Lead says "unavailable", not "not attached", and carries no
+            // fixed instruction of its own (`embarch-api` decision 76):
+            // `kind: "not_attached"` now also covers a probe that was found
+            // but failed to open, power-check, attach, core-select, or
+            // read a hardware ID from — none of which "plug it in" fixes,
+            // and all of which `reason` already names correctly.
             Some(mismatch) if mismatch.is_not_attached() => error_result(
                 json,
                 format!(
-                    "probe not attached for role '{}' (probe {}, chip '{}'): {} (recorded \
-                     hardware_id {}) — plug it in; this is not a topology mismatch",
+                    "probe unavailable for role '{}' (probe {}, chip '{}'): {} (recorded \
+                     hardware_id {}) — this is not a topology mismatch",
                     mismatch.role,
                     mismatch.probe_serial,
                     mismatch.chip,
