@@ -483,13 +483,46 @@ pub fn list_targets(project: &ProjectConfig) -> Result<serde_json::Value> {
             let mut apps: Vec<&str> = targets.iter().map(|t| t.app.as_str()).collect();
             apps.sort();
             apps.dedup();
-            let snippets_by_app: serde_json::Map<String, serde_json::Value> = apps
+            let available_by_app: std::collections::HashMap<&str, Vec<String>> = apps
                 .iter()
-                .map(|app| {
-                    (
-                        app.to_string(),
-                        serde_json::json!(zephyr::available_snippets(&project.source_path, app)),
+                .map(|app| (*app, zephyr::available_snippets(&project.source_path, app)))
+                .collect();
+            let snippets_by_app: serde_json::Map<String, serde_json::Value> = available_by_app
+                .iter()
+                .map(|(app, available)| (app.to_string(), serde_json::json!(available)))
+                .collect();
+
+            // `build_dir_name` (decision 77): the identity `embarch-umbrella`
+            // decision 26 needs to prune a build directory whose target
+            // combination is no longer valid, folded here rather than left
+            // for a second, lossier attempt to derive it from a directory
+            // name alone (every segment can contain `-`). Resolved with this
+            // project's own configured defaults — the identity a bare
+            // `build` for this row writes to today — not the caller's, since
+            // a listing has no call-time override to fold in.
+            //
+            // `null` when this app's available snippets don't cover
+            // `default_snippets`: exactly the case a bare `build` for this
+            // target already refuses at build time (`resolve_snippets`'s
+            // "unknown snippet(s)" error), surfaced here instead of only
+            // there. Never an error for the whole listing — one target's
+            // snippet mismatch must not hide every other row's identity.
+            let targets_json: Vec<serde_json::Value> = targets
+                .iter()
+                .map(|t| {
+                    let available = available_by_app.get(t.app.as_str()).cloned().unwrap_or_default();
+                    let build_dir_name = resolve_snippets(
+                        &project.name,
+                        &t.app,
+                        &[],
+                        &project.default_snippets,
+                        &available,
                     )
+                    .ok()
+                    .map(|snippets| t.build_dir_name(&snippets, &project.default_extra_args));
+                    let mut value = serde_json::to_value(t).expect("Target always serializes");
+                    value["build_dir_name"] = serde_json::json!(build_dir_name);
+                    value
                 })
                 .collect();
 
@@ -508,7 +541,7 @@ pub fn list_targets(project: &ProjectConfig) -> Result<serde_json::Value> {
             });
 
             Ok(serde_json::json!({
-                "targets": targets,
+                "targets": targets_json,
                 "snippets_by_app": snippets_by_app,
                 "default_snippets": project.default_snippets,
                 "default_extra_args": project.default_extra_args,
@@ -701,6 +734,124 @@ flash_format = "bin"
         // Nothing else is advertised: no menu, and no selection axes a
         // `static` project would only refuse (decision 51).
         assert_eq!(value.as_object().unwrap().len(), 1, "{value:#}");
+    }
+
+    // Minimal on-disk zephyr-west fixture, scoped to this module rather than
+    // reusing `zephyr.rs`'s own private test helpers: one board with no
+    // variant/revision axes, one app, so `scan_or_err` returns exactly one
+    // `Target` — enough to exercise `list_targets`'s `build_dir_name`
+    // without pulling in the fuller scan matrix `zephyr.rs`'s own tests
+    // already cover.
+    struct ZephyrFixture(std::path::PathBuf);
+    impl ZephyrFixture {
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+    impl Drop for ZephyrFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn write_zephyr_fixture(with_snippet: bool) -> ZephyrFixture {
+        let mut base = std::env::temp_dir();
+        let unique = format!(
+            "embarch-api-resolve-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        base.push(unique);
+        let root = base.clone();
+
+        let board_dir = root.join("boards/acme/single");
+        std::fs::create_dir_all(&board_dir).unwrap();
+        std::fs::write(
+            board_dir.join("single.yml"),
+            "board:\n  name: single\n  socs:\n    - name: nrf54l15\n",
+        )
+        .unwrap();
+        std::fs::write(board_dir.join("single_nrf54l15.dts"), "").unwrap();
+
+        let app_dir = root.join("app/widget");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(app_dir.join("CMakeLists.txt"), "").unwrap();
+
+        if with_snippet {
+            let snippet_dir = app_dir.join("snippets/ble-shell");
+            std::fs::create_dir_all(&snippet_dir).unwrap();
+            std::fs::write(snippet_dir.join("snippet.yml"), "name: ble-shell\n").unwrap();
+        }
+
+        ZephyrFixture(root)
+    }
+
+    fn zephyr_project(source_path: &std::path::Path, extra: &str) -> ProjectConfig {
+        toml::from_str(&format!(
+            r#"
+name = "p"
+source_path = "{source}"
+discovery = "zephyr-west"
+flash_format = "hex"
+{extra}
+"#,
+            source = source_path.display().to_string().replace('\\', "\\\\"),
+        ))
+        .expect("test project config should parse")
+    }
+
+    /// The identity `embarch-umbrella` decision 26 asked this crate to
+    /// publish (decision 77): a bare `build` for this row, with no snippets
+    /// and no extra_args configured, writes to `build_dir_name(&[], &[])`
+    /// exactly.
+    #[test]
+    fn list_targets_reports_build_dir_name_for_the_default_combination() {
+        let fixture = write_zephyr_fixture(false);
+        let project = zephyr_project(fixture.path(), "");
+        let value = list_targets(&project).expect("a single board/app scans to one target");
+        let targets = value["targets"].as_array().expect("targets is an array");
+        assert_eq!(targets.len(), 1, "{value:#}");
+        assert_eq!(
+            targets[0]["build_dir_name"],
+            serde_json::json!("single-default-none-widget"),
+            "{value:#}"
+        );
+    }
+
+    /// Same fixture, but the project configures a `default_snippets` entry
+    /// its one app never declares. A bare `build` for this target already
+    /// refuses with "unknown snippet(s)" (`resolve_snippets`) — this listing
+    /// must report that same target as `build_dir_name: null` rather than
+    /// failing the whole call or fabricating a name nothing would actually
+    /// build to.
+    #[test]
+    fn list_targets_nulls_build_dir_name_when_the_default_snippet_is_unavailable() {
+        let fixture = write_zephyr_fixture(false);
+        let project = zephyr_project(fixture.path(), r#"default_snippets = ["ble-shell"]"#);
+        let value = list_targets(&project).expect("an unavailable default snippet must not fail the listing");
+        let targets = value["targets"].as_array().expect("targets is an array");
+        assert_eq!(targets.len(), 1, "{value:#}");
+        assert!(targets[0]["build_dir_name"].is_null(), "{value:#}");
+    }
+
+    /// The same `default_snippets` value, but the fixture's app really does
+    /// declare it: `build_dir_name` folds it in exactly the way
+    /// `Target::build_dir_name` does for a real build.
+    #[test]
+    fn list_targets_folds_a_real_default_snippet_into_build_dir_name() {
+        let fixture = write_zephyr_fixture(true);
+        let project = zephyr_project(fixture.path(), r#"default_snippets = ["ble-shell"]"#);
+        let value = list_targets(&project).expect("a declared default snippet must resolve");
+        let targets = value["targets"].as_array().expect("targets is an array");
+        assert_eq!(targets.len(), 1, "{value:#}");
+        assert_eq!(
+            targets[0]["build_dir_name"],
+            serde_json::json!("single-default-none-widget-ble-shell"),
+            "{value:#}"
+        );
     }
 
     #[test]
