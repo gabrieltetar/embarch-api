@@ -408,5 +408,12 @@ fn kill_process_tree(child: &mut tokio::process::Child) {
 
 #[cfg(not(unix))]
 fn kill_process_tree(child: &mut tokio::process::Child) {
+    // Kills only the immediate child. Unlike the unix arm above, this does
+    // NOT reach a forked west/cmake/ninja tree: on a timeout the build's
+    // subprocesses keep running, still holding the build directory, even
+    // though this call already reported the build as killed
+    // (`embarch-api` decision 75 — deliberately not closed here; no test
+    // tier of this crate runs on Windows to verify a real tree-kill
+    // against).
     let _ = child.start_kill();
 }
