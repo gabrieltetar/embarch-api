@@ -88,6 +88,22 @@ pub enum StudyEvent {
         step_index: u32,
         entry: Box<GattTranscriptEntry>,
     },
+    /// One chunk off a `Text`-encoded tap, pushed the instant Core read it
+    /// off the wire (`embarch-core` decision 70).
+    ///
+    /// **Carried verbatim, with no line framing.** A chunk can split a line
+    /// and can split a UTF-8 character; Core refuses to invent line
+    /// boundaries because that would be Core interpreting a payload, so
+    /// assembling lines is this side's job. `Raw` taps push nothing at all,
+    /// deliberately.
+    StreamText {
+        study_id: String,
+        stream_id: u8,
+        stream_name: String,
+        step_index: u32,
+        rx_utc_ms: u64,
+        text: String,
+    },
     /// The job's own status changed — `"completed"` or `"failed"`.
     StatusChanged {
         study_id: String,
@@ -102,6 +118,7 @@ impl StudyEvent {
             StudyEvent::StepCompleted { study_id, .. }
             | StudyEvent::SampleBatch { study_id, .. }
             | StudyEvent::GattTranscript { study_id, .. }
+            | StudyEvent::StreamText { study_id, .. }
             | StudyEvent::StatusChanged { study_id, .. } => study_id,
         }
     }
@@ -113,6 +130,7 @@ impl StudyEvent {
             StudyEvent::StepCompleted { .. } => "StepCompleted",
             StudyEvent::SampleBatch { .. } => "SampleBatch",
             StudyEvent::GattTranscript { .. } => "GattTranscript",
+            StudyEvent::StreamText { .. } => "StreamText",
             StudyEvent::StatusChanged { .. } => "StatusChanged",
         }
     }

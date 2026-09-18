@@ -465,6 +465,92 @@ pub type SignalRoute = Route;
 /// now see it was a guess.
 pub type SerialPortResponse = DetectedPort;
 
+/// `GET /studies`' body — every study still on embarch-core's disk, newest
+/// first.
+///
+/// The one route that makes a past study reachable **without having kept its
+/// id**. Before it, results sat in `study_results/<id>/` addressable only by
+/// a caller that had written the id down.
+#[derive(Debug, Clone, Deserialize)]
+pub struct StudyListing {
+    pub studies: Vec<StudySummary>,
+    /// The retention count in force on Core (`EMBARCH_STUDY_RESULTS_KEEP`),
+    /// so a caller showing this list can say what it is a list *of* rather
+    /// than implying it is every study ever run. `0` means retention is off
+    /// and this is everything on disk.
+    #[serde(default)]
+    pub keep: usize,
+}
+
+/// One study, as `GET /studies` summarises it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct StudySummary {
+    pub study_id: String,
+    #[serde(default)]
+    pub study_name: Option<String>,
+    /// `"pending"`/`"running"` from Core's live job registry;
+    /// `"completed"`/`"failed"` as Core reports them elsewhere; and
+    /// **`"interrupted"`** — an `events.json.partial` with no job behind it,
+    /// i.e. Core restarted or died mid-study (`embarch-core` decision 69).
+    ///
+    /// **`"interrupted"` is neither of its neighbours and must not be
+    /// rendered as one.** The study did not complete, and nothing said it
+    /// failed: a failed run and a Core killed mid-run leave byte-identical
+    /// evidence on disk, so this is the fact the filesystem carries rather
+    /// than a guess between the two.
+    pub status: String,
+    #[serde(default)]
+    pub started_utc_ms: Option<u64>,
+    #[serde(default)]
+    pub ended_utc_ms: Option<u64>,
+    /// How the steps came out, counted. **`None` means Core could not read
+    /// the record**, not that the study ran no steps — the two are opposite
+    /// facts, and `note` says which. `GET /study/{id}/steps` serves the steps
+    /// themselves.
+    #[serde(default)]
+    pub steps: Option<StudyStepTally>,
+    /// The taps this study declared. `None` for the same reason `steps` is —
+    /// no readable `streams/index.json`, which is not the same as no taps.
+    #[serde(default)]
+    pub taps: Option<Vec<StudyTapSummary>>,
+    /// Why something above is missing, in Core's own prose. Set only when
+    /// there is something to say.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// How a study's steps came out. `unknown` counts steps whose outcome this
+/// build of Core did not recognise as one of the three — news, not a
+/// rounding bin.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct StudyStepTally {
+    pub total: usize,
+    pub passed: usize,
+    pub failed: usize,
+    pub timed_out: usize,
+    pub unknown: usize,
+}
+
+/// One declared tap as the listing summarises it — the same facts
+/// [`StudyStreamEntry`] carries, minus the file bookkeeping, so a row can say
+/// "this study has a trace and two consoles" without a request per study.
+#[derive(Debug, Clone, Deserialize)]
+pub struct StudyTapSummary {
+    pub name: String,
+    pub encoding: StreamEncoding,
+    pub rendered: bool,
+    /// `None` is "the question does not apply to this tap", never "no" — the
+    /// same three-valued shape [`StudyStreamEntry`] uses.
+    #[serde(default)]
+    pub named: Option<bool>,
+    #[serde(default)]
+    pub timed: Option<bool>,
+    #[serde(default)]
+    pub self_excluded: Option<bool>,
+    #[serde(default)]
+    pub source_deferred: Option<bool>,
+}
+
 /// `GET /study/{study_id}/steps`' body — every step the study recorded, with
 /// the two edges of the window embarch-core waited for each across.
 ///
@@ -1874,6 +1960,23 @@ impl CoreClient {
         self.send(self.client.get(url), self.status_timeout).await
     }
 
+    /// `GET /studies` — every study still on Core's disk, newest first and
+    /// bounded by the retention count Core reports back as `keep`.
+    ///
+    /// The listing is a *disk* read, so it answers after a restart that
+    /// emptied the job registry — which is the case a post-hoc reader is
+    /// always in. A study it lists as `"interrupted"` is one Core cannot
+    /// distinguish from a failure by its files alone; see
+    /// [`StudySummary::status`].
+    ///
+    /// An empty list is a success: no study has run, or the sweep has taken
+    /// them all. Reuses `status_timeout` — Core stats each directory and
+    /// parses only what changed since its last listing.
+    pub async fn list_studies(&self) -> Result<StudyListing> {
+        let url = format!("{}/studies", self.base_url().await?);
+        self.send(self.client.get(url), self.status_timeout).await
+    }
+
     /// `GET /study/{study_id}/streams` — what a study's taps captured, and
     /// why a trace has no names when it has none.
     ///
@@ -2620,5 +2723,58 @@ mod tests {
         assert_eq!(answer.summary.subjects.len(), 1);
         assert_eq!(answer.summary.subjects[0].label, "main");
         assert!((answer.summary.subjects[0].share - 0.7333).abs() < f64::EPSILON);
+    }
+
+    /// `GET /studies` parses the three shapes that matter, from one body.
+    ///
+    /// The `interrupted` row is the reason this test exists: it is a status
+    /// no other route serves, and a client that folded it into `failed` or
+    /// `completed` would be asserting something disk cannot support.
+    #[test]
+    fn a_studies_listing_parses_interrupted_and_tells_absent_apart_from_empty() {
+        let body = serde_json::json!({
+            "keep": 50,
+            "studies": [
+                {
+                    "study_id": "aa",
+                    "study_name": "nightly",
+                    "status": "completed",
+                    "started_utc_ms": 10u64,
+                    "ended_utc_ms": 45u64,
+                    "steps": { "total": 2, "passed": 1, "failed": 1, "timed_out": 0, "unknown": 0 },
+                    "taps": [{
+                        "name": "dev-bench",
+                        "encoding": "Text",
+                        "rendered": false,
+                    }],
+                },
+                // Core restarted mid-run: a `.partial` with no job behind it.
+                { "study_id": "bb", "status": "interrupted",
+                  "steps": { "total": 1, "passed": 1, "failed": 0, "timed_out": 0, "unknown": 0 },
+                  "taps": [] },
+                // Unreadable: `steps` and `taps` are absent, not zeroed.
+                { "study_id": "cc", "status": "unknown",
+                  "note": "this build cannot read its events file: EOF while parsing" },
+            ],
+        });
+
+        let listing: StudyListing = serde_json::from_value(body).expect("a Core body parses");
+        assert_eq!(listing.keep, 50);
+
+        let done = &listing.studies[0];
+        assert_eq!(done.status, "completed");
+        assert_eq!(done.steps.as_ref().unwrap().failed, 1);
+        assert_eq!(done.taps.as_ref().unwrap()[0].name, "dev-bench");
+        // `named`/`timed`/… are absent for a tap they do not apply to, and
+        // absent must not read as `false`.
+        assert_eq!(done.taps.as_ref().unwrap()[0].named, None);
+
+        assert_eq!(listing.studies[1].status, "interrupted");
+        assert!(listing.studies[1].taps.as_ref().unwrap().is_empty(), "declared none");
+
+        let unreadable = &listing.studies[2];
+        assert!(unreadable.steps.is_none(), "unreadable is not a study that ran no steps");
+        assert!(unreadable.taps.is_none());
+        assert!(unreadable.note.as_deref().unwrap().contains("cannot read"));
     }
 }

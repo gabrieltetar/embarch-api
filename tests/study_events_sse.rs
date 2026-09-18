@@ -91,6 +91,19 @@ fn sample_batch(stream_name: &str, count: usize) -> String {
     .to_string()
 }
 
+fn stream_text(stream_name: &str, text: &str) -> String {
+    json!({
+        "kind": "StreamText",
+        "study_id": STUDY,
+        "stream_id": 1,
+        "stream_name": stream_name,
+        "step_index": 2,
+        "rx_utc_ms": 1_700_000_000_000u64,
+        "text": text,
+    })
+    .to_string()
+}
+
 /// `GET /study/{id}` with the given status.
 fn poll_reply(status: &str) -> Behavior {
     Behavior::json_ok(json!({
@@ -602,6 +615,49 @@ async fn a_sample_batch_decodes_with_its_tap_name() {
         })
         .expect("the sample batch should have decoded");
     assert_eq!(batch, ("rail-3v3".to_string(), 3));
+}
+
+/// A `Text` tap's chunk decodes with its tap name and its bytes intact, and
+/// **is not reassembled into lines here**. Core carries a chunk exactly as it
+/// arrived — it can end mid-line and mid-character (`embarch-core` decision
+/// 70) — so this pins that the client hands the chunk on unchanged rather
+/// than tidying it, which is what any consumer assembling lines depends on.
+#[tokio::test]
+async fn a_text_chunk_decodes_with_its_tap_name_and_is_not_reframed() {
+    let mock = MockCore::start(routed(
+        stream(
+            vec![
+                sse_frame(None, &stream_text("dev-bench", "uart:~$ half a lin")),
+                sse_frame(None, &status_changed("completed", None)),
+            ],
+            StreamTail::Hold,
+        ),
+        poll_reply("running"),
+    ))
+    .await;
+
+    let core = CoreClient::new(&config(mock.base_url())).expect("client");
+    let mut items = Vec::new();
+    core.follow_study(STUDY, &fast_options(5_000), |item| items.push(item))
+        .await
+        .expect("follow");
+
+    let chunk = items
+        .iter()
+        .find_map(|item| match item {
+            FollowItem::Event(StudyEvent::StreamText {
+                stream_name,
+                step_index,
+                text,
+                ..
+            }) => Some((stream_name.clone(), *step_index, text.clone())),
+            _ => None,
+        })
+        .expect("the text chunk should have decoded");
+    assert_eq!(chunk.0, "dev-bench");
+    assert_eq!(chunk.1, 2);
+    // No trailing newline invented, nothing trimmed.
+    assert_eq!(chunk.2, "uart:~$ half a lin");
 }
 
 /// A study that never finishes must stop at the deadline and say so, rather

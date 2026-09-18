@@ -124,6 +124,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.declare_signal(&signal).await;
     let _ = client.remove_signal("outpost").await;
     let _ = client.set_dev_bench_link(Some("MOCK-BRIDGE-0001"), Some(2)).await;
+    let _ = client.list_studies().await;
     let _ = client.get_study_status("study-1").await;
     let _ = client.study_streams("study-1").await;
     let _ = client.study_steps("study-1").await;
@@ -196,6 +197,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
         ("GET", "/study/study-1"),
         ("GET", "/study/study-1/streams"),
         ("GET", "/study/study-1/steps"),
+        ("GET", "/studies"),
         ("GET", "/study/study-1/stream/ppg"),
         ("GET", "/study/study-1/stream/ppg/load"),
         ("POST", "/flash"),

@@ -392,11 +392,12 @@ pub struct StudyWatchParams {
     /// At most this many events in the returned array. Defaults to 100,
     /// capped at 1000. Anything past it is counted, not returned.
     pub max_events: Option<u32>,
-    /// Return every SampleBatch and GattTranscript event individually
-    /// instead of counting them. Defaults to false, and false is almost
-    /// always right: a study with a power tap emits sample batches
-    /// continuously, and a list of them is bulk data this tool is the wrong
-    /// way to fetch — study_stream_data is the right one.
+    /// Return every SampleBatch, GattTranscript and StreamText event
+    /// individually instead of counting them. Defaults to false, and false
+    /// is almost always right: a study with a power tap emits sample batches
+    /// continuously and every study carries a dev-bench console, and a list
+    /// of either is bulk data this tool is the wrong way to fetch —
+    /// study_stream_data is the right one.
     pub include_samples: Option<bool>,
 }
 
@@ -1275,6 +1276,7 @@ impl EmbarchApi {
         // answer bounded in a way a study with a power tap does not break.
         let mut sample_batches: BTreeMap<String, (u64, u64)> = BTreeMap::new();
         let mut gatt_entries: u64 = 0;
+        let mut text_chunks: BTreeMap<String, (u64, u64)> = BTreeMap::new();
         let mut saw_live = false;
         let mut saw_polling = false;
 
@@ -1298,6 +1300,18 @@ impl EmbarchApi {
                     }
                     FollowItem::Event(StudyEvent::GattTranscript { .. }) if !include_samples => {
                         gatt_entries += 1;
+                        return;
+                    }
+                    // Counted for the same reason, and for a sharper one:
+                    // every study has the reserved `dev-bench` log tap, so
+                    // a console's chunks would fill `max_events` and omit
+                    // the step completions this tool exists to report.
+                    FollowItem::Event(StudyEvent::StreamText {
+                        stream_name, text, ..
+                    }) if !include_samples => {
+                        let entry = text_chunks.entry(stream_name.clone()).or_insert((0, 0));
+                        entry.0 += 1;
+                        entry.1 += text.len() as u64;
                         return;
                     }
                     _ => {}
@@ -1360,6 +1374,18 @@ impl EmbarchApi {
                 )
             },
             "gatt_entries": if include_samples { serde_json::Value::Null } else { serde_json::json!(gatt_entries) },
+            "text_chunks": if include_samples {
+                serde_json::Value::Null
+            } else {
+                serde_json::Value::Object(
+                    text_chunks
+                        .into_iter()
+                        .map(|(name, (chunks, bytes))| {
+                            (name, serde_json::json!({ "chunks": chunks, "bytes": bytes }))
+                        })
+                        .collect(),
+                )
+            },
         }))
     }
 

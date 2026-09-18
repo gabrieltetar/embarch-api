@@ -1366,6 +1366,24 @@ fn render_follow_item(item: &FollowItem) -> String {
             entry.kind.as_str(),
             entry.payload.len()
         ),
+        FollowItem::Event(StudyEvent::StreamText {
+            stream_name,
+            step_index,
+            text,
+            ..
+        }) => {
+            // Rendered on one line with escapes visible, because the chunk
+            // is carried verbatim: it can end mid-line and mid-character,
+            // and a renderer that printed it raw would splice unrelated
+            // chunks into lines neither tap sent (`embarch-core` decision
+            // 70). Line assembly is a consumer's job and this feed is not
+            // the consumer that does it.
+            format!(
+                "[text step {step_index}] {stream_name}: {} byte(s) {:?}",
+                text.len(),
+                text
+            )
+        }
         FollowItem::Event(StudyEvent::StatusChanged { status, reason, .. }) => format!(
             "[status] {status}{}",
             reason.as_deref().map(|r| format!(" — {r}")).unwrap_or_default()
