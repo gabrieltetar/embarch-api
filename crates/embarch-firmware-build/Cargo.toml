@@ -1,0 +1,35 @@
+[package]
+name = "embarch-firmware-build"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# Extracted from embarch-api's own `config.rs`/`zephyr.rs`/`resolve.rs`/
+# `build.rs`/`json_out.rs` (2026-09-18): the one implementation of "turn a
+# selection into a Zephyr build and run it," shared by embarch-api and
+# embarch-ui rather than duplicated between them. Same move, same reasoning
+# and the same pair of crates as `embarch-core-client` — which its own
+# `reflash.rs` doc comment records — only this time the shared thing is the
+# build machinery instead of the Core client.
+#
+# It links no hardware: a build is `west` in a subprocess and files on disk.
+# Flashing stays behind `embarch-core-client`, over HTTP to Core, for both
+# callers.
+
+[dependencies]
+anyhow = "1.0.103"
+# For `config::CoreConfig`, which this crate re-exports rather than
+# redeclares: a `Config` file has a `[core]` table in it, and that table's
+# schema has lived in the shared Core client since 2026-08-24.
+embarch-core-client = { path = "../embarch-core-client" }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+# `zephyr.rs` reads west's own manifest and a board's `.yaml` files.
+serde_yaml = "0.9"
+# `build.rs` spawns the build command and drains both its pipes concurrently
+# under a timeout — `process` for the child, `io-util` for the two readers,
+# `sync` for the channel they publish on, `time` for the timeout, and `rt`
+# for the `tokio::spawn` that drives each drain.
+tokio = { version = "1.53.0", features = ["process", "io-util", "sync", "time", "rt"] }
+toml = "1.1"
+tracing = "0.1.44"

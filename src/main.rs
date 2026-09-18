@@ -1,13 +1,10 @@
 mod capacity;
 mod cli;
-mod config;
 mod dev_bench;
 mod logging;
 mod reflash;
-mod resolve;
 mod study;
 mod tools;
-mod zephyr;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -16,6 +13,15 @@ use clap::{Parser, Subcommand};
 // Re-imported at the crate root so the sibling modules' existing
 // `crate::build::…` paths keep resolving.
 pub(crate) use embarch_api::build;
+// `config`/`resolve`/`zephyr` moved out to `embarch-firmware-build`
+// (2026-09-18) for `embarch-ui`'s sake, and the first two are re-imported
+// here for the same reason `build` is above: every `crate::config::…` /
+// `crate::resolve::…` path in `cli.rs`, `tools.rs`, `reflash.rs` and
+// `dev_bench.rs` keeps resolving unchanged, so the move is provably a
+// move. `zephyr` is not re-imported because nothing outside `resolve`/
+// `config` ever named it — the scan is reached through the resolution that
+// consumes it, not directly.
+pub(crate) use embarch_firmware_build::{config, resolve};
 use embarch_core_client::CoreClient;
 use rmcp::ServiceExt;
 use std::path::{Path, PathBuf};

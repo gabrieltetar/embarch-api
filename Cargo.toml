@@ -10,8 +10,8 @@
 # is the point — the gate lives in `embarch-fleet/protocol.md` §10 and is
 # not this repo's to change.
 [workspace]
-members = ["crates/embarch-core-client"]
-default-members = [".", "crates/embarch-core-client"]
+members = ["crates/embarch-core-client", "crates/embarch-firmware-build"]
+default-members = [".", "crates/embarch-core-client", "crates/embarch-firmware-build"]
 
 [package]
 name = "embarch-api"
@@ -32,6 +32,14 @@ clap = { version = "4.6.2", features = ["derive"] }
 # also dropped as a direct dependency: its only use here was
 # `CoreConfig`'s default port constant, which moved with `CoreConfig`.
 embarch-core-client = { path = "crates/embarch-core-client" }
+# 2026-09-18: `config.rs`/`zephyr.rs`/`resolve.rs`/`build.rs`/`json_out.rs`
+# extracted into this shared crate (`embarch-ui` decision 11, reversed) so
+# `embarch-ui` can build a study's firmware through the same implementation
+# instead of a second copy of it. `serde_yaml` moved with it — this crate no
+# longer touches it directly. Every `crate::config::…`/`crate::resolve::…`
+# path in this crate still resolves: `main.rs` re-imports the modules at the
+# crate root, the same way it already did for `build`.
+embarch-firmware-build = { path = "crates/embarch-firmware-build" }
 # `alloc` (`embarch-study-designer` decision 46) backs `Study.steps`
 # with a heap `Vec` instead of a 64-slot inline array of ~600-byte `Step`s.
 # This crate is the one that actually crashed on the old shape — a debug build
@@ -44,7 +52,6 @@ rmcp = { version = "2.2.0", features = ["server", "transport-io"] }
 schemars = "1.2.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
-serde_yaml = "0.9"
 tokio = { version = "1.53.0", features = ["full"] }
 toml = "1.1"
 tracing = "0.1.44"

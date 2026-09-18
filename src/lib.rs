@@ -18,12 +18,20 @@
 //! `main.rs` imports [`build`] from here rather than declaring it a second
 //! time, so there is exactly one compiled copy and the bin and the tests
 //! exercise the same code.
+//!
+//! **Both modules now live in `embarch-firmware-build`** (2026-09-18) and
+//! are re-exported here. Nothing above changes: a file under `tests/` still
+//! reaches them as `embarch_api::build` / `embarch_api::json_out`, and the
+//! acceptance criteria named below are still pinned from there. What the
+//! move buys is `embarch-ui` reaching the same implementation, which it
+//! could never do through this crate's `lib` face — it cannot depend on
+//! this package at all.
 
-pub mod build;
+pub use embarch_firmware_build::build;
 
 /// The `--json` surface's single serializer, lifted here for the same
 /// reason [`build`] was: `tests/` cannot reach a binary crate's modules, and
 /// `tests/json_surface.rs` has to compare what the binary printed against
 /// [`json_out::SCHEMA_VERSION`] rather than against a second copy of the
 /// number. See `embarch-doc/embarch-api/decisions.md` decision 50.
-pub mod json_out;
+pub use embarch_firmware_build::json_out;

@@ -389,13 +389,13 @@ dependencies = [
  "anyhow",
  "clap",
  "embarch-core-client",
+ "embarch-firmware-build",
  "embarch-study-designer",
  "heapless",
  "rmcp",
  "schemars",
  "serde",
  "serde_json",
- "serde_yaml",
  "tokio",
  "toml",
  "tracing",
@@ -416,6 +416,20 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "embarch-firmware-build"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "embarch-core-client",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tokio",
+ "toml",
  "tracing",
 ]
 

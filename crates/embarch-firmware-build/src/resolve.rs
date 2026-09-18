@@ -579,9 +579,11 @@ pub fn list_targets(project: &ProjectConfig) -> Result<serde_json::Value> {
 /// value written `0x2000` reads as one. `{:#x}` is the round trip: it is the
 /// form Core's own error message names, and the form a `bin` bench's
 /// `[dev_bench] base_address` is written in too — which is why this is
-/// `pub(crate)` rather than private: `dev_bench.rs` needs the identical
-/// round trip now that its offset is config rather than a constant string.
-pub(crate) fn format_base_address(configured: Option<u64>) -> Option<String> {
+/// `pub` rather than private: `embarch-api`'s `dev_bench.rs` needs the
+/// identical round trip now that its offset is config rather than a
+/// constant string, and since this module moved out of that crate
+/// (2026-09-18) `pub(crate)` no longer reaches it.
+pub fn format_base_address(configured: Option<u64>) -> Option<String> {
     configured.map(|address| format!("{address:#x}"))
 }
 

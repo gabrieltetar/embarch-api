@@ -1432,13 +1432,21 @@ flash_format = "hex"
     /// exist on nobody's machine — `validate()` requires each to exist, so
     /// point every one of them at the same real tempdir instead of editing
     /// the example to be less legible as an example.
+    ///
+    /// **The path reaches up out of this crate, and that is deliberate.**
+    /// The schema moved here on 2026-09-18; the example file did not,
+    /// because it is the file an `embarch-api` operator copies and
+    /// `embarch-api/README.md` names it by that path. Validating the
+    /// parent package's example against the schema crate is the honest
+    /// arrangement — the alternative is a second example that can drift
+    /// from the one anybody actually reads.
     #[test]
     fn config_example_toml_loads_through_the_real_loader() {
         let raw = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/config.example.toml"
+            "/../../config.example.toml"
         ))
-        .expect("config.example.toml should be readable");
+        .expect("embarch-api/config.example.toml should be readable");
 
         let dir = tempdir();
         let patched = raw
