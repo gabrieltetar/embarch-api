@@ -155,16 +155,20 @@ impl Target {
     /// `embarch-umbrella` decision 10's no-shared-build-dir
     /// rule without a human naming each one:
     /// `<board>-<variant-or-'default'>-<revision-or-'none'>-<app>[-<snippets>][-args<hash>]`.
-    /// `snippets` (already sorted+deduped by the caller — `resolve.rs`) is
-    /// folded in here too: two builds of the same (board, variant, revision,
-    /// app) with a different `-S` selection are different CMake
-    /// configurations and must not share a build directory, same reasoning
-    /// as every other axis in this name. `extra_args` (arbitrary passthrough
-    /// `west build` flags — see `build_command`) is folded in via a hash
-    /// rather than joined verbatim: unlike snippet names, an arbitrary flag
-    /// can contain characters unsafe in a directory name (`=`, `/`, quotes),
-    /// and preserves caller-given order (flag order can be meaningful,
-    /// unlike snippets, so it isn't sorted first). The hash is
+    /// `snippets` (deduped by the caller — `resolve.rs` — but **in the
+    /// caller's order**, which is load-bearing) is folded in here too: two
+    /// builds of the same (board, variant, revision, app) with a different
+    /// `-S` selection are different CMake configurations and must not share
+    /// a build directory, same reasoning as every other axis in this name.
+    /// **Two orderings of the same snippets are two such selections**,
+    /// since west applies `-S` in order and reversals row 109 is a case
+    /// where that order decides whether the image works at all; joining in
+    /// order is what keeps them in separate directories. `extra_args`
+    /// (arbitrary passthrough `west build` flags — see `build_command`) is
+    /// folded in via a hash rather than joined verbatim: unlike snippet
+    /// names, an arbitrary flag can contain characters unsafe in a
+    /// directory name (`=`, `/`, quotes). Both lists preserve caller-given
+    /// order; neither is sorted first. The hash is
     /// `extra_args_hash` — FNV-1a, spelled out in this crate — *not*
     /// `DefaultHasher`, whose output the standard library does not promise
     /// to keep stable across Rust releases (decision 19).
@@ -1215,6 +1219,15 @@ board:
             "ref_board-os_5led-evt1-widget-ble-shell_wdt31"
         );
         assert_ne!(a.build_dir_name(&snippets, &[]), a.build_dir_name(&[], &[]));
+        // And the *order* is part of the name, because it is part of the
+        // image: `-S ble-shell -S wdt31` and `-S wdt31 -S ble-shell` are two
+        // builds (reversals row 109), so they get two directories.
+        let reversed = vec!["wdt31".to_string(), "ble-shell".to_string()];
+        assert_ne!(
+            a.build_dir_name(&snippets, &[]),
+            a.build_dir_name(&reversed, &[]),
+            "two snippet orderings share a build directory and would overwrite each other"
+        );
     }
 
     #[test]

@@ -338,10 +338,21 @@ fn resolve_snippets(
     } else {
         call.to_vec()
     };
-    // Sorted + deduped so the build dir name and assembled `-S` order are
-    // stable regardless of caller-supplied order.
-    snippets.sort();
-    snippets.dedup();
+    // **Deduped in place, never sorted.** A snippet list is an *ordered
+    // composition*: west applies `-S` in the order given, and the suite has
+    // one documented case where the order is the whole difference —
+    // `embarch-decision-reversals.md` row 109, where the BLE-shell snippet
+    // re-points the shell backend and switches the traced UART off, so the
+    // outpost overlay has to be applied *second* or the tracer's own UART
+    // goes with it. Sorting was silently authoritative over that: it made
+    // two genuinely different images indistinguishable to this function and
+    // gave them the same build directory.
+    //
+    // Order-preserving dedup keeps the property the sort was actually for —
+    // one name appearing twice must not produce two `-S` flags or a doubled
+    // directory-name segment — without claiming the list is a set.
+    let mut seen = std::collections::HashSet::new();
+    snippets.retain(|s| seen.insert(s.clone()));
 
     let unknown: Vec<&String> = snippets.iter().filter(|s| !available.contains(s)).collect();
     if !unknown.is_empty() {
@@ -1048,7 +1059,7 @@ flash_format = "hex"
     }
 
     #[test]
-    fn an_explicit_list_still_replaces_the_default_and_is_sorted_and_deduped() {
+    fn an_explicit_list_still_replaces_the_default_and_is_deduped_in_place() {
         let configured = vec!["ble-shell".to_string()];
         let call = vec![
             "wdt31".to_string(),
@@ -1056,7 +1067,25 @@ flash_format = "hex"
             "wdt31".to_string(),
         ];
         let resolved = resolve_snippets("p", "widget", &call, &configured, &available()).unwrap();
-        assert_eq!(resolved, vec!["ble-shell".to_string(), "wdt31".to_string()]);
+        // The caller's order, with the repeat dropped at its *second*
+        // occurrence — not sorted.
+        assert_eq!(resolved, vec!["wdt31".to_string(), "ble-shell".to_string()]);
+    }
+
+    /// Reversals row 109: `-S a -S b` and `-S b -S a` are different images
+    /// whenever one snippet disables what the other needs, which is exactly
+    /// the outpost-over-BLE-shell case. This function used to sort, making
+    /// the two indistinguishable — and, through `build_dir_name`, giving
+    /// them the same build directory to overwrite each other in.
+    #[test]
+    fn two_orderings_of_the_same_snippets_stay_two_different_selections() {
+        let forwards = vec!["ble-shell".to_string(), "wdt31".to_string()];
+        let backwards = vec!["wdt31".to_string(), "ble-shell".to_string()];
+        let a = resolve_snippets("p", "widget", &forwards, &[], &available()).unwrap();
+        let b = resolve_snippets("p", "widget", &backwards, &[], &available()).unwrap();
+        assert_eq!(a, forwards);
+        assert_eq!(b, backwards);
+        assert_ne!(a, b, "order was flattened away");
     }
 
     #[test]
