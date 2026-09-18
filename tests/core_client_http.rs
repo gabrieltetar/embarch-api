@@ -129,6 +129,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.study_streams("study-1").await;
     let _ = client.study_steps("study-1").await;
     let _ = client.get_study_stream("study-1", "ppg", true).await;
+    let _ = client.get_study_stream_arrivals("study-1", "ppg").await;
     let _ = client.get_study_load("study-1", "ppg").await;
     // A declared `base_url` resolves as `TopologyClass::Local`, so `flash`
     // takes its send-a-path branch and needs no artifact on disk.
@@ -199,6 +200,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
         ("GET", "/study/study-1/steps"),
         ("GET", "/studies"),
         ("GET", "/study/study-1/stream/ppg"),
+        ("GET", "/study/study-1/stream/ppg/arrivals"),
         ("GET", "/study/study-1/stream/ppg/load"),
         ("POST", "/flash"),
         ("POST", "/study"),
