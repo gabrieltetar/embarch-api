@@ -1366,6 +1366,20 @@ fn render_follow_item(item: &FollowItem) -> String {
             entry.kind.as_str(),
             entry.payload.len()
         ),
+        FollowItem::Event(StudyEvent::OutpostRows {
+            stream_name,
+            frame_index,
+            rows,
+            header_seen,
+            ..
+        }) => format!(
+            "[trace {stream_name}] frame {frame_index}: {} record(s){}",
+            rows.len(),
+            // A frame decoded before the capture's header arrived carries no
+            // `us` and no names — said, rather than left for a reader to
+            // notice two empty columns.
+            if *header_seen { "" } else { " (no header yet: undated, unnamed)" }
+        ),
         FollowItem::Event(StudyEvent::StreamText {
             stream_name,
             step_index,

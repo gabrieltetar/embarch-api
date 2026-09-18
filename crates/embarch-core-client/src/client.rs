@@ -1806,6 +1806,31 @@ impl CoreClient {
         .await
     }
 
+    /// `GET /study/{study_id}/stream/{name}/arrivals` — one tap's **arrival
+    /// sidecar**: embarch-core's own receipt times for the bytes of a capture
+    /// that carries none of its own.
+    ///
+    /// Two encodings have one, each keyed by the only coordinate its bytes
+    /// have: an `OutpostTrace` tap by **frame index**
+    /// (`frame_index,rx_utc_ms,frame_bytes`), which Core already joins into
+    /// the rendered CSV itself; and a `Text` tap by **byte offset**
+    /// (`byte_offset,core_rx_utc_ms,bytes`), which has no rendered CSV to join
+    /// it into — a console's raw file *is* its rendering. The second is what
+    /// makes a console placeable on a shared axis after the run, instead of
+    /// bytes with no times at all.
+    ///
+    /// A `404` covers three expected outcomes and Core's body says which: no
+    /// such tap, a tap whose encoding keeps no sidecar, or a tap that captured
+    /// nothing.
+    pub async fn get_study_stream_arrivals(&self, study_id: &str, name: &str) -> Result<Bytes> {
+        self.get_study_csv(
+            &format!("stream/{}/arrivals", urlencode(name)),
+            study_id,
+            &format!("no arrival stamps served for stream tap '{name}'"),
+        )
+        .await
+    }
+
     /// `GET /study/{study_id}/stream/{name}/load` (`embarch-core` decision
     /// 62) — an `OutpostTrace` tap's load
     /// repartition: per-subject load shares and the coverage line, computed

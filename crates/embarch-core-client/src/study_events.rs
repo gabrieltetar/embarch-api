@@ -65,10 +65,21 @@ use crate::sse::{SseDecoder, SseFrame};
 pub enum StudyEvent {
     /// A step finished. Carries the same `StepResult` Core just appended to
     /// `events.json`.
+    /// The three stamps are `#[serde(default)]` `Option`s so an older Core —
+    /// one that pushed the `StepResult` and nothing about *when* — still
+    /// decodes into this newer client. `None` means the Core on the other end
+    /// predates them, which is a different fact from a step with no stamps and
+    /// is rendered as such.
     StepCompleted {
         study_id: String,
         step_index: u32,
         result: Box<StepResult>,
+        #[serde(default)]
+        started_utc_ms: Option<u64>,
+        #[serde(default)]
+        ended_utc_ms: Option<u64>,
+        #[serde(default)]
+        delay_before_ms: Option<u32>,
     },
     /// One batch of samples off a declared tap, keyed by the tap's index and
     /// name in `Study.streams`.
@@ -77,6 +88,12 @@ pub enum StudyEvent {
         stream_id: u8,
         stream_name: String,
         samples: Vec<Sample>,
+        /// Core's own receipt time for the record these samples came out of.
+        /// A `Sample`'s own `rx_utc_ms` is dev-bench uptime on a
+        /// bench-mediated tap (suite decision 3), so it is not a clock a
+        /// caller can lay this batch against anything else on; this one is.
+        #[serde(default)]
+        core_rx_utc_ms: Option<u64>,
     },
     /// One GATT transcript entry.
     ///
@@ -87,6 +104,12 @@ pub enum StudyEvent {
         study_id: String,
         step_index: u32,
         entry: Box<GattTranscriptEntry>,
+        /// The same value Core appends to `gatt.csv`'s last column — its own
+        /// receipt clock, real UTC. `entry.rx_utc_ms` keeps its name and its
+        /// meaning, which is dev-bench uptime: one word, two clocks, both
+        /// carried (suite decision 3).
+        #[serde(default)]
+        core_rx_utc_ms: Option<u64>,
     },
     /// One chunk off a `Text`-encoded tap, pushed the instant Core read it
     /// off the wire (`embarch-core` decision 70).
@@ -102,7 +125,38 @@ pub enum StudyEvent {
         stream_name: String,
         step_index: u32,
         rx_utc_ms: u64,
+        /// Core's own receipt time for this chunk, beside the record's own
+        /// `rx_utc_ms` — which on a bench-mediated tap is that board's uptime
+        /// and on the reserved `dev-bench` log tap is already Core's. Two
+        /// fields because a caller cannot tell which tap it is looking at from
+        /// the event, and guessing is the confusion suite decision 3 named.
+        #[serde(default)]
+        core_rx_utc_ms: Option<u64>,
         text: String,
+    },
+    /// One frame of an `OutpostTrace` tap, decoded and pushed as it arrives —
+    /// `embarch-outpost` decision 10 reversed on Core's side.
+    ///
+    /// **`rows` are CSV lines in `embarch_study_designer::outpost::csv_header`'s
+    /// own shape.** A consumer already parses those nine positional fields to
+    /// read a rendered capture, so live and post-hoc decode through the same
+    /// function rather than through two copies of a column order that belongs
+    /// to `embarch-study-designer`.
+    ///
+    /// **Core's post-hoc render stays authoritative**: it has a whole-capture
+    /// header pre-pass, a stale-prefix drop over everything and a verified
+    /// arrival join, none of which a live path can have. `header_seen: false`
+    /// means this frame decoded before any header arrived, so its rows carry an
+    /// empty `us` and an empty `name` — the render fills both in.
+    OutpostRows {
+        study_id: String,
+        stream_id: u8,
+        stream_name: String,
+        frame_index: u64,
+        frame_seq: u32,
+        rx_utc_ms: u64,
+        header_seen: bool,
+        rows: Vec<String>,
     },
     /// The job's own status changed — `"completed"` or `"failed"`.
     StatusChanged {
@@ -119,6 +173,7 @@ impl StudyEvent {
             | StudyEvent::SampleBatch { study_id, .. }
             | StudyEvent::GattTranscript { study_id, .. }
             | StudyEvent::StreamText { study_id, .. }
+            | StudyEvent::OutpostRows { study_id, .. }
             | StudyEvent::StatusChanged { study_id, .. } => study_id,
         }
     }
@@ -131,6 +186,7 @@ impl StudyEvent {
             StudyEvent::SampleBatch { .. } => "SampleBatch",
             StudyEvent::GattTranscript { .. } => "GattTranscript",
             StudyEvent::StreamText { .. } => "StreamText",
+            StudyEvent::OutpostRows { .. } => "OutpostRows",
             StudyEvent::StatusChanged { .. } => "StatusChanged",
         }
     }
