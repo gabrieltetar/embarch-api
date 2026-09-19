@@ -219,8 +219,8 @@ pub async fn run_study(
         let built = build_locks.run_build(&resolved.plan).await.context("dev-bench build failed")?;
         if !built.ready_to_flash() {
             anyhow::bail!(
-                "dev-bench build did not produce a fresh artifact, so nothing was flashed: {}",
-                build_failure_reason(&built)
+                "the dev-bench build failed, so nothing was flashed: {}",
+                built.failure_reason()
             );
         }
         let path = built.artifact_path.display().to_string();
@@ -294,9 +294,9 @@ pub async fn run_study(
             .with_context(|| format!("build failed for '{}'", project.name))?;
         if !built.ready_to_flash() {
             anyhow::bail!(
-                "build for '{}' did not produce a fresh artifact, so nothing was flashed: {}",
+                "the build for '{}' failed, so nothing was flashed: {}",
                 project.name,
-                build_failure_reason(&built)
+                built.failure_reason()
             );
         }
         let path = built.artifact_path.display().to_string();
@@ -345,15 +345,12 @@ pub async fn run_study(
     Ok(outcome)
 }
 
-fn build_failure_reason(outcome: &crate::build::BuildOutcome) -> &'static str {
-    if outcome.timed_out {
-        "build timed out"
-    } else if outcome.exit_code != Some(0) {
-        "build failed"
-    } else {
-        "build succeeded but no fresh artifact was found"
-    }
-}
+// `build_failure_reason` was here and is retired (2026-09-19) in favour of
+// `BuildOutcome::failure_reason`, which says the same three things **and
+// quotes the compiler's first error**. This one returned a `&'static str`,
+// so it structurally could not — and a caller holding the whole build log
+// while reporting "build failed" is the defect that motivated the
+// replacement; see that method's doc comment.
 
 #[cfg(test)]
 mod tests {

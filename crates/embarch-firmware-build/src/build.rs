@@ -101,6 +101,65 @@ impl BuildOutcome {
     pub fn ready_to_flash(&self) -> bool {
         self.build_succeeded() && self.artifact_fresh
     }
+
+    /// Why this build cannot be flashed, **in the words a person reads
+    /// first** — including the compiler's own first error where there is
+    /// one.
+    ///
+    /// Added 2026-09-19 after watching a real failure: the message that
+    /// reached `embarch-ui`'s build card was *"did not produce a fresh
+    /// artifact, so nothing was flashed. west exited Some(1)."* Two things
+    /// wrong with it, and the second is the one that matters.
+    ///
+    /// **`Some(1)` is a Rust `Option`'s debug formatting in front of an
+    /// engineer.** An exit code has two honest readings — a status, or "no
+    /// status, because the process was killed" — and `{:?}` renders the
+    /// distinction as syntax nobody outside this codebase can parse.
+    ///
+    /// **It never said what broke.** The compiler's error was on screen, 35
+    /// lines up a 104-line console, while the banner — the thing read first
+    /// and the thing quoted into a bug report — described only the shape of
+    /// the failure. So this scans the captured output for the first
+    /// `error:` line and puts it in the sentence. The whole log is still
+    /// there; this is about which line arrives without scrolling.
+    ///
+    /// A cascade is not summarised: only the *first* error is quoted,
+    /// because in a C build every one after it is usually a consequence of
+    /// it, and the first is the one to go fix.
+    pub fn failure_reason(&self) -> String {
+        let what = if self.timed_out {
+            "it timed out".to_string()
+        } else if self.exit_code != Some(0) {
+            match self.exit_code {
+                Some(code) => format!("the build command exited {code}"),
+                // No code at all: killed by a signal, or never reported one.
+                None => "the build command was terminated without an exit code".to_string(),
+            }
+        } else {
+            "the build reported success but left no fresh artifact".to_string()
+        };
+
+        match self.first_error_line() {
+            Some(line) => format!("{what} — {line}"),
+            None => what,
+        }
+    }
+
+    /// The first line of captured output that looks like a compiler
+    /// diagnostic. `stderr` first, since that is where a toolchain puts
+    /// them, falling back to `stdout` because ninja interleaves.
+    ///
+    /// Matched on `"error:"` rather than on a parsed format: this reads
+    /// gcc, clang, `cmake`, Kconfig and `west` itself, none of which share
+    /// a grammar, and a wrong guess here costs a worse message rather than
+    /// a wrong build.
+    fn first_error_line(&self) -> Option<String> {
+        [self.stderr.as_str(), self.stdout.as_str()]
+            .into_iter()
+            .flat_map(|text| text.lines())
+            .find(|line| line.contains("error:"))
+            .map(|line| line.trim().to_string())
+    }
 }
 
 /// Per-project build locks, so two overlapping build/build_and_flash calls
@@ -465,4 +524,79 @@ fn kill_process_tree(child: &mut tokio::process::Child) {
     // tier of this crate runs on Windows to verify a real tree-kill
     // against).
     let _ = child.start_kill();
+}
+
+#[cfg(test)]
+mod failure_reason_tests {
+    use super::*;
+
+    fn outcome(exit: Option<i32>, timed_out: bool, stdout: &str, stderr: &str) -> BuildOutcome {
+        BuildOutcome {
+            timed_out,
+            exit_code: exit,
+            stdout: stdout.to_string(),
+            stderr: stderr.to_string(),
+            artifact_path: PathBuf::from("/nonexistent"),
+            artifact_fresh: false,
+        }
+    }
+
+    /// The defect this replaced, pinned so it cannot come back: an `Option`'s
+    /// debug formatting reached an engineer's screen as `west exited Some(1)`.
+    #[test]
+    fn an_exit_code_never_renders_as_a_rust_option() {
+        let r = outcome(Some(1), false, "", "").failure_reason();
+        assert!(!r.contains("Some("), "{r}");
+        assert!(r.contains("exited 1"), "{r}");
+    }
+
+    /// No code is a different fact from code zero, and it has a name.
+    #[test]
+    fn no_exit_code_at_all_says_so_rather_than_guessing_one() {
+        let r = outcome(None, false, "", "").failure_reason();
+        assert!(r.contains("without an exit code"), "{r}");
+        assert!(!r.contains("None"), "{r}");
+    }
+
+    #[test]
+    fn a_timeout_reads_as_a_timeout_not_as_an_exit() {
+        let r = outcome(None, true, "", "").failure_reason();
+        assert!(r.contains("timed out"), "{r}");
+    }
+
+    /// The half that actually helps: the banner names what broke, not only
+    /// that something did.
+    #[test]
+    fn the_compilers_first_error_is_quoted_into_the_sentence() {
+        let log = "[1/9] Building foo.c.obj\n                   src/main.c:31:46: error: expected ';' before 'static'\n                   src/main.c:44:1: error: a cascade nobody should chase\n";
+        let r = outcome(Some(1), false, log, "").failure_reason();
+        assert!(r.contains("expected ';' before 'static'"), "{r}");
+        // Only the first: every later one is usually a consequence of it.
+        assert!(!r.contains("cascade"), "{r}");
+    }
+
+    #[test]
+    fn stderr_is_preferred_over_stdout_because_that_is_where_diagnostics_go() {
+        let r = outcome(Some(1), false, "out: error: from stdout\n", "err: error: from stderr\n")
+            .failure_reason();
+        assert!(r.contains("from stderr"), "{r}");
+        assert!(!r.contains("from stdout"), "{r}");
+    }
+
+    /// A build can fail with nothing that looks like a diagnostic — a linker
+    /// script, a killed process. The sentence still has to stand alone.
+    #[test]
+    fn a_failure_with_no_diagnostic_still_reads_as_a_sentence() {
+        let r = outcome(Some(2), false, "ninja: build stopped.\n", "").failure_reason();
+        assert_eq!(r, "the build command exited 2");
+    }
+
+    /// Exit zero with no fresh artifact is the third state, and it is the one
+    /// that most needs saying out loud: the build "worked" and there is
+    /// nothing to flash.
+    #[test]
+    fn success_with_no_fresh_artifact_is_its_own_reason() {
+        let r = outcome(Some(0), false, "", "").failure_reason();
+        assert!(r.contains("left no fresh artifact"), "{r}");
+    }
 }
