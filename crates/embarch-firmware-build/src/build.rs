@@ -128,9 +128,48 @@ impl BuildLocks {
     pub async fn run_build(&self, plan: &BuildPlan) -> Result<BuildOutcome> {
         let lock = self.lock_for(&plan.lock_key);
         let _guard = lock.lock().await;
-        run_build_locked(plan).await
+        run_build_locked(plan, None).await
+    }
+
+    /// The same build, with each line of output handed to `sink` as it
+    /// arrives as well as accumulated into the returned [`BuildOutcome`].
+    ///
+    /// **Added for a reader who is waiting**, not for a caller who wants
+    /// the text: `embarch-ui` shows a build as a phase of a run in
+    /// progress, and a Zephyr build is tens of seconds of silence otherwise.
+    /// `run_build` above is unchanged and is still the right call for
+    /// `embarch-api`'s MCP tools, where nothing is watching and the whole
+    /// log is one response field.
+    ///
+    /// The sink sees **every** line, including ones the returned text drops
+    /// to [`OUTPUT_CAP_BYTES`]: truncation exists to bound a tool response,
+    /// and a live reader is not a tool response. It is called from the
+    /// drain task, so it must not block.
+    pub async fn run_build_streaming(
+        &self,
+        plan: &BuildPlan,
+        sink: LineSink,
+    ) -> Result<BuildOutcome> {
+        let lock = self.lock_for(&plan.lock_key);
+        let _guard = lock.lock().await;
+        run_build_locked(plan, Some(sink)).await
     }
 }
+
+/// Which of the child's two pipes a line came out of. Kept distinct all the
+/// way to the sink because a Zephyr build puts its warnings and its errors
+/// on stderr and its progress on stdout, and a reader wants them apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildStream {
+    Stdout,
+    Stderr,
+}
+
+/// Where a streaming build's lines go. `Arc<dyn Fn>` rather than a generic:
+/// both drain tasks share one sink and each is a `tokio::spawn`, so it has
+/// to be cloneable, `Send + Sync` and `'static` — which a closure captured
+/// by value would not be.
+pub type LineSink = Arc<dyn Fn(BuildStream, &str) + Send + Sync>;
 
 /// Keeps the first [`OUTPUT_HEAD_BYTES`] and the last
 /// `OUTPUT_CAP_BYTES - OUTPUT_HEAD_BYTES` of a captured stream, dropping the
@@ -207,7 +246,10 @@ fn ceil_char_boundary(s: &str, i: usize) -> usize {
 /// "arithmetic that adds back up" style [`truncate_log`]'s marker uses, so a
 /// caller relying on the returned text ever being silently wrong sees that
 /// it happened instead of an output that merely looks complete.
-async fn drain_stream<R: tokio::io::AsyncRead + Unpin>(reader: R) -> String {
+async fn drain_stream<R: tokio::io::AsyncRead + Unpin>(
+    reader: R,
+    sink: Option<(LineSink, BuildStream)>,
+) -> String {
     let mut reader = BufReader::new(reader);
     let mut out = String::new();
     let mut raw = Vec::new();
@@ -229,13 +271,17 @@ async fn drain_stream<R: tokio::io::AsyncRead + Unpin>(reader: R) -> String {
                         raw.pop();
                     }
                 }
-                match String::from_utf8(std::mem::take(&mut raw)) {
-                    Ok(line) => out.push_str(&line),
+                let line = match String::from_utf8(std::mem::take(&mut raw)) {
+                    Ok(line) => line,
                     Err(err) => {
                         bad_lines.push(line_no);
-                        out.push_str(&String::from_utf8_lossy(err.as_bytes()));
+                        String::from_utf8_lossy(err.as_bytes()).into_owned()
                     }
+                };
+                if let Some((sink, stream)) = &sink {
+                    sink(*stream, &line);
                 }
+                out.push_str(&line);
                 out.push('\n');
             }
             Err(_) => break,
@@ -256,7 +302,7 @@ async fn drain_stream<R: tokio::io::AsyncRead + Unpin>(reader: R) -> String {
     out
 }
 
-async fn run_build_locked(plan: &BuildPlan) -> Result<BuildOutcome> {
+async fn run_build_locked(plan: &BuildPlan, sink: Option<LineSink>) -> Result<BuildOutcome> {
     if !plan.cwd.exists() {
         anyhow::bail!("build working directory {} does not exist", plan.cwd.display());
     }
@@ -293,8 +339,11 @@ async fn run_build_locked(plan: &BuildPlan) -> Result<BuildOutcome> {
 
     let stdout = child.stdout.take().expect("stdout was piped");
     let stderr = child.stderr.take().expect("stderr was piped");
-    let stdout_task = tokio::spawn(drain_stream(stdout));
-    let stderr_task = tokio::spawn(drain_stream(stderr));
+    let stdout_task = tokio::spawn(drain_stream(
+        stdout,
+        sink.clone().map(|s| (s, BuildStream::Stdout)),
+    ));
+    let stderr_task = tokio::spawn(drain_stream(stderr, sink.map(|s| (s, BuildStream::Stderr))));
 
     let timeout = Duration::from_secs(plan.timeout_secs);
     let wait_result = tokio::time::timeout(timeout, child.wait()).await;
