@@ -495,6 +495,19 @@ pub struct RemoveSignalParams {
     pub name: String,
 }
 
+/// `embarch-core`'s `PUT /probes/enrolled/{role}/board` — which board type
+/// is in a role (`embarch-ui` decision 45).
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetRoleBoardParams {
+    /// "dut" or "dev-bench".
+    pub role: String,
+    /// The board type — the shape a firmware repo builds for, e.g.
+    /// "nrf54l15dk". Not a piece of hardware and not a serial number.
+    pub board: String,
+    /// The probe-rs target that board type attaches as, e.g. "nRF54L15".
+    pub chip: String,
+}
+
 /// `embarch-core`'s `DELETE /probes/enrolled/{role}` — the retraction
 /// enrolling went without until `embarch-ui` decision 44.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1141,6 +1154,22 @@ impl EmbarchApi {
         match self.core.remove_signal(&name).await {
             Ok(removed) => Self::ok_json(serde_json::json!({ "removed": removed, "name": name })),
             Err(e) => Self::err_text(format!("remove_signal failed: {e:#}")),
+        }
+    }
+
+    #[tool(description = "Declare which board TYPE is in a role via embarch-core's PUT /probes/enrolled/{role}/board. A board type is the shape a firmware repo builds for (e.g. 'nrf54l15dk'), not a piece of hardware and not a probe: which probe serves a role is a separate binding, written by enroll_probe. This call opens no probe and reads no identity, so it works with nothing plugged in — which is the point, since a bench is usually described before it is wired. It deliberately leaves any recorded hardware ID in place, so that validate reports a board type that no longer matches the silicon on that probe rather than quietly forgetting it.")]
+    async fn set_role_board(
+        &self,
+        Parameters(SetRoleBoardParams { role, board, chip }): Parameters<SetRoleBoardParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match self.core.set_role_board(&role, &board, &chip).await {
+            Ok(row) => Self::ok_json(serde_json::json!({
+                "role": row.role,
+                "board": row.name,
+                "chip": row.chip,
+                "probe_serial": row.probe_serial,
+            })),
+            Err(e) => Self::err_text(format!("set_role_board failed: {e:#}")),
         }
     }
 

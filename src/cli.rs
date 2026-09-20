@@ -88,6 +88,9 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         Commands::EnrollProbe { role, chip, probe_serial, name } => {
             enroll_probe(&core, &role, &chip, probe_serial.as_deref(), name.as_deref(), json).await
         }
+        Commands::SetRoleBoard { role, board, chip } => {
+            set_role_board(&core, &role, &board, &chip, json).await
+        }
         Commands::UnenrollProbe { role } => unenroll_probe(&core, &role, json).await,
         Commands::Validate { role } => validate(&core, &role, json).await,
         Commands::Alerts { limit } => alerts(&core, limit, json).await,
@@ -789,6 +792,42 @@ async fn enroll_probe(
             ),
         ),
         Err(e) => error_result(json, format!("enroll-probe failed: {e:#}")),
+    }
+}
+
+/// `PUT /probes/enrolled/{role}/board` — the half of a role that names a
+/// board type rather than binding a probe. Prints the probe half too, so a
+/// role that still needs one says so rather than looking finished.
+async fn set_role_board(
+    core: &CoreClient,
+    role: &str,
+    board: &str,
+    chip: &str,
+    json: bool,
+) -> i32 {
+    match core.set_role_board(role, board, chip).await {
+        Ok(row) => {
+            let probe = row.probe_serial.clone();
+            finish(
+                json,
+                true,
+                serde_json::json!({
+                    "success": true,
+                    "role": row.role,
+                    "board": row.name,
+                    "chip": row.chip,
+                    "probe_serial": row.probe_serial,
+                }),
+                format!(
+                    "role '{}' holds board type '{}' (chip {}), probe {}",
+                    row.role,
+                    row.name,
+                    row.chip,
+                    probe.as_deref().unwrap_or("(none yet — drop one to verify identity)")
+                ),
+            )
+        }
+        Err(e) => error_result(json, format!("set-role-board failed: {e:#}")),
     }
 }
 
@@ -1718,7 +1757,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 28,
+            arms, 29,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."
