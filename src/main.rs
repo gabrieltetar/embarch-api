@@ -342,8 +342,10 @@ pub enum Commands {
     /// (`embarch-topology` decision 14), recording which board its serial number is
     /// wired to. Requires exactly one debug probe currently attached.
     EnrollProbe {
-        /// A human-chosen label for this board (e.g.
-        /// "reference-dut-fw" or "dev-bench").
+        /// Which slot on the bench this board fills: `dut` or `dev-bench`,
+        /// and nothing else — Core answers 400 to anything outside that
+        /// pair (`embarch-ui` decision 44). What the board is *called* goes
+        /// in `--name`.
         #[arg(long)]
         role: String,
         /// The probe-rs chip target this probe should attach as (e.g.
@@ -355,6 +357,23 @@ pub enum Commands {
         /// Omitted, falls back to "exactly one attached" — unchanged.
         #[arg(long)]
         probe_serial: Option<String>,
+        /// What this physical board is called (e.g. "client-nucleo").
+        /// Free text, recorded verbatim beside the role; the surfaces that
+        /// render it resolve it against a firmware repo's
+        /// `embarch/boards.toml`. Omitted, the board enrols unnamed.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Retract whatever board holds a role, leaving that role empty. Opens
+    /// no probe, so an unplugged board retracts exactly like an attached
+    /// one, and nothing enrolled under the role is reported as
+    /// `removed: false` rather than as a failure. Also the way to clear a
+    /// board enrolled under an invented role from before the vocabulary
+    /// closed to dut/dev-bench.
+    UnenrollProbe {
+        /// The role to empty.
+        #[arg(long)]
+        role: String,
     },
     /// Explicit, non-destructive re-check of an already-enrolled board's
     /// live identity via embarch-core (`embarch-core` decision 28) — the same

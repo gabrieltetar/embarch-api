@@ -85,9 +85,10 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         }
         Commands::ResetDevBench => reset_dev_bench(&config, &core, json).await,
         Commands::DevBenchHello => dev_bench_hello(&core, json).await,
-        Commands::EnrollProbe { role, chip, probe_serial } => {
-            enroll_probe(&core, &role, &chip, probe_serial.as_deref(), json).await
+        Commands::EnrollProbe { role, chip, probe_serial, name } => {
+            enroll_probe(&core, &role, &chip, probe_serial.as_deref(), name.as_deref(), json).await
         }
+        Commands::UnenrollProbe { role } => unenroll_probe(&core, &role, json).await,
         Commands::Validate { role } => validate(&core, &role, json).await,
         Commands::Alerts { limit } => alerts(&core, limit, json).await,
         Commands::ListSerialPorts => serial_ports(&core, json).await,
@@ -757,8 +758,15 @@ async fn dev_bench_hello(core: &CoreClient, json: bool) -> i32 {
     }
 }
 
-async fn enroll_probe(core: &CoreClient, role: &str, chip: &str, probe_serial: Option<&str>, json: bool) -> i32 {
-    match core.enroll_probe(role, chip, probe_serial).await {
+async fn enroll_probe(
+    core: &CoreClient,
+    role: &str,
+    chip: &str,
+    probe_serial: Option<&str>,
+    name: Option<&str>,
+    json: bool,
+) -> i32 {
+    match core.enroll_probe(role, chip, probe_serial, name).await {
         Ok(resp) => finish(
             json,
             true,
@@ -766,16 +774,42 @@ async fn enroll_probe(core: &CoreClient, role: &str, chip: &str, probe_serial: O
                 "success": true,
                 "probe_serial": resp.probe_serial,
                 "role": resp.role,
+                "name": resp.name,
                 "chip": resp.chip,
                 "hardware_id": resp.hardware_id,
                 "confirmed_at_utc_ms": resp.confirmed_at_utc_ms,
             }),
             format!(
-                "enrolled probe {} as role '{}' (chip '{}', hardware_id {})",
-                resp.probe_serial, resp.role, resp.chip, resp.hardware_id
+                "enrolled probe {} as role '{}' ({}, chip '{}', hardware_id {})",
+                resp.probe_serial,
+                resp.role,
+                if resp.name.is_empty() { "unnamed".to_string() } else { format!("board '{}'", resp.name) },
+                resp.chip,
+                resp.hardware_id
             ),
         ),
         Err(e) => error_result(json, format!("enroll-probe failed: {e:#}")),
+    }
+}
+
+/// `DELETE /probes/enrolled/{role}`. Nothing enrolled under the role is
+/// reported as `removed: false` and a zero exit, not as a failure — the
+/// same shape `remove-signal` answers a `404` with, and for the same reason:
+/// a caller clearing a row it believed existed learns it did not, without
+/// having to tell that apart from a Core that could not be reached.
+async fn unenroll_probe(core: &CoreClient, role: &str, json: bool) -> i32 {
+    match core.unenroll_probe(role).await {
+        Ok(removed) => finish(
+            json,
+            true,
+            serde_json::json!({ "success": true, "removed": removed, "role": role }),
+            if removed {
+                format!("unenrolled role '{role}' — that role is now empty")
+            } else {
+                format!("nothing was enrolled under role '{role}'")
+            },
+        ),
+        Err(e) => error_result(json, format!("unenroll-probe failed: {e:#}")),
     }
 }
 
@@ -1684,7 +1718,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 27,
+            arms, 28,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."
