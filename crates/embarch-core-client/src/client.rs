@@ -208,6 +208,13 @@ struct EnrollProbeRequest<'a> {
     /// knows.
     #[serde(skip_serializing_if = "Option::is_none")]
     probe_serial: Option<&'a str>,
+    /// What this physical board is called (`embarch-ui` decision 44).
+    /// Recorded beside the role and interpreted by nobody on the way
+    /// through: a role says which slot on the bench, a name says which
+    /// board is in it. Omitted when empty, so a caller with no name to give
+    /// sends the same body it always did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<&'a str>,
 }
 
 // `Serialize` added 2026-08-24 alongside `embarch-ui` decision 5's amendment
@@ -217,6 +224,11 @@ struct EnrollProbeRequest<'a> {
 pub struct EnrollProbeResponse {
     pub probe_serial: String,
     pub role: String,
+    /// The name Core recorded for this board. `#[serde(default)]` because a
+    /// Core older than `embarch-ui` decision 44 does not send the field —
+    /// which reads as an empty name, never as a missing response.
+    #[serde(default)]
+    pub name: String,
     pub chip: String,
     /// The **probe/JTAG-read** hardware ID — the one Core read off the chip
     /// through the debug probe while enrolling, not anything the bench
@@ -746,6 +758,19 @@ pub struct DevBenchPortResponse {
     pub serial_number: Option<String>,
     pub product: Option<String>,
     pub interface: Option<u8>,
+    /// How many equally-plausible ports this one was **guessed** among, when
+    /// nothing declared could narrow them; absent when the port was
+    /// determined rather than picked. Core has served it since
+    /// `embarch-topology` decision 20 (`DetectedPort::guessed_among`) and
+    /// this mirror dropped it until `embarch-ui` decision 44 needed it for
+    /// the Validate-topology pass — a guessed port is the exact state the
+    /// lowest-interface fallback gets wrong on a two-VCOM probe, and a
+    /// caller that cannot see this field reports it as a clean answer.
+    ///
+    /// `#[serde(default)]` for the crate's usual reason: a Core that does
+    /// not send it reads as "not reported", never as "determined".
+    #[serde(default)]
+    pub guessed_among: Option<usize>,
 }
 
 /// `GET /logs/recent`'s body (`embarch-core` spec.md) — plain lines
@@ -1477,11 +1502,48 @@ impl CoreClient {
     /// Core falls back to its "exactly one attached" requirement. Reuses
     /// `reset_timeout`: like `reset`, this is one probe attach plus a
     /// couple of memory reads, not a multi-second flash.
-    pub async fn enroll_probe(&self, role: &str, chip: &str, probe_serial: Option<&str>) -> Result<EnrollProbeResponse> {
+    pub async fn enroll_probe(
+        &self,
+        role: &str,
+        chip: &str,
+        probe_serial: Option<&str>,
+        name: Option<&str>,
+    ) -> Result<EnrollProbeResponse> {
         let url = format!("{}/probes/enroll", self.base_url().await?);
-        let body = EnrollProbeRequest { role, chip, probe_serial };
+        let body = EnrollProbeRequest { role, chip, probe_serial, name };
         self.send(self.client.post(url).json(&body), self.reset_timeout)
             .await
+    }
+
+    /// `embarch-core`'s `DELETE /probes/enrolled/{role}` — retracts
+    /// whatever board holds `role`, the counterpart enrolling went without
+    /// until `embarch-ui` decision 44. Core opens no probe for it, so this
+    /// reuses `status_timeout` rather than `reset_timeout`: it is an
+    /// enrollment-file write, the same posture as `declare_signal` and
+    /// `set_dev_bench_link`.
+    ///
+    /// `Ok(false)` is Core's deliberate `404` — nothing was enrolled under
+    /// that role — relayed as an answer rather than an error, the same
+    /// shape [`CoreClient::remove_signal`] carries, so a caller can say
+    /// "there was nothing to retract" without parsing an error string.
+    pub async fn unenroll_probe(&self, role: &str) -> Result<bool> {
+        let url = format!("{}/probes/enrolled/{}", self.base_url().await?, urlencode(role));
+        let response = self
+            .dispatch(self.client.delete(url), Some(self.status_timeout))
+            .await?;
+
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+        if status.is_success() {
+            return Ok(true);
+        }
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "<no response body>".to_string());
+        Err(anyhow!("embarch-core returned {status}: {body}"))
     }
 
     /// `POST /validate` (`embarch-core` decision 28) — the
@@ -2225,7 +2287,8 @@ mod tests {
     /// side, `link_port_interface` included; if the two ever disagree, that
     /// disagreement — not just a red test here — is the finding.
     const ENROLLED_BOARD_RESPONSE_JSON: &str = concat!(
-        r#"{"probe_serial":"ABC123","role":"dev-bench","chip":"nrf54l15","#,
+        r#"{"probe_serial":"ABC123","role":"dev-bench","name":"bench-nrf54l15dk","#,
+        r#""chip":"nrf54l15","#,
         r#""hardware_id":"AAAA","confirmed_at_utc_ms":1725000000000,"#,
         r#""link_port_serial":"D607104","link_port_interface":2}"#
     );
@@ -2234,6 +2297,7 @@ mod tests {
         EnrolledBoardResponse {
             probe_serial: "ABC123".to_string(),
             role: "dev-bench".to_string(),
+            name: "bench-nrf54l15dk".to_string(),
             chip: "nrf54l15".to_string(),
             hardware_id: "AAAA".to_string(),
             confirmed_at_utc_ms: 1725000000000,
