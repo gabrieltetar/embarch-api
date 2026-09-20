@@ -364,6 +364,19 @@ pub enum Commands {
         #[arg(long)]
         name: Option<String>,
     },
+    /// Declare which **board type** is in a role — the shape a firmware
+    /// repo builds for (`nrf54l15dk`), not a piece of hardware. Opens no
+    /// probe: this half of a role carries no identity claim, so it works
+    /// with nothing plugged in. `validate` is what reads silicon.
+    SetRoleBoard {
+        #[arg(long)]
+        role: String,
+        #[arg(long)]
+        board: String,
+        /// The probe-rs target that board type attaches as.
+        #[arg(long)]
+        chip: String,
+    },
     /// Retract whatever board holds a role, leaving that role empty. Opens
     /// no probe, so an unplugged board retracts exactly like an attached
     /// one, and nothing enrolled under the role is reported as

@@ -1515,6 +1515,22 @@ impl CoreClient {
             .await
     }
 
+    /// `embarch-core`'s `PUT /probes/enrolled/{role}/board` — declares
+    /// which **board type** is in a role (`embarch-ui` decision 45), the
+    /// half of a role that carries no identity claim and so opens no probe.
+    /// Reuses `status_timeout`: an enrollment-file write on Core's side,
+    /// the same posture as `set_dev_bench_link`.
+    pub async fn set_role_board(
+        &self,
+        role: &str,
+        board: &str,
+        chip: &str,
+    ) -> Result<EnrolledBoardResponse> {
+        let url = format!("{}/probes/enrolled/{}/board", self.base_url().await?, urlencode(role));
+        let body = serde_json::json!({ "board": board, "chip": chip });
+        self.send(self.client.put(url).json(&body), self.status_timeout).await
+    }
+
     /// `embarch-core`'s `DELETE /probes/enrolled/{role}` — retracts
     /// whatever board holds `role`, the counterpart enrolling went without
     /// until `embarch-ui` decision 44. Core opens no probe for it, so this
@@ -2295,12 +2311,12 @@ mod tests {
 
     fn sample_enrolled_board() -> EnrolledBoardResponse {
         EnrolledBoardResponse {
-            probe_serial: "ABC123".to_string(),
+            probe_serial: Some("ABC123".to_string()),
             role: "dev-bench".to_string(),
             name: "bench-nrf54l15dk".to_string(),
             chip: "nrf54l15".to_string(),
-            hardware_id: "AAAA".to_string(),
-            confirmed_at_utc_ms: 1725000000000,
+            hardware_id: Some("AAAA".to_string()),
+            confirmed_at_utc_ms: Some(1725000000000),
             link_port_serial: Some("D607104".to_string()),
             link_port_interface: Some(2),
         }

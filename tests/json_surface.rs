@@ -60,6 +60,7 @@ const EVERY_SUBCOMMAND: &[&[&str]] = &[
     &["dev-bench-hello"],
     &["enroll-probe", "--role", "dut", "--chip", "nRF54L15", "--name", "some-board"],
     &["unenroll-probe", "--role", "dut"],
+    &["set-role-board", "--role", "dut", "--board", "nrf54l15dk", "--chip", "nRF54L15"],
     &["validate", "--role", "some-role"],
     &["alerts"],
     &["list-serial-ports"],
