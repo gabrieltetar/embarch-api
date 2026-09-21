@@ -1475,6 +1475,12 @@ fn render_follow_item(item: &FollowItem) -> String {
             "[status] {status}{}",
             reason.as_deref().map(|r| format!(" — {r}")).unwrap_or_default()
         ),
+        FollowItem::Event(StudyEvent::StructChartValue {
+            stream_name,
+            field_name,
+            value,
+            ..
+        }) => format!("[chart] {stream_name}: {field_name} = {value}"),
     }
 }
 

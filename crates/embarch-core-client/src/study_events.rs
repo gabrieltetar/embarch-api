@@ -164,6 +164,20 @@ pub enum StudyEvent {
         status: String,
         reason: Option<String>,
     },
+    /// One `chart_field` value off a `Struct`-decoded row, pushed the same
+    /// pass that writes the row to the rendered CSV — `embarch-study-designer`
+    /// decision 52's live half. `field_name` is the layout's declared
+    /// `chart_field`, named rather than left for a consumer to look up,
+    /// because the layout that produced this value is `Study.decoders`-side
+    /// state this stream has no other way to reach.
+    StructChartValue {
+        study_id: String,
+        stream_id: u8,
+        stream_name: String,
+        field_name: String,
+        value: f64,
+        core_rx_utc_ms: u64,
+    },
 }
 
 impl StudyEvent {
@@ -174,7 +188,8 @@ impl StudyEvent {
             | StudyEvent::GattTranscript { study_id, .. }
             | StudyEvent::StreamText { study_id, .. }
             | StudyEvent::OutpostRows { study_id, .. }
-            | StudyEvent::StatusChanged { study_id, .. } => study_id,
+            | StudyEvent::StatusChanged { study_id, .. }
+            | StudyEvent::StructChartValue { study_id, .. } => study_id,
         }
     }
 
@@ -188,6 +203,7 @@ impl StudyEvent {
             StudyEvent::StreamText { .. } => "StreamText",
             StudyEvent::OutpostRows { .. } => "OutpostRows",
             StudyEvent::StatusChanged { .. } => "StatusChanged",
+            StudyEvent::StructChartValue { .. } => "StructChartValue",
         }
     }
 }
