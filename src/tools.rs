@@ -205,6 +205,63 @@ impl FlashParams {
     }
 }
 
+/// `bootload`/`build_and_bootload`'s params (decision 80): the same target
+/// selection as `build`, and deliberately nothing of `flash`'s — no chip,
+/// probe, format, base address or erase, since a bootloader is reached by
+/// the DUT's USB identity and writes the slot it owns.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct BootloadParams {
+    /// Name of a project from embarch-api's config file.
+    pub project: String,
+    /// Zephyr board name. Only for a discovery = "zephyr-west" project — a
+    /// static project refuses it.
+    pub board: Option<String>,
+    /// Board variant. Only for a discovery = "zephyr-west" project.
+    pub variant: Option<String>,
+    /// Hardware revision. Only for a discovery = "zephyr-west" project.
+    pub revision: Option<String>,
+    /// App directory name under app/. Only for a discovery = "zephyr-west" project.
+    pub app: Option<String>,
+    /// `-S` snippets, as for `build`. Omitted falls back to the project's
+    /// default_snippets; ["none"] alone forces none.
+    pub snippets: Option<Vec<String>>,
+    /// Extra `west build` flags, as for `build`. Omitted falls back to the
+    /// project's default_extra_args.
+    pub extra_args: Option<Vec<String>>,
+    /// `bootload` only: upload this signed image instead of the one the
+    /// resolved target's build left. `build_and_bootload` refuses it.
+    pub image_path: Option<String>,
+}
+
+impl BootloadParams {
+    fn selection(&self) -> Selection<'_> {
+        Selection {
+            board: self.board.as_deref(),
+            variant: self.variant.as_deref(),
+            revision: self.revision.as_deref(),
+            app: self.app.as_deref(),
+            snippets: self.snippets.as_deref().unwrap_or(&[]),
+            extra_args: self.extra_args.as_deref().unwrap_or(&[]),
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DeclareBootloadPortsParams {
+    /// The bootloader's USB identity, as VID:PID or VID:PID:SERIAL in hex
+    /// (e.g. "2fe3:000c"). Required: it is where the image goes.
+    pub bootloader: String,
+    /// Which USB interface of the bootloader's device, when VID:PID and
+    /// serial alone match more than one port.
+    pub bootloader_interface: Option<u8>,
+    /// The application's USB identity, same spelling — the port its shell,
+    /// and so the entry command, is on. Omitted, the DUT can only be
+    /// bootloaded when it is already sitting in its bootloader.
+    pub app: Option<String>,
+    /// Which USB interface of the application's device.
+    pub app_interface: Option<u8>,
+}
+
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SerialLogParams {
     /// Name of a project from embarch-api's config file.
@@ -807,6 +864,80 @@ impl EmbarchApi {
                 "build succeeded but flash failed for '{}': {e:#}",
                 project.name
             )),
+        }
+    }
+
+    #[tool(description = "Upload a project's signed MCUboot image to the DUT's own bootloader (MCUboot serial recovery over its USB CDC ACM port) via embarch-core's POST /bootload — the second way onto a DUT beside flash, with no probe involved (embarch-api decision 80, embarch-core decision 77). Uploads the zephyr.signed.bin the resolved target's last build left (found sysbuild-aware, decision 81), or image_path if given; does not build — use build_and_bootload for that. The DUT's bootload ports must be declared first (declare_bootload_ports). If the bootloader is already enumerated no command is sent; otherwise the project's [projects.bootload] entry_command is typed at the application's shell. The upload overwrites the running application, so Core refuses anything that is not an MCUboot image before touching the DUT. The result says what happened: bytes, requests, duration_ms, upload_ms, entered_via ('already-in-bootloader' or 'shell-command'), and app_reappeared — read it: false means the bootloader took the image and the application did not come back, which is reported with success true and a warning rather than raised as an error; null means no application port is declared, so nothing was watched.")]
+    async fn bootload(
+        &self,
+        Parameters(params): Parameters<BootloadParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let project = self.project(&params.project)?;
+        let report = crate::bootload::bootload(&self.core, project, params.selection(), params.image_path.as_deref()).await;
+        if report.success {
+            Self::ok_json(report.value)
+        } else {
+            Self::err_json(report.value)
+        }
+    }
+
+    #[tool(description = "Build a project and, only if the build succeeds and writes a fresh signed MCUboot image, upload it to the DUT's bootloader via embarch-core's POST /bootload — see bootload for how the DUT is reached, what is refused and what the result reports. Never uploads a signed image left over from an earlier build: its own mtime must postdate this build's start. Takes build's target selection; refuses image_path.")]
+    async fn build_and_bootload(
+        &self,
+        Parameters(params): Parameters<BootloadParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let project = self.project(&params.project)?;
+        if params.image_path.is_some() {
+            return Self::err_text("build_and_bootload builds the image it uploads, so image_path is refused rather than ignored; use bootload to upload a file you already have");
+        }
+        let report = crate::bootload::build_and_bootload(
+            &self.core,
+            &self.build_locks,
+            project,
+            params.selection(),
+            Self::build_outcome_json,
+        )
+        .await;
+        if report.success {
+            Self::ok_json(report.value)
+        } else {
+            Self::err_json(report.value)
+        }
+    }
+
+    #[tool(description = "Declare the DUT's two USB identities for bootloading via embarch-core's PUT /bootload/ports (embarch-topology decision 36): bootloader (required) is where the image goes, app is the application's shell port where the entry command goes. Each is VID:PID or VID:PID:SERIAL in hex, with an optional interface. Declared, never detected: nothing over USB says a CDC ACM device is this DUT's MCUboot. Core refuses a pair one port could match both of — give the bootloader its own PID, or declare serials or interfaces that differ. Replaces any earlier declaration. Use list_serial_ports to see what Core's machine enumerates.")]
+    async fn declare_bootload_ports(
+        &self,
+        Parameters(params): Parameters<DeclareBootloadPortsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let (app, bootloader) = match crate::bootload::parse_ports(
+            params.app.as_deref(),
+            params.app_interface,
+            &params.bootloader,
+            params.bootloader_interface,
+        ) {
+            Ok(ports) => ports,
+            Err(e) => return Self::err_text(e),
+        };
+        match self.core.declare_bootload_ports(app.as_ref(), &bootloader).await {
+            Ok(ports) => Self::ok_json(serde_json::json!({ "declared": ports })),
+            Err(e) => Self::err_text(format!("declare_bootload_ports failed: {e:#}")),
+        }
+    }
+
+    #[tool(description = "Show the DUT's declared bootload ports via embarch-core's GET /bootload/ports. declared is null, not an error, when none are declared.")]
+    async fn show_bootload_ports(&self) -> Result<CallToolResult, McpError> {
+        match self.core.bootload_ports().await {
+            Ok(ports) => Self::ok_json(serde_json::json!({ "declared": ports })),
+            Err(e) => Self::err_text(format!("show_bootload_ports failed: {e:#}")),
+        }
+    }
+
+    #[tool(description = "Retract the DUT's declared bootload ports via embarch-core's DELETE /bootload/ports. removed is false, not an error, when none were declared.")]
+    async fn clear_bootload_ports(&self) -> Result<CallToolResult, McpError> {
+        match self.core.clear_bootload_ports().await {
+            Ok(removed) => Self::ok_json(serde_json::json!({ "removed": removed })),
+            Err(e) => Self::err_text(format!("clear_bootload_ports failed: {e:#}")),
         }
     }
 

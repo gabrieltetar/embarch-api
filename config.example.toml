@@ -160,6 +160,18 @@ build_timeout_secs = 900
 # [projects.default_target]
 # board = "my_board"
 # app = "my-app"
+# Optional: how this DUT is bootloaded over MCUboot serial recovery, for
+# bootload/build_and_bootload (decision 80). Every value is a fact about the
+# DUT's firmware, so none is guessed: the shell command that reboots it into
+# its bootloader, that line's ending (lf/cr/crlf), the signed image's file
+# name in the application's zephyr/ directory, and its
+# CONFIG_BOOT_SERIAL_MAX_RECEIVE_SIZE. The two USB ports are declared once
+# per bench with declare_bootload_ports, not here.
+# [projects.bootload]
+# entry_command = "my_bootloader_command"
+# entry_line_ending = "lf"
+# artifact = "zephyr.signed.bin"
+# buffer_size = 1024
 
 # embarch-dev-bench's own firmware — deliberately NOT a [[projects]] entry
 # (decision 32): dev-bench isn't a DUT a

@@ -64,6 +64,70 @@ impl DefaultTarget {
     }
 }
 
+/// How this project's DUT is bootloaded over MCUboot serial recovery
+/// (decision 80; `embarch-core` decision 77). Every field is a fact about the
+/// DUT's firmware, so each is declared here rather than guessed, and the table
+/// may be left out entirely: a DUT already sitting in its bootloader needs
+/// none of it.
+#[derive(Debug, Default, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BootloadConfig {
+    /// Typed at the application's shell to reboot it into serial recovery.
+    /// Absent, the DUT must already be in its bootloader when a bootload
+    /// starts.
+    #[serde(default)]
+    pub entry_command: Option<String>,
+    /// What ends the entry command's line: `lf`, `cr` or `crlf`. Core sends
+    /// `lf` when absent.
+    #[serde(default)]
+    pub entry_line_ending: Option<String>,
+    /// The signed image's file name inside the application image's `zephyr/`
+    /// output directory. Defaults to [`DEFAULT_BOOTLOAD_ARTIFACT`].
+    #[serde(default)]
+    pub artifact: Option<String>,
+    /// The DUT's `CONFIG_BOOT_SERIAL_MAX_RECEIVE_SIZE`. Serial recovery cannot
+    /// report it, and it is the throughput: a 200 KB image is 207 requests at
+    /// 1,024 and 1,423 at the conservative default used when it is absent
+    /// (`embarch-smp` decision 7).
+    #[serde(default)]
+    pub buffer_size: Option<u32>,
+}
+
+/// What `imgtool` writes beside `zephyr.bin` when a build has MCUboot.
+pub const DEFAULT_BOOTLOAD_ARTIFACT: &str = "zephyr.signed.bin";
+
+impl BootloadConfig {
+    pub fn artifact(&self) -> &str {
+        self.artifact.as_deref().unwrap_or(DEFAULT_BOOTLOAD_ARTIFACT)
+    }
+
+    fn validate(&self, project: &str) -> Result<()> {
+        if let Some(ending) = &self.entry_line_ending {
+            if !matches!(ending.as_str(), "lf" | "cr" | "crlf") {
+                bail!("project '{project}' has [projects.bootload] entry_line_ending = \"{ending}\"; expected \"lf\", \"cr\" or \"crlf\"");
+            }
+        }
+        if self.entry_command.as_deref().is_some_and(|c| c.trim().is_empty()) {
+            bail!("project '{project}' has an empty [projects.bootload] entry_command; remove it if the DUT has none");
+        }
+        if let Some(artifact) = &self.artifact {
+            if artifact.is_empty() || artifact.contains(['/', '\\']) {
+                bail!(
+                    "project '{project}' has [projects.bootload] artifact = \"{artifact}\"; it is a file name \
+                     inside the application image's zephyr/ directory, not a path"
+                );
+            }
+        }
+        // A buffer at or under the frame's own 4 bytes of length and CRC can
+        // carry nothing; Core refuses it too, but a config error says so at
+        // startup rather than at the first bootload.
+        if self.buffer_size.is_some_and(|b| b <= 4) {
+            bail!("project '{project}' has [projects.bootload] buffer_size {}, which cannot carry a frame", self.buffer_size.unwrap());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ProjectConfig {
     pub name: String,
@@ -219,6 +283,10 @@ pub struct ProjectConfig {
     /// nobody reflashes through `run_study` never needs it.
     #[serde(default)]
     pub version_command: Option<Vec<String>>,
+    /// `[projects.bootload]`: how this DUT is bootloaded, for `bootload` and
+    /// `build_and_bootload`. Absent is the same as an empty table.
+    #[serde(default)]
+    pub bootload: Option<BootloadConfig>,
 }
 
 impl ProjectConfig {
@@ -419,6 +487,9 @@ impl Config {
                     project.name,
                     project.source_path.display()
                 );
+            }
+            if let Some(bootload) = &project.bootload {
+                bootload.validate(&project.name)?;
             }
 
             // Decision 53: `[[projects.targets]]` is retired, and a config
@@ -673,6 +744,65 @@ mod tests {
         let path = dir.join("config.toml");
         std::fs::write(&path, body).unwrap();
         Config::load_from_path(&path).expect("config should load")
+    }
+
+    fn bootload_project_with(dir: &Path, extra: &str) -> Result<Config> {
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            format!(
+                r#"
+[core]
+base_url = "auto"
+token_env = "EMBARCH_TOKEN"
+
+[[projects]]
+name = "p"
+source_path = "{}"
+build_command = ["true"]
+chip = "nRF54L15"
+artifact_path = "build/zephyr/zephyr.hex"
+flash_format = "hex"
+{extra}
+"#,
+                toml_path(dir)
+            ),
+        )
+        .unwrap();
+        Config::load_from_path(&path)
+    }
+
+    #[test]
+    fn a_bootload_table_loads_and_its_absence_is_no_table() {
+        let dir = tempdir();
+        let config = bootload_project_with(
+            dir.path(),
+            "[projects.bootload]\nentry_command = \"mcuboot\"\nentry_line_ending = \"crlf\"\nbuffer_size = 1024\n",
+        )
+        .unwrap();
+        let bootload = config.projects[0].bootload.as_ref().unwrap();
+        assert_eq!(bootload.entry_command.as_deref(), Some("mcuboot"));
+        assert_eq!(bootload.entry_line_ending.as_deref(), Some("crlf"));
+        assert_eq!(bootload.buffer_size, Some(1024));
+        assert_eq!(bootload.artifact(), DEFAULT_BOOTLOAD_ARTIFACT);
+
+        let config = bootload_project_with(dir.path(), "").unwrap();
+        assert!(config.projects[0].bootload.is_none());
+    }
+
+    #[test]
+    fn a_bootload_table_that_cannot_be_honoured_is_refused_at_load() {
+        let dir = tempdir();
+        for (body, names) in [
+            ("entry_line_ending = \"nl\"", "entry_line_ending"),
+            ("entry_command = \" \"", "entry_command"),
+            ("artifact = \"build/zephyr.signed.bin\"", "artifact"),
+            ("buffer_size = 4", "buffer_size"),
+            ("buffer = 1024", "buffer"),
+        ] {
+            let err = bootload_project_with(dir.path(), &format!("[projects.bootload]\n{body}\n")).unwrap_err();
+            assert!(format!("{err:#}").contains(names), "{body}: {err:#}");
+        }
     }
 
     #[test]

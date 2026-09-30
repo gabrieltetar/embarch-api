@@ -1,3 +1,4 @@
+mod bootload;
 mod capacity;
 mod cli;
 mod dev_bench;
@@ -138,6 +139,47 @@ pub enum Commands {
         #[arg(long)]
         erase: bool,
     },
+    /// Upload a project's signed MCUboot image to the DUT's own bootloader
+    /// (MCUboot serial recovery over USB) via embarch-core — no probe. Uses
+    /// the resolved target's last build, found sysbuild-aware, unless
+    /// --image-path names a file. Does not build.
+    Bootload {
+        project: String,
+        #[command(flatten)]
+        target: TargetSelection,
+        /// Upload this signed image instead of the one the build left.
+        #[arg(long)]
+        image_path: Option<String>,
+    },
+    /// Build a project and, only if it writes a fresh signed image, upload it
+    /// to the DUT's bootloader.
+    BuildAndBootload {
+        project: String,
+        #[command(flatten)]
+        target: TargetSelection,
+    },
+    /// Declare the DUT's two USB identities for bootloading: the
+    /// bootloader's, where the image goes, and optionally the application's,
+    /// where the entry command goes. Each is VID:PID or VID:PID:SERIAL in hex.
+    DeclareBootloadPorts {
+        /// The bootloader's USB identity (e.g. 2fe3:000c).
+        #[arg(long)]
+        bootloader: String,
+        /// Which USB interface of the bootloader's device.
+        #[arg(long)]
+        bootloader_interface: Option<u8>,
+        /// The application's USB identity.
+        #[arg(long)]
+        app: Option<String>,
+        /// Which USB interface of the application's device.
+        #[arg(long)]
+        app_interface: Option<u8>,
+    },
+    /// Show the DUT's declared bootload ports.
+    ShowBootloadPorts,
+    /// Retract the DUT's declared bootload ports. Reports removed=false, not
+    /// an error, when none were declared.
+    ClearBootloadPorts,
     /// Reset a project's target chip via embarch-core.
     Reset {
         project: String,

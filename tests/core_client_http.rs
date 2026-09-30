@@ -126,6 +126,16 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.declare_signal(&signal).await;
     let _ = client.remove_signal("outpost").await;
     let _ = client.set_dev_bench_link(Some("MOCK-BRIDGE-0001"), Some(2)).await;
+    // `bootload` reads its image off disk before it sends anything, so it
+    // needs one to exist; the bytes themselves never matter to the mock.
+    let image = std::env::temp_dir().join(format!("embarch-api-sweep-{}.signed.bin", std::process::id()));
+    std::fs::write(&image, b"not really an image").unwrap();
+    let _ = client.bootload(&image, &Default::default()).await;
+    let _ = std::fs::remove_file(&image);
+    let boot_id: embarch_core_client::UsbPortId = "2fe3:000c".parse().unwrap();
+    let _ = client.declare_bootload_ports(None, &boot_id).await;
+    let _ = client.bootload_ports().await;
+    let _ = client.clear_bootload_ports().await;
     let _ = client.list_studies().await;
     let _ = client.get_study_status("study-1").await;
     let _ = client.study_streams("study-1").await;
@@ -199,6 +209,10 @@ async fn every_outbound_call_carries_the_bearer_token() {
         ("POST", "/signals"),
         ("DELETE", "/signals/outpost"),
         ("POST", "/dev-bench/link"),
+        ("POST", "/bootload"),
+        ("PUT", "/bootload/ports"),
+        ("GET", "/bootload/ports"),
+        ("DELETE", "/bootload/ports"),
         ("GET", "/study/study-1"),
         ("GET", "/study/study-1/streams"),
         ("GET", "/study/study-1/steps"),
@@ -869,4 +883,52 @@ async fn the_mock_sees_the_json_body_a_post_sent() {
         body.contains("nrf52840"),
         "POST /resolve-chip arrived without its body: {body:?}"
     );
+}
+
+/// `bootload` sends the image and every declared DUT fact as multipart parts
+/// under the names Core's `bootload_plan_from_multipart` reads, and parses
+/// the answer `embarch-core` decision 77 defines.
+#[tokio::test]
+async fn bootload_sends_the_image_and_the_declared_facts_as_multipart() {
+    let mock = MockCore::start(Behavior::json_ok(json!({
+        "bytes": 19, "requests": 1, "duration_ms": 900, "upload_ms": 40,
+        "entered_via": "shell-command", "bootloader_port": "COM9", "app_reappeared": false,
+    })))
+    .await;
+    let client = CoreClient::new(&config(json!({ "base_url": mock.base_url() })))
+        .expect("client did not build");
+    let image = std::env::temp_dir().join(format!("embarch-api-bootload-{}.signed.bin", std::process::id()));
+    std::fs::write(&image, b"signed-image-bytes!").unwrap();
+
+    let options = embarch_core_client::BootloadOptions {
+        entry_command: Some("mcuboot".to_string()),
+        entry_line_ending: Some("crlf".to_string()),
+        buffer_size: Some(1024),
+    };
+    let answer = client.bootload(&image, &options).await.expect("bootload failed");
+    let _ = std::fs::remove_file(&image);
+    assert_eq!(answer.entered_via, "shell-command");
+    assert_eq!(answer.app_reappeared, Some(false), "a DUT that did not come back is an answer");
+
+    let requests = mock.requests();
+    let body = String::from_utf8_lossy(&requests[0].body);
+    for part in ["name=\"entry_command\"", "mcuboot", "name=\"entry_line_ending\"", "crlf", "name=\"buffer_size\"", "1024", "name=\"image\"", "signed-image-bytes!"] {
+        assert!(body.contains(part), "the multipart body is missing {part}: {body}");
+    }
+}
+
+/// A body-less `404` is axum's answer for a route it does not have, so it
+/// names an old Core; Core's own `404` on `GET /bootload/ports` is "nothing
+/// declared", which is a normal answer and not an error.
+#[tokio::test]
+async fn an_old_core_and_an_undeclared_dut_are_told_apart() {
+    let old = MockCore::start(Behavior::plain_text_error(404, "Not Found", "")).await;
+    let client = CoreClient::new(&config(json!({ "base_url": old.base_url() }))).unwrap();
+    let error = format!("{:#}", client.bootload_ports().await.unwrap_err());
+    assert!(error.contains("predates bootloading"), "{error}");
+
+    let current = MockCore::start(Behavior::plain_text_error(404, "Not Found", "no bootload ports are declared for the DUT")).await;
+    let client = CoreClient::new(&config(json!({ "base_url": current.base_url() }))).unwrap();
+    assert!(client.bootload_ports().await.unwrap().is_none());
+    assert!(!client.clear_bootload_ports().await.unwrap());
 }
