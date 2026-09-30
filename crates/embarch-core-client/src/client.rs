@@ -40,6 +40,7 @@ pub struct CoreClient {
     status_timeout: Duration,
     reset_timeout: Duration,
     flash_timeout: Duration,
+    bootload_timeout: Duration,
     serial_timeout: Duration,
     study_timeout: Duration,
 }
@@ -159,6 +160,50 @@ const OUTPOST_MANIFEST_FILE: &str = "outpost-manifest.json";
 pub struct FlashResponse {
     pub flashed: bool,
     pub chip: String,
+}
+
+/// What a bootload is told about the DUT, from the project's
+/// `[projects.bootload]` table. Every field is optional on the wire.
+#[derive(Debug, Default, Clone)]
+pub struct BootloadOptions {
+    pub entry_command: Option<String>,
+    pub entry_line_ending: Option<String>,
+    pub buffer_size: Option<u32>,
+}
+
+/// `POST /bootload`'s answer (`embarch-core` decision 77).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BootloadResponse {
+    pub bytes: u64,
+    pub requests: u64,
+    pub duration_ms: u64,
+    pub upload_ms: u64,
+    /// `already-in-bootloader` or `shell-command`.
+    pub entered_via: String,
+    pub bootloader_port: String,
+    /// Whether the application enumerated again after the reset — reported,
+    /// not asserted. `None` when no application identity is declared.
+    pub app_reappeared: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+struct DeclareBootloadPortsRequest<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    app: Option<&'a UsbPortId>,
+    bootloader: &'a UsbPortId,
+}
+
+/// A `404` from a bootload route with no body is axum's own answer for a
+/// route it does not have — a Core older than `embarch-core` decision 77 —
+/// while Core's own `404`s always say why. Told apart so the remedy is the
+/// right one.
+fn bootload_route_missing(status: reqwest::StatusCode, body: &str) -> Option<anyhow::Error> {
+    (status == reqwest::StatusCode::NOT_FOUND && body.trim().is_empty()).then(|| {
+        anyhow!(
+            "embarch-core returned 404 with no body: this Core predates bootloading \
+             (embarch-core decision 77); deploy a newer one"
+        )
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -429,7 +474,7 @@ impl std::error::Error for TopologyMismatchError {}
 // renaming every one of them is churn that buys nothing; a `*Response` suffix
 // is also still an honest name for "the shape `GET /alerts` returns".
 pub use embarch_topology::hardware::{
-    Alert, DetectedPort, EnrolledBoard, Route, SignalDirection, SignalLink,
+    Alert, BootloadPorts, DetectedPort, EnrolledBoard, Route, SignalDirection, SignalLink, UsbPortId,
 };
 
 /// One entry from `GET /alerts`. Alias of
@@ -1144,6 +1189,7 @@ impl CoreClient {
             status_timeout: Duration::from_secs(config.status_timeout_secs),
             reset_timeout: Duration::from_secs(config.reset_timeout_secs),
             flash_timeout: Duration::from_secs(config.flash_timeout_secs),
+            bootload_timeout: Duration::from_secs(config.bootload_timeout_secs),
             serial_timeout: Duration::from_secs(config.serial_timeout_secs),
             study_timeout: Duration::from_secs(config.study_timeout_secs),
         })
@@ -1483,6 +1529,104 @@ impl CoreClient {
                     .await
             }
         }
+    }
+
+    /// `POST /bootload` — the signed image at `image_path` into the DUT's
+    /// MCUboot serial-recovery bootloader (`embarch-core` decision 77).
+    ///
+    /// **Always uploaded as bytes**, whatever the topology: Core's route is
+    /// multipart only, and a signed image is small enough that a path-only
+    /// branch would be a second shape kept in step for no gain.
+    pub async fn bootload(&self, image_path: &Path, options: &BootloadOptions) -> Result<BootloadResponse> {
+        let url = format!("{}/bootload", self.base_url().await?);
+        let bytes = tokio::fs::read(image_path)
+            .await
+            .with_context(|| format!("failed to read the signed image at {}", image_path.display()))?;
+        let file_name = image_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("zephyr.signed.bin")
+            .to_string();
+        let mut form = reqwest::multipart::Form::new();
+        if let Some(command) = &options.entry_command {
+            form = form.text("entry_command", command.clone());
+        }
+        if let Some(ending) = &options.entry_line_ending {
+            form = form.text("entry_line_ending", ending.clone());
+        }
+        if let Some(size) = options.buffer_size {
+            form = form.text("buffer_size", size.to_string());
+        }
+        let form = form.part("image", reqwest::multipart::Part::bytes(bytes).file_name(file_name));
+
+        let response = self
+            .dispatch(self.client.post(url).multipart(form), Some(self.bootload_timeout))
+            .await?;
+        let status = response.status();
+        if status.is_success() {
+            return response
+                .json()
+                .await
+                .context("failed to parse embarch-core's bootload response as JSON");
+        }
+        let body = response.text().await.unwrap_or_default();
+        Err(bootload_route_missing(status, &body).unwrap_or_else(|| anyhow!("embarch-core returned {status}: {body}")))
+    }
+
+    /// `PUT /bootload/ports` — declares the DUT's application and bootloader
+    /// USB identities (`embarch-core` decision 78, `embarch-topology`
+    /// decision 36). Returns what Core stored. Reuses `status_timeout`: an
+    /// enrollment-file write, no hardware touched.
+    pub async fn declare_bootload_ports(&self, app: Option<&UsbPortId>, bootloader: &UsbPortId) -> Result<BootloadPorts> {
+        let url = format!("{}/bootload/ports", self.base_url().await?);
+        let body = DeclareBootloadPortsRequest { app, bootloader };
+        let response = self
+            .dispatch(self.client.put(url).json(&body), Some(self.status_timeout))
+            .await?;
+        let status = response.status();
+        if status.is_success() {
+            return response.json().await.context("failed to parse embarch-core's response as JSON");
+        }
+        let body = response.text().await.unwrap_or_default();
+        Err(bootload_route_missing(status, &body).unwrap_or_else(|| anyhow!("embarch-core returned {status}: {body}")))
+    }
+
+    /// `GET /bootload/ports`. `Ok(None)` when nothing is declared — the
+    /// normal state of a DUT nobody has bootloaded.
+    pub async fn bootload_ports(&self) -> Result<Option<BootloadPorts>> {
+        let url = format!("{}/bootload/ports", self.base_url().await?);
+        let response = self.dispatch(self.client.get(url), Some(self.status_timeout)).await?;
+        let status = response.status();
+        if status.is_success() {
+            return response.json().await.context("failed to parse embarch-core's response as JSON").map(Some);
+        }
+        let body = response.text().await.unwrap_or_default();
+        if let Some(missing) = bootload_route_missing(status, &body) {
+            return Err(missing);
+        }
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        Err(anyhow!("embarch-core returned {status}: {body}"))
+    }
+
+    /// `DELETE /bootload/ports`. `Ok(false)` when nothing was declared, the
+    /// same distinction [`CoreClient::remove_signal`] keeps.
+    pub async fn clear_bootload_ports(&self) -> Result<bool> {
+        let url = format!("{}/bootload/ports", self.base_url().await?);
+        let response = self.dispatch(self.client.delete(url), Some(self.status_timeout)).await?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(true);
+        }
+        let body = response.text().await.unwrap_or_default();
+        if let Some(missing) = bootload_route_missing(status, &body) {
+            return Err(missing);
+        }
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+        Err(anyhow!("embarch-core returned {status}: {body}"))
     }
 
     pub async fn reset(&self, chip: &str, probe_serial: Option<&str>) -> Result<ResetResponse> {

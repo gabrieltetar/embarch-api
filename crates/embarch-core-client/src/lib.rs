@@ -37,6 +37,14 @@ fn default_reset_timeout_secs() -> u64 {
 fn default_flash_timeout_secs() -> u64 {
     120
 }
+
+/// Longer than a flash: a bootload waits on the DUT re-enumerating twice
+/// and, at the default buffer size, sends a request per 169 bytes. Core's
+/// own phase timeouts are placeholders until measured (`embarch-core`
+/// decision 77), so this is too.
+fn default_bootload_timeout_secs() -> u64 {
+    300
+}
 fn default_serial_timeout_secs() -> u64 {
     15
 }
@@ -76,6 +84,9 @@ pub struct CoreConfig {
     pub reset_timeout_secs: u64,
     #[serde(default = "default_flash_timeout_secs")]
     pub flash_timeout_secs: u64,
+    /// `POST /bootload` alone.
+    #[serde(default = "default_bootload_timeout_secs")]
+    pub bootload_timeout_secs: u64,
     #[serde(default = "default_serial_timeout_secs")]
     pub serial_timeout_secs: u64,
     /// Shared by `post_study`, `get_study_status` and `get_study_stream` —

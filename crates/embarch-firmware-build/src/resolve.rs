@@ -90,7 +90,38 @@ pub struct Resolved {
 pub async fn resolve(project: &ProjectConfig, selection: Selection<'_>, core: &CoreClient) -> Result<Resolved> {
     match project.discovery {
         Discovery::Static => resolve_static(project, selection),
-        Discovery::ZephyrWest => resolve_zephyr(project, selection, core).await,
+        Discovery::ZephyrWest => {
+            let (build, soc) = resolve_zephyr_build(project, selection)?;
+            let chip = core
+                .resolve_chip(&soc)
+                .await
+                .with_context(|| format!("failed to resolve a probe-rs chip for SoC '{soc}'"))?;
+            Ok(Resolved {
+                plan: build.plan,
+                chip,
+                flash_format: project.flash_format.clone(),
+                base_address: format_base_address(project.base_address),
+                probe_serial: project.probe_serial.clone(),
+                descriptor: build.descriptor,
+            })
+        }
+    }
+}
+
+/// What to build and what was picked, with no chip: a bootload talks to the
+/// DUT's bootloader, never a probe, so it has no use for Core's SoC-to-chip
+/// table and should not fail on a SoC that table lacks (decision 81).
+pub struct ResolvedBuild {
+    pub plan: BuildPlan,
+    pub descriptor: serde_json::Value,
+}
+
+pub fn resolve_build(project: &ProjectConfig, selection: Selection<'_>) -> Result<ResolvedBuild> {
+    match project.discovery {
+        Discovery::Static => {
+            resolve_static(project, selection).map(|r| ResolvedBuild { plan: r.plan, descriptor: r.descriptor })
+        }
+        Discovery::ZephyrWest => resolve_zephyr_build(project, selection).map(|(build, _soc)| build),
     }
 }
 
@@ -369,7 +400,8 @@ fn resolve_snippets(
     Ok(snippets)
 }
 
-async fn resolve_zephyr(project: &ProjectConfig, selection: Selection<'_>, core: &CoreClient) -> Result<Resolved> {
+/// A `zephyr-west` target's build, and the SoC [`resolve`] maps to a chip.
+fn resolve_zephyr_build(project: &ProjectConfig, selection: Selection<'_>) -> Result<(ResolvedBuild, String)> {
     let targets = zephyr::scan_or_err(&project.source_path)?;
 
     let effective = effective_selection(project.default_target.as_ref(), &selection);
@@ -433,11 +465,6 @@ async fn resolve_zephyr(project: &ProjectConfig, selection: Selection<'_>, core:
     let command = zephyr::build_command(&west_binary, &target, &snippets, &extra_args, &build_dir, &app_path);
     let artifact_path = zephyr::artifact_path(&build_dir, &project.flash_format);
 
-    let chip = core
-        .resolve_chip(&target.soc)
-        .await
-        .with_context(|| format!("failed to resolve a probe-rs chip for SoC '{}'", target.soc))?;
-
     // Built once and used twice on purpose: this is both what the tool
     // response echoes back and what `build.rs` writes into the build
     // directory as `target.json` (decision 19), so the directory's
@@ -454,7 +481,7 @@ async fn resolve_zephyr(project: &ProjectConfig, selection: Selection<'_>, core:
         "extra_args": extra_args,
     });
 
-    Ok(Resolved {
+    let build = ResolvedBuild {
         plan: BuildPlan {
             lock_key: format!("{}::{}", project.name, target.build_dir_name(&snippets, &extra_args)),
             // west build's -d/app-path args are absolute, so the actual cwd
@@ -470,12 +497,9 @@ async fn resolve_zephyr(project: &ProjectConfig, selection: Selection<'_>, core:
                 target: descriptor.clone(),
             }),
         },
-        chip,
-        flash_format: project.flash_format.clone(),
-        base_address: format_base_address(project.base_address),
-        probe_serial: project.probe_serial.clone(),
         descriptor,
-    })
+    };
+    Ok((build, target.soc))
 }
 
 /// `list_targets` (MCP tool + CLI subcommand), independent of `resolve`

@@ -689,6 +689,48 @@ pub fn artifact_path(build_dir: &Path, flash_format: &str) -> PathBuf {
     build_dir.join("zephyr").join(format!("zephyr.{flash_format}"))
 }
 
+/// Where the application image's signed MCUboot image is, given the
+/// artifact path a build resolved for flashing (`<build dir>/zephyr/zephyr.<ext>`)
+/// and the signed image's file name (decision 81).
+///
+/// **Sysbuild-aware, by reading what sysbuild wrote rather than assuming a
+/// layout.** A sysbuild build puts each image in its own directory and
+/// records them in `<build dir>/domains.yaml`, whose `default` names the
+/// application; the signed image is that domain's `zephyr/<file_name>`.
+/// With no `domains.yaml` the build is single-image and the signed image sits
+/// beside the flash artifact. A `domains.yaml` that does not say which domain
+/// is the application is an error, not a guess.
+pub fn signed_image_path(artifact_path: &Path, file_name: &str) -> Result<PathBuf> {
+    let zephyr_dir = artifact_path.parent().unwrap_or(Path::new(""));
+    let domains_file = zephyr_dir.parent().map(|build_dir| build_dir.join("domains.yaml"));
+    let Some(domains_file) = domains_file.filter(|f| f.is_file()) else {
+        return Ok(zephyr_dir.join(file_name));
+    };
+
+    #[derive(Deserialize)]
+    struct Domains {
+        default: String,
+        domains: Vec<Domain>,
+    }
+    #[derive(Deserialize)]
+    struct Domain {
+        name: String,
+        build_dir: PathBuf,
+    }
+    let raw = std::fs::read_to_string(&domains_file)
+        .with_context(|| format!("failed to read {}", domains_file.display()))?;
+    let domains: Domains = serde_yaml::from_str(&raw)
+        .with_context(|| format!("{} does not parse as sysbuild's domains file", domains_file.display()))?;
+    let app = domains.domains.iter().find(|d| d.name == domains.default).with_context(|| {
+        format!(
+            "{} names `{}` as its default domain but lists no domain by that name",
+            domains_file.display(),
+            domains.default
+        )
+    })?;
+    Ok(app.build_dir.join("zephyr").join(file_name))
+}
+
 /// Every real snippet name declared for `target`'s app — see `scan_snippets`
 /// for what's scanned and why. Exposed separately from `Target` itself
 /// (rather than as one of its fields) because a snippet selection isn't part
@@ -1364,6 +1406,39 @@ board:
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_single_image_build_keeps_its_signed_image_beside_the_flash_artifact() {
+        let dir = tempfile_dir();
+        let artifact = dir.path().join("build/zephyr/zephyr.hex");
+        assert_eq!(
+            signed_image_path(&artifact, "zephyr.signed.bin").unwrap(),
+            dir.path().join("build/zephyr/zephyr.signed.bin")
+        );
+    }
+
+    #[test]
+    fn a_sysbuild_build_keeps_it_in_the_default_domains_own_directory() {
+        let dir = tempfile_dir();
+        let build = dir.path().join("build");
+        fs::create_dir_all(&build).unwrap();
+        fs::write(
+            build.join("domains.yaml"),
+            format!(
+                "default: blinky\nbuild_dir: {b}\ndomains:\n  - name: mcuboot\n    build_dir: {b}/mcuboot\n  \
+                 - name: blinky\n    build_dir: {b}/blinky\nflash_order:\n  - mcuboot\n  - blinky\n",
+                b = build.display().to_string().replace('\\', "/")
+            ),
+        )
+        .unwrap();
+        let artifact = build.join("zephyr/zephyr.hex");
+        let found = signed_image_path(&artifact, "zephyr.signed.bin").unwrap();
+        assert_eq!(found, PathBuf::from(format!("{}/blinky", build.display().to_string().replace('\\', "/"))).join("zephyr/zephyr.signed.bin"));
+
+        fs::write(build.join("domains.yaml"), "default: app\ndomains:\n  - name: mcuboot\n    build_dir: /x\n").unwrap();
+        let err = signed_image_path(&artifact, "zephyr.signed.bin").unwrap_err();
+        assert!(format!("{err:#}").contains("`app`"), "{err:#}");
     }
 
     // Minimal tempdir helper — avoids pulling in the `tempfile` crate for a

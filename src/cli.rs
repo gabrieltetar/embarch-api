@@ -31,6 +31,15 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
             erase,
         } => build_and_flash(&config, &core, &project, &target, erase, json).await,
         Commands::Reset { project, target } => reset(&config, &core, &project, &target, json).await,
+        Commands::Bootload { project, target, image_path } => {
+            bootload(&config, &core, &project, &target, image_path.as_deref(), json).await
+        }
+        Commands::BuildAndBootload { project, target } => build_and_bootload(&config, &core, &project, &target, json).await,
+        Commands::DeclareBootloadPorts { bootloader, bootloader_interface, app, app_interface } => {
+            declare_bootload_ports(&core, app.as_deref(), app_interface, &bootloader, bootloader_interface, json).await
+        }
+        Commands::ShowBootloadPorts => show_bootload_ports(&core, json).await,
+        Commands::ClearBootloadPorts => clear_bootload_ports(&core, json).await,
         Commands::SerialLog {
             project,
             port,
@@ -553,6 +562,92 @@ async fn reset(
             format!("reset '{project_name}': {}", resp.reset),
         ),
         Err(e) => error_result(json, format!("reset failed for '{project_name}': {e:#}")),
+    }
+}
+
+async fn bootload(
+    config: &Config,
+    core: &CoreClient,
+    project_name: &str,
+    target: &TargetSelection,
+    image_path: Option<&str>,
+    json: bool,
+) -> i32 {
+    let project = match lookup_project(config, project_name) {
+        Ok(p) => p,
+        Err(e) => return error_result(json, e),
+    };
+    let report = crate::bootload::bootload(core, project, target.selection(), image_path).await;
+    finish(json, report.success, report.value, report.human)
+}
+
+async fn build_and_bootload(
+    config: &Config,
+    core: &CoreClient,
+    project_name: &str,
+    target: &TargetSelection,
+    json: bool,
+) -> i32 {
+    let project = match lookup_project(config, project_name) {
+        Ok(p) => p,
+        Err(e) => return error_result(json, e),
+    };
+    let build_locks = crate::build::BuildLocks::new();
+    let report =
+        crate::bootload::build_and_bootload(core, &build_locks, project, target.selection(), build_outcome_json).await;
+    finish(json, report.success, report.value, report.human)
+}
+
+async fn declare_bootload_ports(
+    core: &CoreClient,
+    app: Option<&str>,
+    app_interface: Option<u8>,
+    bootloader: &str,
+    bootloader_interface: Option<u8>,
+    json: bool,
+) -> i32 {
+    let (app, bootloader) = match crate::bootload::parse_ports(app, app_interface, bootloader, bootloader_interface) {
+        Ok(ports) => ports,
+        Err(e) => return error_result(json, e),
+    };
+    match core.declare_bootload_ports(app.as_ref(), &bootloader).await {
+        Ok(ports) => {
+            let human = match &ports.app {
+                Some(app) => format!("declared the DUT's bootloader as {} and its application as {app}", ports.bootloader),
+                None => format!("declared the DUT's bootloader as {}, with no application port", ports.bootloader),
+            };
+            finish(json, true, serde_json::json!({ "success": true, "declared": ports }), human)
+        }
+        Err(e) => error_result(json, format!("declare-bootload-ports failed: {e:#}")),
+    }
+}
+
+async fn show_bootload_ports(core: &CoreClient, json: bool) -> i32 {
+    match core.bootload_ports().await {
+        Ok(ports) => {
+            let human = match &ports {
+                Some(p) => format!(
+                    "bootloader {}; application {}",
+                    p.bootloader,
+                    p.app.as_ref().map_or("not declared".to_string(), ToString::to_string)
+                ),
+                None => "no bootload ports declared".to_string(),
+            };
+            finish(json, true, serde_json::json!({ "success": true, "declared": ports }), human)
+        }
+        Err(e) => error_result(json, format!("show-bootload-ports failed: {e:#}")),
+    }
+}
+
+async fn clear_bootload_ports(core: &CoreClient, json: bool) -> i32 {
+    match core.clear_bootload_ports().await {
+        Ok(removed) => finish(
+            json,
+            true,
+            serde_json::json!({ "success": true, "removed": removed }),
+            if removed { "cleared the DUT's bootload ports".to_string() } else { "no bootload ports were declared".to_string() },
+        ),
+        Err(e) => error_result(json, format!("clear-bootload-ports failed: {e:#}")),
     }
 }
 
@@ -1763,7 +1858,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 29,
+            arms, 34,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."
