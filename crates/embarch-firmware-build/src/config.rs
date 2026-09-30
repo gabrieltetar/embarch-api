@@ -656,6 +656,19 @@ mod tests {
         TempDir(base)
     }
 
+    /// Renders a path for embedding inside a TOML basic (double-quoted)
+    /// string in these tests' fixture bodies. `Path::display()` on Windows
+    /// prints backslashes (`C:\Users\...`), and a raw backslash inside a
+    /// TOML basic string is an escape sequence — `\U`/`\u` must be followed
+    /// by hex digits or the whole file fails to parse, which is exactly what
+    /// a tempdir path's arbitrary characters trigger. TOML accepts forward
+    /// slashes in a path on Windows too, so normalizing here keeps the same
+    /// fixture bodies working on both platforms without switching to TOML's
+    /// literal (single-quoted) string, which cannot represent every path.
+    fn toml_path(path: &Path) -> String {
+        path.display().to_string().replace('\\', "/")
+    }
+
     fn write_config(dir: &Path, body: &str) -> Config {
         let path = dir.join("config.toml");
         std::fs::write(&path, body).unwrap();
@@ -681,7 +694,7 @@ chip = "nRF54L15"
 artifact_path = "out.hex"
 flash_format = "hex"
 "#,
-                dir.path().display()
+                toml_path(dir.path())
             ),
         );
         assert_eq!(config.projects[0].discovery, Discovery::Static);
@@ -716,7 +729,7 @@ artifact_path = "out.bin"
 flash_format = "bin"
 base_address = 0x2000
 "#,
-                dir = dir.path().display()
+                dir = toml_path(dir.path())
             ),
         );
         // Absent is the default — every project predating decision 42 keeps
@@ -749,7 +762,7 @@ build_command = ["true"]
 artifact_path = "out.hex"
 flash_format = "hex"
 "#,
-                dir.path().display()
+                toml_path(dir.path())
             ),
         )
         .unwrap();
@@ -778,8 +791,8 @@ build_dir_root = "{}"
 chip = "nRF54L15"
 flash_format = "hex"
 "#,
-                dir.path().display(),
-                dir.path().display()
+                toml_path(dir.path()),
+                toml_path(dir.path())
             ),
         )
         .unwrap();
@@ -820,7 +833,7 @@ flash_format = "hex"
 board = "my_board"
 app = "my-app"
 "#,
-                dir = dir.path().display()
+                dir = toml_path(dir.path())
             ),
         );
         assert!(config.project("unpinned").unwrap().default_target.is_none());
@@ -863,7 +876,7 @@ flash_format = "hex"
 [projects.default_target]
 board = "my_board"
 "#,
-                dir = dir.path().display()
+                dir = toml_path(dir.path())
             ),
         )
         .unwrap();
@@ -891,7 +904,7 @@ artifact_path = "out.hex"
 flash_format = "hex"
 {extra}
 "#,
-            dir = dir.display()
+            dir = toml_path(dir)
         )
     }
 
@@ -1021,7 +1034,7 @@ flash_format = "hex"
 
 [projects.default_target]
 "#,
-                dir = dir.path().display()
+                dir = toml_path(dir.path())
             ),
         )
         .unwrap();
@@ -1052,7 +1065,7 @@ build_dir_root = "{dir}"
 flash_format = "hex"
 default_snippets = ["none"]
 "#,
-                dir = dir.path().display()
+                dir = toml_path(dir.path())
             ),
         )
         .unwrap();
@@ -1120,7 +1133,7 @@ chip = "nRF54L15"
 flash_format = "hex"
 artifact_path = "build/app/zephyr/zephyr.hex"
 "#,
-                dir.path().display()
+                toml_path(dir.path())
             ),
         );
         let dev_bench = config.dev_bench.expect("dev_bench should be present");
@@ -1152,7 +1165,7 @@ token_env = "EMBARCH_TOKEN"
 source_path = "{}"
 west_binary = "/usr/bin/west"
 "#,
-                dir.path().display()
+                toml_path(dir.path())
             ),
         )
         .unwrap();
@@ -1189,7 +1202,7 @@ flash_format = "hex"
 name = "target-a"
 build_command = ["make", "TARGET=a"]
 "#,
-                dir.path().display()
+                toml_path(dir.path())
             ),
         )
         .unwrap();
@@ -1245,7 +1258,7 @@ flash_format = "hex"
 [[projects.targets]]
 name = "target-a"
 "#,
-                dir = dir.path().display()
+                dir = toml_path(dir.path())
             ),
         )
         .unwrap();
@@ -1313,7 +1326,7 @@ build_dir_root = "{dir}"
 flash_format = "hex"
 {overrides}
 "#,
-                dir = dir.path().display()
+                dir = toml_path(dir.path())
             ),
         )
         .unwrap();
@@ -1355,7 +1368,7 @@ chip = "esp32c5"
 flash_format = "bin"
 artifact_path = "build/zephyr/zephyr.bin"
 "#,
-                dir.path().display()
+                toml_path(dir.path())
             ),
         )
         .unwrap();
@@ -1387,7 +1400,7 @@ flash_format = "hex"
 artifact_path = "build/app/zephyr/zephyr.hex"
 base_address = 0x2000
 "#,
-                dir.path().display()
+                toml_path(dir.path())
             ),
         )
         .unwrap();
@@ -1414,8 +1427,8 @@ west_binary = "west"
 build_dir_root = "{}"
 flash_format = "hex"
 "#,
-                dir.path().display(),
-                dir.path().display()
+                toml_path(dir.path()),
+                toml_path(dir.path())
             ),
         );
         let project = &config.projects[0];
@@ -1450,15 +1463,9 @@ flash_format = "hex"
 
         let dir = tempdir();
         let patched = raw
-            .replace("/path/to/my-nrf-project", &dir.path().display().to_string())
-            .replace(
-                "/path/to/my-stm32-project",
-                &dir.path().display().to_string(),
-            )
-            .replace(
-                "/path/to/my-multi-board-project",
-                &dir.path().display().to_string(),
-            );
+            .replace("/path/to/my-nrf-project", &toml_path(dir.path()))
+            .replace("/path/to/my-stm32-project", &toml_path(dir.path()))
+            .replace("/path/to/my-multi-board-project", &toml_path(dir.path()));
 
         let config = write_config(dir.path(), &patched);
         assert_eq!(config.projects.len(), 3);
