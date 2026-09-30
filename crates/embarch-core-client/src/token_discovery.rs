@@ -1,6 +1,8 @@
 use anyhow::{anyhow, bail, Context, Result};
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::Command;
+#[cfg(unix)]
 use std::sync::OnceLock;
 
 /// Resolve the bearer token embarch-api sends to embarch-core, in order:
