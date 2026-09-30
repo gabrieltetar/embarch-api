@@ -535,7 +535,7 @@ fn main() -> Result<()> {
     // (`BleConnect`->`GattDiscover`->`GattMonitorAll`) against real
     // hardware, both over MCP and via this same subcommand run directly.
     // Matches the exact "debug builds only" risk
-    // `embarch-study-designer` spec.md §7 already tracked from a smaller
+    // `embarch-study-designer` decision 63 (`decisions/limits.md`) already tracked from a smaller
     // 2-step case — this is that same bug, not a new one, just the first
     // real GATT-sized trigger, and the first time it's needed a real
     // production fix rather than a test-only `RUST_MIN_STACK`/
