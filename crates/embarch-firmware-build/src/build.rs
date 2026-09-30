@@ -396,6 +396,14 @@ async fn run_build_locked(plan: &BuildPlan, sink: Option<LineSink>) -> Result<Bu
         .spawn()
         .with_context(|| format!("failed to spawn build command ({})", plan.lock_key))?;
 
+    // Windows has no process-group equivalent; a Job Object is the tree-kill
+    // mechanism instead (`embarch-api` decision 75). Created and assigned
+    // right after spawn rather than with CREATE_SUSPENDED: a small race
+    // where the child forks a grandchild before assignment is accepted here,
+    // the same trade-off decision 75's text records.
+    #[cfg(windows)]
+    let windows_job = windows_job::assign(&child);
+
     let stdout = child.stdout.take().expect("stdout was piped");
     let stderr = child.stderr.take().expect("stderr was piped");
     let stdout_task = tokio::spawn(drain_stream(
@@ -409,7 +417,10 @@ async fn run_build_locked(plan: &BuildPlan, sink: Option<LineSink>) -> Result<Bu
 
     let timed_out = wait_result.is_err();
     if timed_out {
+        #[cfg(unix)]
         kill_process_tree(&mut child);
+        #[cfg(windows)]
+        kill_process_tree(&mut child, windows_job.as_ref());
     }
 
     let exit_code = match wait_result {
@@ -514,16 +525,109 @@ fn kill_process_tree(child: &mut tokio::process::Child) {
     let _ = child.start_kill();
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn kill_process_tree(child: &mut tokio::process::Child, job: Option<&windows_job::WindowsJob>) {
+    // `TerminateJobObject` closes every process assigned to the job,
+    // including grandchildren a west/cmake/ninja tree forks after this
+    // process spawned — the Windows equivalent of the unix arm's
+    // process-group SIGKILL (`embarch-api` decision 75). Falls back to
+    // killing just the immediate child if the job could not be created or
+    // assigned (see `windows_job::assign`), which is the pre-existing,
+    // incomplete behavior this replaces.
+    match job {
+        Some(job) => job.terminate(),
+        None => {
+            let _ = child.start_kill();
+        }
+    }
+}
+
+/// Any non-unix, non-Windows target (none currently shipped by this crate,
+/// see `Cargo.toml`/`release.yml`) falls back to the pre-existing,
+/// immediate-child-only behavior rather than silently compiling to nothing.
+#[cfg(all(not(unix), not(windows)))]
 fn kill_process_tree(child: &mut tokio::process::Child) {
-    // Kills only the immediate child. Unlike the unix arm above, this does
-    // NOT reach a forked west/cmake/ninja tree: on a timeout the build's
-    // subprocesses keep running, still holding the build directory, even
-    // though this call already reported the build as killed
-    // (`embarch-api` decision 75 — deliberately not closed here; no test
-    // tier of this crate runs on Windows to verify a real tree-kill
-    // against).
     let _ = child.start_kill();
+}
+
+#[cfg(windows)]
+mod windows_job {
+    //! Win32 Job Object wrapper used to kill a build's whole process tree on
+    //! timeout (`embarch-api` decision 75). A job created with
+    //! `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` kills every assigned process,
+    //! including ones the immediate child has since forked, either when
+    //! `TerminateJobObject` is called explicitly or when the job's last
+    //! handle closes — so a normal (non-timeout) build exit is also safe:
+    //! dropping `WindowsJob` after a clean exit closes an already-empty job.
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    pub struct WindowsJob {
+        handle: HANDLE,
+    }
+
+    // The handle is only ever touched through the Win32 calls below, all of
+    // which are safe to call from any thread.
+    unsafe impl Send for WindowsJob {}
+    unsafe impl Sync for WindowsJob {}
+
+    impl WindowsJob {
+        pub fn terminate(&self) {
+            unsafe {
+                let _ = TerminateJobObject(self.handle, 1);
+            }
+        }
+    }
+
+    impl Drop for WindowsJob {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = CloseHandle(self.handle);
+            }
+        }
+    }
+
+    /// Creates a Job Object with kill-on-close semantics and assigns the
+    /// given child process to it. Returns `None` (rather than erroring the
+    /// whole build) on any Win32 failure — the caller falls back to
+    /// `child.start_kill()`, the pre-existing behavior, so a Job Object
+    /// failure degrades to "same as before" instead of failing the build.
+    pub fn assign(child: &tokio::process::Child) -> Option<WindowsJob> {
+        // `raw_handle()` returns `None` once the child has already exited,
+        // the same case `id()` guards against on the unix side.
+        let raw_handle = child.raw_handle()? as HANDLE;
+
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return None;
+            }
+
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let ok = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const core::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+            if ok == 0 {
+                let _ = CloseHandle(job);
+                return None;
+            }
+
+            if AssignProcessToJobObject(job, raw_handle) == 0 {
+                let _ = CloseHandle(job);
+                return None;
+            }
+
+            Some(WindowsJob { handle: job })
+        }
+    }
 }
 
 #[cfg(test)]

@@ -33,3 +33,6 @@ serde_yaml = "0.9"
 tokio = { version = "1.53.0", features = ["process", "io-util", "sync", "time", "rt"] }
 toml = "1.1"
 tracing = "0.1.44"
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
