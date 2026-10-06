@@ -105,6 +105,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
         route: SignalRoute::Direct {
             port_serial: "MOCK-BRIDGE-0001".to_string(),
         },
+        baud: None,
     };
 
     // Each of these is exactly one HTTP request; none retries.
@@ -125,6 +126,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.serial_log("COM7", 115_200, 250).await;
     let _ = client.declare_signal(&signal).await;
     let _ = client.remove_signal("outpost").await;
+    let _ = client.signal_exchange("console", "help\n", Some("uart:~$ "), Some(500)).await;
     let _ = client.set_dev_bench_link(Some("MOCK-BRIDGE-0001"), Some(2)).await;
     // `bootload` reads its image off disk before it sends anything, so it
     // needs one to exist; the bytes themselves never matter to the mock.
@@ -208,6 +210,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
         ("GET", "/serial-log"),
         ("POST", "/signals"),
         ("DELETE", "/signals/outpost"),
+        ("POST", "/signals/console/exchange"),
         ("POST", "/dev-bench/link"),
         ("POST", "/bootload"),
         ("PUT", "/bootload/ports"),
@@ -805,6 +808,7 @@ async fn a_no_content_endpoint_surfaces_its_plain_text_error_too() {
                 rx_pin: "P1.04".to_string(),
                 tx_pin: "P1.05".to_string(),
             },
+            baud: None,
         })
         .await
         .expect_err("a 400 was reported as success")

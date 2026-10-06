@@ -112,7 +112,11 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
             port_serial,
             rx_pin,
             tx_pin,
-        } => declare_signal(&core, name, origin_role, &direction, &route_kind, port_serial, rx_pin, tx_pin, json).await,
+            baud,
+        } => declare_signal(&core, name, origin_role, &direction, &route_kind, port_serial, rx_pin, tx_pin, baud, json).await,
+        Commands::SignalExchange { name, write, until, timeout_ms, no_newline } => {
+            signal_exchange(&core, &name, &write, until.as_deref(), timeout_ms, !no_newline, json).await
+        }
         Commands::ListSignals => list_signals(&core, json).await,
         Commands::RemoveSignal { name } => remove_signal(&core, &name, json).await,
         Commands::DevBenchLink { serial, interface } => {
@@ -1134,9 +1138,10 @@ async fn declare_signal(
     port_serial: Option<String>,
     rx_pin: Option<String>,
     tx_pin: Option<String>,
+    baud: Option<u32>,
     json: bool,
 ) -> i32 {
-    let link = match crate::tools::parse_signal_link(name, origin_role, direction, route_kind, port_serial, rx_pin, tx_pin) {
+    let link = match crate::tools::parse_signal_link(name, origin_role, direction, route_kind, port_serial, rx_pin, tx_pin, baud) {
         Ok(l) => l,
         Err(e) => return error_result(json, e),
     };
@@ -1171,6 +1176,25 @@ async fn list_signals(core: &CoreClient, json: bool) -> i32 {
             )
         }
         Err(e) => error_result(json, format!("list-signals failed: {e:#}")),
+    }
+}
+
+async fn signal_exchange(
+    core: &CoreClient,
+    name: &str,
+    write: &str,
+    until: Option<&str>,
+    timeout_ms: Option<u64>,
+    append_newline: bool,
+    json: bool,
+) -> i32 {
+    let line = crate::tools::exchange_line(write, append_newline);
+    match core.signal_exchange(name, &line, until, timeout_ms).await {
+        Ok(resp) => {
+            let text = resp.text.clone();
+            finish(json, true, serde_json::json!({ "success": true, "exchange": resp }), text)
+        }
+        Err(e) => error_result(json, format!("signal-exchange failed: {e:#}")),
     }
 }
 
@@ -1858,7 +1882,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 34,
+            arms, 35,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."
