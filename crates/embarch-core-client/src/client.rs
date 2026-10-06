@@ -856,6 +856,38 @@ pub struct SignalExchangeResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct MemReadRange {
+    address: u64,
+    words: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct MemReadRequest<'a> {
+    role: &'a str,
+    ranges: Vec<MemReadRange>,
+}
+
+/// One range of a `POST /live/mem-read` reply.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MemReadRangeResponse {
+    pub address: u64,
+    pub words: Vec<u32>,
+}
+
+/// `POST /live/mem-read`'s reply (`embarch-core` decision 81).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MemReadResponse {
+    pub role: String,
+    pub chip: String,
+    pub probe_serial: String,
+    pub ranges: Vec<MemReadRangeResponse>,
+    /// The core was running and the read stopped it.
+    pub halted: bool,
+    /// How long it was stopped; 0 when it was already halted.
+    pub halted_us: u64,
+}
+
+#[derive(Debug, Serialize)]
 struct ResolveChipRequest<'a> {
     soc: &'a str,
 }
@@ -2200,6 +2232,17 @@ impl CoreClient {
         let url = format!("{}/signals/{}/exchange", self.base_url().await?, urlencode(name));
         let body = SignalExchangeRequest { write, until, timeout_ms };
         self.send(self.client.post(url).json(&body), self.serial_timeout).await
+    }
+
+    /// `POST /live/mem-read` — each `(address, words)` range of the target
+    /// enrolled under `role`, read over its probe under one halt and let run
+    /// again (`embarch-core` decision 81). Reuses `reset_timeout`: an
+    /// identity check and an attach, like `/reset`.
+    pub async fn mem_read(&self, role: &str, ranges: &[(u64, u32)]) -> Result<MemReadResponse> {
+        let url = format!("{}/live/mem-read", self.base_url().await?);
+        let ranges = ranges.iter().map(|&(address, words)| MemReadRange { address, words }).collect();
+        let body = MemReadRequest { role, ranges };
+        self.send(self.client.post(url).json(&body), self.reset_timeout).await
     }
 
     /// `POST /dev-bench/link` — declares dev-bench's runtime-link USB

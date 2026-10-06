@@ -571,6 +571,66 @@ pub struct SignalExchangeParams {
     pub append_newline: Option<bool>,
 }
 
+/// `embarch-core` decision 81's `POST /live/mem-read`.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct MemReadParams {
+    /// Each "ADDRESS" or "ADDRESS:WORDS", hex ("0x4002103C") or decimal, the
+    /// address a multiple of 4, WORDS default 1. All are read under one halt.
+    /// Core's caps: 32 ranges, 256 words in all.
+    pub ranges: Vec<String>,
+    /// The enrolled role to read from; default "dut".
+    #[serde(default)]
+    pub role: Option<String>,
+}
+
+/// A number as a caller writes it: `0x`-prefixed hex, or decimal.
+fn parse_number(s: &str) -> Option<u64> {
+    let s = s.trim().replace('_', "");
+    match s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        Some(hex) => u64::from_str_radix(hex, 16).ok(),
+        None => s.parse().ok(),
+    }
+}
+
+/// `ADDRESS[:WORDS]` as `(address, words)`; one word when WORDS is left out.
+pub(crate) fn parse_range(s: &str) -> Result<(u64, u32), String> {
+    let (address, words) = match s.split_once(':') {
+        Some((a, w)) => (a, Some(w)),
+        None => (s, None),
+    };
+    let address = parse_number(address)
+        .ok_or_else(|| format!("'{s}': '{address}' is not an address (give 0x-prefixed hex or decimal)"))?;
+    let words = match words {
+        Some(w) => parse_number(w)
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or_else(|| format!("'{s}': '{w}' is not a word count"))?,
+        None => 1,
+    };
+    Ok((address, words))
+}
+
+/// A read as text: one `address: word` line per word, then whether the core
+/// was stopped for it.
+pub(crate) fn mem_read_text(r: &embarch_core_client::MemReadResponse) -> String {
+    let mut out: Vec<String> = r
+        .ranges
+        .iter()
+        .flat_map(|range| {
+            range
+                .words
+                .iter()
+                .enumerate()
+                .map(move |(i, w)| format!("{:#010x}: {w:#010x}", range.address + 4 * i as u64))
+        })
+        .collect();
+    out.push(if r.halted {
+        format!("{} ({}): core halted for {} us and let run again", r.role, r.chip, r.halted_us)
+    } else {
+        format!("{} ({}): core was already halted, left halted", r.role, r.chip)
+    });
+    out.join("\n")
+}
+
 /// `write` as an exchange sends it: with a trailing newline unless told not
 /// to add one, so a shell command runs.
 pub(crate) fn exchange_line(write: &str, append_newline: bool) -> String {
@@ -1323,6 +1383,22 @@ impl EmbarchApi {
         }
     }
 
+    #[tool(description = "Read 32-bit words of an enrolled target's memory over its debug probe, via embarch-core's POST /live/mem-read (embarch-core decision 81). `ranges` are \"ADDRESS\" or \"ADDRESS:WORDS\" strings, all read under one halt of a running core, which is then let run again: on an STM32G0 sleeping in WFI a running read returns 0 or a stale word, and a halted one is always good. The answer gives the words, whether the core was halted, and for how long (microseconds). Read-only: nothing is written but the halt and the resume. Raw words only; the atlas's reg_read decodes a register by name. Goes through the same board-identity gate as flash and reset.")]
+    async fn mem_read(
+        &self,
+        Parameters(MemReadParams { ranges, role }): Parameters<MemReadParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ranges = match ranges.iter().map(|r| parse_range(r)).collect::<Result<Vec<_>, _>>() {
+            Ok(r) => r,
+            Err(e) => return Self::err_text(e),
+        };
+        let role = role.unwrap_or_else(|| "dut".to_string());
+        match self.core.mem_read(&role, &ranges).await {
+            Ok(resp) => Self::ok_json(serde_json::json!(resp)),
+            Err(e) => Self::err_text(format!("mem_read failed: {e:#}")),
+        }
+    }
+
     #[tool(description = "List every declared signal link via embarch-core's GET /signals. An empty list is the normal starting state, not a failure: nothing has been wired yet.")]
     async fn list_signals(&self) -> Result<CallToolResult, McpError> {
         match self.core.list_signals().await {
@@ -1804,7 +1880,17 @@ mod run_study_tests {
 
 #[cfg(test)]
 mod signal_tests {
-    use super::{exchange_line, parse_signal_link};
+    use super::{exchange_line, parse_range, parse_signal_link};
+
+    #[test]
+    fn a_range_is_an_address_with_an_optional_word_count() {
+        assert_eq!(parse_range("0x4002103C"), Ok((0x4002_103C, 1)));
+        assert_eq!(parse_range("0X4002_103c:4"), Ok((0x4002_103C, 4)));
+        assert_eq!(parse_range("1073877052:0x10"), Ok((0x4002_103C, 16)));
+        assert!(parse_range("4002103C").is_err());
+        assert!(parse_range("0x4002103C:").is_err());
+        assert!(parse_range("").is_err());
+    }
 
     #[test]
     fn an_exchange_line_gets_one_trailing_newline_unless_told_not_to() {

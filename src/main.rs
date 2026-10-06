@@ -517,6 +517,20 @@ pub enum Commands {
         #[arg(long)]
         no_newline: bool,
     },
+    /// Read 32-bit words of an enrolled target's memory over its probe, via
+    /// embarch-core (`embarch-core` decision 81). Every range is read under
+    /// one halt of a running core, which is then let run again; the answer
+    /// says for how long.
+    MemRead {
+        /// ADDRESS[:WORDS], hex (0x...) or decimal, the address a multiple of
+        /// 4; WORDS defaults to 1. Repeat for more ranges (Core's caps: 32
+        /// ranges, 256 words in all).
+        #[arg(long = "range", required = true)]
+        ranges: Vec<String>,
+        /// The enrolled role to read from.
+        #[arg(long, default_value = "dut")]
+        role: String,
+    },
     /// List every declared signal link via embarch-core. An empty list is
     /// the normal starting state — nothing has been wired yet.
     ListSignals,
