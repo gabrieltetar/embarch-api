@@ -493,6 +493,29 @@ pub enum Commands {
         /// dev-bench pin the signal's TX side terminates on.
         #[arg(long)]
         tx_pin: Option<String>,
+        /// The signal's own line rate (e.g. 115200 for a DUT console);
+        /// without it Core uses its default.
+        #[arg(long)]
+        baud: Option<u32>,
+    },
+    /// Write a line to a declared host-to-dut or bidirectional signal and
+    /// print what came back, via embarch-core (`embarch-core` decision 79).
+    SignalExchange {
+        /// The declared signal's name.
+        #[arg(long)]
+        name: String,
+        /// What to send; a trailing newline is added unless --no-newline.
+        #[arg(long)]
+        write: String,
+        /// Stop reading as soon as this text appears (e.g. "uart:~$ ").
+        #[arg(long)]
+        until: Option<String>,
+        /// Read deadline in ms (Core's default 2000, cap 10000).
+        #[arg(long)]
+        timeout_ms: Option<u64>,
+        /// Send --write exactly as given.
+        #[arg(long)]
+        no_newline: bool,
     },
     /// List every declared signal link via embarch-core. An empty list is
     /// the normal starting state — nothing has been wired yet.

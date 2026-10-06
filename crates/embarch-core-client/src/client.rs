@@ -834,6 +834,28 @@ pub struct SerialLogResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct SignalExchangeRequest<'a> {
+    write: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    until: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timeout_ms: Option<u64>,
+}
+
+/// `POST /signals/{name}/exchange`'s reply (`embarch-core` decision 79).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SignalExchangeResponse {
+    pub signal: String,
+    pub port: String,
+    pub baud: u32,
+    /// Everything read after the write, escape codes included.
+    pub text: String,
+    pub until_seen: bool,
+    pub truncated: bool,
+    pub elapsed_ms: u64,
+}
+
+#[derive(Debug, Serialize)]
 struct ResolveChipRequest<'a> {
     soc: &'a str,
 }
@@ -2163,6 +2185,23 @@ impl CoreClient {
         Err(anyhow!("embarch-core returned {status}: {body}"))
     }
 
+    /// `POST /signals/{name}/exchange` — writes `write` to a declared
+    /// `host-to-dut` or `bidirectional` signal and returns what came back,
+    /// read until `until` appears or `timeout_ms` passes (`embarch-core`
+    /// decision 79). Reuses `serial_timeout`: Core caps `timeout_ms` under
+    /// it, for the same reason it caps `/serial-log`.
+    pub async fn signal_exchange(
+        &self,
+        name: &str,
+        write: &str,
+        until: Option<&str>,
+        timeout_ms: Option<u64>,
+    ) -> Result<SignalExchangeResponse> {
+        let url = format!("{}/signals/{}/exchange", self.base_url().await?, urlencode(name));
+        let body = SignalExchangeRequest { write, until, timeout_ms };
+        self.send(self.client.post(url).json(&body), self.serial_timeout).await
+    }
+
     /// `POST /dev-bench/link` — declares dev-bench's runtime-link USB
     /// serial, by the bridge's own USB serial number and/or which interface
     /// of it (`embarch-core`'s `set_dev_bench_link_handler`). At least one of
@@ -2391,6 +2430,7 @@ mod tests {
             origin_role: "dut".to_string(),
             direction: SignalDirection::DutToHost,
             route: SignalRoute::Direct { port_serial: "ABC123".to_string() },
+            baud: None,
         }
     }
 
@@ -2650,6 +2690,7 @@ mod tests {
             origin_role: "dut".to_string(),
             direction: SignalDirection::DutToHost,
             route: SignalRoute::ViaDevBench { rx_pin: "P0.04".to_string(), tx_pin: "P0.05".to_string() },
+            baud: None,
         };
         let json = serde_json::to_string(&link).unwrap();
         assert!(json.contains(r#""kind":"via-dev-bench""#), "{json}");

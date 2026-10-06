@@ -543,6 +543,42 @@ pub struct DeclareSignalParams {
     /// pin the signal's TX side terminates on.
     #[serde(default)]
     pub tx_pin: Option<String>,
+    /// The signal's line rate when it is not Core's default (1 Mbaud), e.g.
+    /// 115200 for a DUT console (`embarch-topology` decision 37). Omit for a
+    /// USB CDC ACM port, which ignores it.
+    #[serde(default)]
+    pub baud: Option<u32>,
+}
+
+/// `embarch-core` decision 79's `POST /signals/{name}/exchange`.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SignalExchangeParams {
+    /// A declared signal whose direction is host-to-dut or bidirectional and
+    /// whose route is direct.
+    pub name: String,
+    /// What to send, e.g. a shell command. A trailing newline is added when
+    /// missing, unless append_newline is false.
+    pub write: String,
+    /// Stop reading as soon as this text appears (a shell prompt such as
+    /// "uart:~$ "). Without it, the read runs to timeout_ms.
+    #[serde(default)]
+    pub until: Option<String>,
+    /// Read deadline; Core's own default and cap apply (2000 / 10000 ms).
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    /// Default true.
+    #[serde(default)]
+    pub append_newline: Option<bool>,
+}
+
+/// `write` as an exchange sends it: with a trailing newline unless told not
+/// to add one, so a shell command runs.
+pub(crate) fn exchange_line(write: &str, append_newline: bool) -> String {
+    if append_newline && !write.ends_with('\n') {
+        format!("{write}\n")
+    } else {
+        write.to_string()
+    }
 }
 
 /// `embarch-topology` decision 18's `DELETE /signals/{name}`.
@@ -595,6 +631,7 @@ pub struct DevBenchLinkParams {
 /// forms [`DeclareSignalParams`] (and its CLI mirror in `main.rs`) carry
 /// into `embarch-core-client`'s typed `SignalLink`, naming exactly what a
 /// bad value expected instead of a raw enum-parse error.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn parse_signal_link(
     name: String,
     origin_role: String,
@@ -603,6 +640,7 @@ pub(crate) fn parse_signal_link(
     port_serial: Option<String>,
     rx_pin: Option<String>,
     tx_pin: Option<String>,
+    baud: Option<u32>,
 ) -> Result<embarch_core_client::SignalLink, String> {
     use embarch_core_client::{SignalDirection, SignalLink, SignalRoute};
 
@@ -638,7 +676,10 @@ pub(crate) fn parse_signal_link(
         }
     };
 
-    Ok(SignalLink { name, origin_role, direction, route })
+    if baud == Some(0) {
+        return Err("baud 0 is not a line rate: leave it out for Core's default".to_string());
+    }
+    Ok(SignalLink { name, origin_role, direction, route, baud })
 }
 
 #[tool_router]
@@ -1246,7 +1287,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Declare (or re-declare) where a named DUT signal currently goes, via embarch-core's POST /signals (embarch-topology decision 18, wrapped per embarch-api decision 67). Idempotent by name: re-declaring an existing name overwrites it, which is the migration path for moving a signal from a Direct route (straight to a serial port, port_serial from list_serial_ports) onto dev-bench pins (via-dev-bench, rx_pin/tx_pin) or back — no saved Study changes, since a study names the signal and never its carrier. direction is one of dut-to-host, host-to-dut, bidirectional. route_kind is direct (needs port_serial) or via-dev-bench (needs rx_pin and tx_pin).")]
+    #[tool(description = "Declare (or re-declare) where a named DUT signal currently goes, via embarch-core's POST /signals (embarch-topology decision 18, wrapped per embarch-api decision 67). Idempotent by name: re-declaring an existing name overwrites it, which is the migration path for moving a signal from a Direct route (straight to a serial port, port_serial from list_serial_ports) onto dev-bench pins (via-dev-bench, rx_pin/tx_pin) or back — no saved Study changes, since a study names the signal and never its carrier. direction is one of dut-to-host, host-to-dut, bidirectional. route_kind is direct (needs port_serial) or via-dev-bench (needs rx_pin and tx_pin). baud sets the signal's own line rate (e.g. 115200 for a DUT console); without it Core uses its default.")]
     async fn declare_signal(
         &self,
         Parameters(DeclareSignalParams {
@@ -1257,15 +1298,28 @@ impl EmbarchApi {
             port_serial,
             rx_pin,
             tx_pin,
+            baud,
         }): Parameters<DeclareSignalParams>,
     ) -> Result<CallToolResult, McpError> {
-        let link = match parse_signal_link(name, origin_role, &direction, &route_kind, port_serial, rx_pin, tx_pin) {
+        let link = match parse_signal_link(name, origin_role, &direction, &route_kind, port_serial, rx_pin, tx_pin, baud) {
             Ok(l) => l,
             Err(e) => return Self::err_text(e),
         };
         match self.core.declare_signal(&link).await {
             Ok(()) => Self::ok_json(serde_json::json!({ "declared": true, "signal": link })),
             Err(e) => Self::err_text(format!("declare_signal failed: {e:#}")),
+        }
+    }
+
+    #[tool(description = "Write a line to a declared DUT signal and return what came back, via embarch-core's POST /signals/{name}/exchange (embarch-core decision 79): a shell command and its output. The signal must be declared host-to-dut or bidirectional on a direct route (declare_signal; give baud for a UART console). Reads until `until` appears (e.g. the shell prompt \"uart:~$ \") or timeout_ms passes. Returns the raw text, escape codes included, with until_seen and truncated. Takes Core's hardware lock for the exchange only.")]
+    async fn signal_exchange(
+        &self,
+        Parameters(SignalExchangeParams { name, write, until, timeout_ms, append_newline }): Parameters<SignalExchangeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let line = exchange_line(&write, append_newline.unwrap_or(true));
+        match self.core.signal_exchange(&name, &line, until.as_deref(), timeout_ms).await {
+            Ok(resp) => Self::ok_json(serde_json::json!(resp)),
+            Err(e) => Self::err_text(format!("signal_exchange failed: {e:#}")),
         }
     }
 
@@ -1745,5 +1799,36 @@ mod run_study_tests {
         // what should reject this, not this unwrap step.
         let n = serde_json::json!(42);
         assert_eq!(unwrap_stringified_json(n.clone()).unwrap(), n);
+    }
+}
+
+#[cfg(test)]
+mod signal_tests {
+    use super::{exchange_line, parse_signal_link};
+
+    #[test]
+    fn an_exchange_line_gets_one_trailing_newline_unless_told_not_to() {
+        assert_eq!(exchange_line("kernel uptime", true), "kernel uptime\n");
+        assert_eq!(exchange_line("kernel uptime\n", true), "kernel uptime\n");
+        assert_eq!(exchange_line("raw", false), "raw");
+    }
+
+    #[test]
+    fn a_declared_baud_is_carried_and_zero_is_refused() {
+        let link = |baud| {
+            parse_signal_link(
+                "console".to_string(),
+                "dut".to_string(),
+                "bidirectional",
+                "direct",
+                Some("ABC".to_string()),
+                None,
+                None,
+                baud,
+            )
+        };
+        assert_eq!(link(Some(115_200)).unwrap().baud, Some(115_200));
+        assert_eq!(link(None).unwrap().baud, None);
+        assert!(link(Some(0)).unwrap_err().contains("baud 0"));
     }
 }
