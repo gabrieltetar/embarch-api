@@ -117,6 +117,7 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         Commands::SignalExchange { name, write, until, timeout_ms, no_newline } => {
             signal_exchange(&core, &name, &write, until.as_deref(), timeout_ms, !no_newline, json).await
         }
+        Commands::MemRead { ranges, role } => mem_read(&core, &role, &ranges, json).await,
         Commands::ListSignals => list_signals(&core, json).await,
         Commands::RemoveSignal { name } => remove_signal(&core, &name, json).await,
         Commands::DevBenchLink { serial, interface } => {
@@ -1198,6 +1199,20 @@ async fn signal_exchange(
     }
 }
 
+async fn mem_read(core: &CoreClient, role: &str, ranges: &[String], json: bool) -> i32 {
+    let ranges = match ranges.iter().map(|r| crate::tools::parse_range(r)).collect::<Result<Vec<_>, _>>() {
+        Ok(r) => r,
+        Err(e) => return error_result(json, e),
+    };
+    match core.mem_read(role, &ranges).await {
+        Ok(resp) => {
+            let text = crate::tools::mem_read_text(&resp);
+            finish(json, true, serde_json::json!({ "success": true, "read": resp }), text)
+        }
+        Err(e) => error_result(json, format!("mem-read failed: {e:#}")),
+    }
+}
+
 async fn remove_signal(core: &CoreClient, name: &str, json: bool) -> i32 {
     match core.remove_signal(name).await {
         Ok(removed) => finish(
@@ -1882,7 +1897,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 35,
+            arms, 36,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."

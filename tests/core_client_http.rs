@@ -127,6 +127,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.declare_signal(&signal).await;
     let _ = client.remove_signal("outpost").await;
     let _ = client.signal_exchange("console", "help\n", Some("uart:~$ "), Some(500)).await;
+    let _ = client.mem_read("dut", &[(0x4002_103C, 1)]).await;
     let _ = client.set_dev_bench_link(Some("MOCK-BRIDGE-0001"), Some(2)).await;
     // `bootload` reads its image off disk before it sends anything, so it
     // needs one to exist; the bytes themselves never matter to the mock.
@@ -211,6 +212,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
         ("POST", "/signals"),
         ("DELETE", "/signals/outpost"),
         ("POST", "/signals/console/exchange"),
+        ("POST", "/live/mem-read"),
         ("POST", "/dev-bench/link"),
         ("POST", "/bootload"),
         ("PUT", "/bootload/ports"),
