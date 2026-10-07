@@ -114,8 +114,8 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
             tx_pin,
             baud,
         } => declare_signal(&core, name, origin_role, &direction, &route_kind, port_serial, rx_pin, tx_pin, baud, json).await,
-        Commands::SignalExchange { name, write, until, timeout_ms, no_newline } => {
-            signal_exchange(&core, &name, &write, until.as_deref(), timeout_ms, !no_newline, json).await
+        Commands::SignalExchange { name, write, until, timeout_ms, no_newline, port_wait_ms } => {
+            signal_exchange(&core, &name, &write, until.as_deref(), timeout_ms, port_wait_ms, !no_newline, json).await
         }
         Commands::MemRead { ranges, role } => mem_read(&core, &role, &ranges, json).await,
         Commands::ListSignals => list_signals(&core, json).await,
@@ -1180,17 +1180,19 @@ async fn list_signals(core: &CoreClient, json: bool) -> i32 {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn signal_exchange(
     core: &CoreClient,
     name: &str,
     write: &str,
     until: Option<&str>,
     timeout_ms: Option<u64>,
+    port_wait_ms: Option<u64>,
     append_newline: bool,
     json: bool,
 ) -> i32 {
     let line = crate::tools::exchange_line(write, append_newline);
-    match core.signal_exchange(name, &line, until, timeout_ms).await {
+    match core.signal_exchange(name, &line, until, timeout_ms, port_wait_ms).await {
         Ok(resp) => {
             let text = resp.text.clone();
             finish(json, true, serde_json::json!({ "success": true, "exchange": resp }), text)

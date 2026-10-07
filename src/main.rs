@@ -516,6 +516,10 @@ pub enum Commands {
         /// Send --write exactly as given.
         #[arg(long)]
         no_newline: bool,
+        /// Wait up to this long (ms, max 10000) for the signal's port to
+        /// appear, e.g. a USB console re-enumerating after a reset.
+        #[arg(long)]
+        port_wait_ms: Option<u64>,
     },
     /// Read 32-bit words of an enrolled target's memory over its probe, via
     /// embarch-core (`embarch-core` decision 81). Every range is read under

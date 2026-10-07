@@ -569,6 +569,11 @@ pub struct SignalExchangeParams {
     /// Default true.
     #[serde(default)]
     pub append_newline: Option<bool>,
+    /// Wait up to this long (ms, max 10000) for the signal's port to appear
+    /// before giving up: a USB CDC ACM console is gone while its device
+    /// resets. Default 0.
+    #[serde(default)]
+    pub port_wait_ms: Option<u64>,
 }
 
 /// `embarch-core` decision 81's `POST /live/mem-read`.
@@ -1371,13 +1376,13 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Write a line to a declared DUT signal and return what came back, via embarch-core's POST /signals/{name}/exchange (embarch-core decision 79): a shell command and its output. The signal must be declared host-to-dut or bidirectional on a direct route (declare_signal; give baud for a UART console). Reads until `until` appears (e.g. the shell prompt \"uart:~$ \") or timeout_ms passes. Returns the raw text, escape codes included, with until_seen and truncated. Takes Core's hardware lock for the exchange only.")]
+    #[tool(description = "Write a line to a declared DUT signal and return what came back, via embarch-core's POST /signals/{name}/exchange (embarch-core decision 79): a shell command and its output. The signal must be declared host-to-dut or bidirectional on a direct route (declare_signal; give baud for a UART console). Reads until `until` appears (e.g. the shell prompt \"uart:~$ \") or timeout_ms passes. Returns the raw text, escape codes included, with until_seen and truncated. After a flash or reset, pass port_wait_ms (up to 10000) so Core waits for a USB console to re-enumerate instead of failing at once. Takes Core's hardware lock for the exchange only.")]
     async fn signal_exchange(
         &self,
-        Parameters(SignalExchangeParams { name, write, until, timeout_ms, append_newline }): Parameters<SignalExchangeParams>,
+        Parameters(SignalExchangeParams { name, write, until, timeout_ms, append_newline, port_wait_ms }): Parameters<SignalExchangeParams>,
     ) -> Result<CallToolResult, McpError> {
         let line = exchange_line(&write, append_newline.unwrap_or(true));
-        match self.core.signal_exchange(&name, &line, until.as_deref(), timeout_ms).await {
+        match self.core.signal_exchange(&name, &line, until.as_deref(), timeout_ms, port_wait_ms).await {
             Ok(resp) => Self::ok_json(serde_json::json!(resp)),
             Err(e) => Self::err_text(format!("signal_exchange failed: {e:#}")),
         }

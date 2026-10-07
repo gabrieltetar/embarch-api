@@ -840,6 +840,8 @@ struct SignalExchangeRequest<'a> {
     until: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     timeout_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    port_wait_ms: Option<u64>,
 }
 
 /// `POST /signals/{name}/exchange`'s reply (`embarch-core` decision 79).
@@ -2221,17 +2223,22 @@ impl CoreClient {
     /// `host-to-dut` or `bidirectional` signal and returns what came back,
     /// read until `until` appears or `timeout_ms` passes (`embarch-core`
     /// decision 79). Reuses `serial_timeout`: Core caps `timeout_ms` under
-    /// it, for the same reason it caps `/serial-log`.
+    /// it, for the same reason it caps `/serial-log`. `port_wait_ms` lets
+    /// Core wait that long for a port that is gone (a CDC ACM console during
+    /// its device's reset), and is added to the request's timeout.
     pub async fn signal_exchange(
         &self,
         name: &str,
         write: &str,
         until: Option<&str>,
         timeout_ms: Option<u64>,
+        port_wait_ms: Option<u64>,
     ) -> Result<SignalExchangeResponse> {
         let url = format!("{}/signals/{}/exchange", self.base_url().await?, urlencode(name));
-        let body = SignalExchangeRequest { write, until, timeout_ms };
-        self.send(self.client.post(url).json(&body), self.serial_timeout).await
+        let body = SignalExchangeRequest { write, until, timeout_ms, port_wait_ms };
+        // The port wait comes before the exchange's own deadline, so it adds to the request's.
+        let timeout = self.serial_timeout + Duration::from_millis(port_wait_ms.unwrap_or(0));
+        self.send(self.client.post(url).json(&body), timeout).await
     }
 
     /// `POST /live/mem-read` — each `(address, words)` range of the target
