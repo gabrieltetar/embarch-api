@@ -121,6 +121,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.reset("nRF52840_xxAA", None).await;
     let _ = client.enroll_probe("dut", "nRF52840_xxAA", None, Some("client-nucleo")).await;
     let _ = client.unenroll_probe("dut").await;
+    let _ = client.unenroll_probe_by_serial("066DFF574885524867182407").await;
     let _ = client.set_role_board("dut", "nrf54l15dk", "nRF54L15").await;
     let _ = client.resolve_chip("nrf52840").await;
     let _ = client.serial_log("COM7", 115_200, 250).await;
@@ -206,6 +207,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
         ("POST", "/reset"),
         ("POST", "/probes/enroll"),
         ("DELETE", "/probes/enrolled/dut"),
+        ("DELETE", "/probes/by-serial/066DFF574885524867182407"),
         ("PUT", "/probes/enrolled/dut/board"),
         ("POST", "/resolve-chip"),
         ("GET", "/serial-log"),

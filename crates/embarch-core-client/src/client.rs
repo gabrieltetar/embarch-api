@@ -1744,6 +1744,22 @@ impl CoreClient {
     /// "there was nothing to retract" without parsing an error string.
     pub async fn unenroll_probe(&self, role: &str) -> Result<bool> {
         let url = format!("{}/probes/enrolled/{}", self.base_url().await?, urlencode(role));
+        self.delete_enrollment(url).await
+    }
+
+    /// `embarch-core`'s `DELETE /probes/by-serial/{serial}` — retracts the
+    /// board enrolled through probe `serial`, whatever role it holds: the
+    /// only retraction a **bench board** has (`embarch-api` decision 84),
+    /// since it holds no role to name it by. `Ok(false)` on Core's `404`,
+    /// as [`Self::unenroll_probe`].
+    pub async fn unenroll_probe_by_serial(&self, serial: &str) -> Result<bool> {
+        let url = format!("{}/probes/by-serial/{}", self.base_url().await?, urlencode(serial));
+        self.delete_enrollment(url).await
+    }
+
+    /// The `DELETE` both retractions share: `404` is `Ok(false)`, a success
+    /// is `Ok(true)`, anything else is the error Core sent.
+    async fn delete_enrollment(&self, url: String) -> Result<bool> {
         let response = self
             .dispatch(self.client.delete(url), Some(self.status_timeout))
             .await?;

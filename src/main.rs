@@ -387,9 +387,11 @@ pub enum Commands {
         /// Which slot on the bench this board fills: `dut` or `dev-bench`,
         /// and nothing else — Core answers 400 to anything outside that
         /// pair (`embarch-ui` decision 44). What the board is *called* goes
-        /// in `--name`.
+        /// in `--name`. Omitted, the board is a **bench board** (decision
+        /// 84): flashed and checked by its probe serial, holding no role,
+        /// and `--name` is then required.
         #[arg(long)]
-        role: String,
+        role: Option<String>,
         /// The probe-rs chip target this probe should attach as (e.g.
         /// "nRF54L15", "esp32c5").
         #[arg(long)]
@@ -427,8 +429,12 @@ pub enum Commands {
     /// closed to dut/dev-bench.
     UnenrollProbe {
         /// The role to empty.
+        #[arg(long, conflicts_with = "probe_serial", required_unless_present = "probe_serial")]
+        role: Option<String>,
+        /// Retract the board enrolled through this probe instead, whatever
+        /// role it holds — the only way to retract a bench board.
         #[arg(long)]
-        role: String,
+        probe_serial: Option<String>,
     },
     /// Explicit, non-destructive re-check of an already-enrolled board's
     /// live identity via embarch-core (`embarch-core` decision 28) — the same
