@@ -468,8 +468,11 @@ pub struct EnrollProbeParams {
     /// Which slot on the bench this board fills: "dut" or "dev-bench", and
     /// nothing else — Core answers 400 to anything outside that pair
     /// (`embarch-ui` decision 44). A role is not a label: what the board is
-    /// *called* goes in `name`.
-    pub role: String,
+    /// *called* goes in `name`. Omitted, the board is a bench board
+    /// (decision 84): flashed and checked by its probe serial, holding no
+    /// role, and `name` is then required.
+    #[serde(default)]
+    pub role: Option<String>,
     /// What this physical board is called (e.g. "client-nucleo",
     /// "wearable-rev6") — recorded verbatim beside the role, validated
     /// against nothing, and resolved against a firmware repo's
@@ -674,7 +677,13 @@ pub struct UnenrollProbeParams {
     /// that pair is accepted here precisely because clearing one is what
     /// this call is for — a board enrolled under an invented role before
     /// the vocabulary closed has no other way out.
-    pub role: String,
+    #[serde(default)]
+    pub role: Option<String>,
+    /// Retract the board enrolled through this probe instead, whatever role
+    /// it holds — the only way to retract a bench board (decision 84).
+    /// Exactly one of role and probe_serial.
+    #[serde(default)]
+    pub probe_serial: Option<String>,
 }
 
 /// `embarch-core`'s `POST /dev-bench/link` — declares dev-bench's
@@ -1227,14 +1236,14 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Enroll a physical probe with embarch-topology's enrollment storage (embarch-topology decision 14), recording which board its serial number is wired to. role is one of exactly two values — 'dut' or 'dev-bench' — and Core answers 400 to anything else; what the board is called goes in name, which is free text recorded verbatim (embarch-ui decision 44). Requires exactly one debug probe currently attached, unless probe_serial picks a specific one — Core refuses (naming every candidate) otherwise, since the whole point is knowing exactly which board is meant before confirming. Once enrolled, flash/reset/run_study all refuse to touch that probe unless a live hardware-ID readback still matches what was recorded here. No project param — this isn't build-target selection.")]
+    #[tool(description = "Enroll a physical probe with embarch-topology's enrollment storage (embarch-topology decision 14), recording which board its serial number is wired to. role is one of exactly two values — 'dut' or 'dev-bench' — and Core answers 400 to anything else; what the board is called goes in name, which is free text recorded verbatim (embarch-ui decision 44). Omit role to enroll a bench board: a board that holds no role (a USB PD partner, an instrument's host board) but that a project still flashes and resets by its probe_serial, behind the same identity check; name is required then, and any number of bench boards may be enrolled. Requires exactly one debug probe currently attached, unless probe_serial picks a specific one — Core refuses (naming every candidate) otherwise, since the whole point is knowing exactly which board is meant before confirming. Once enrolled, flash/reset/run_study all refuse to touch that probe unless a live hardware-ID readback still matches what was recorded here. No project param — this isn't build-target selection.")]
     async fn enroll_probe(
         &self,
         Parameters(EnrollProbeParams { role, name, chip, probe_serial }): Parameters<EnrollProbeParams>,
     ) -> Result<CallToolResult, McpError> {
         match self
             .core
-            .enroll_probe(&role, &chip, probe_serial.as_deref(), name.as_deref())
+            .enroll_probe(role.as_deref().unwrap_or(""), &chip, probe_serial.as_deref(), name.as_deref())
             .await
         {
             Ok(resp) => Self::ok_json(serde_json::json!({
@@ -1439,14 +1448,21 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Retract whatever board holds a role via embarch-core's DELETE /probes/enrolled/{role}, leaving that role empty. Opens no probe: a board that is unplugged, or that no longer answers, retracts exactly like an attached one. removed is false, not an error, when nothing was enrolled under that role. This is also the only way to clear a board enrolled under an invented role (e.g. 'client-nucleo') from before the role vocabulary closed to dut/dev-bench.")]
+    #[tool(description = "Retract whatever board holds a role via embarch-core's DELETE /probes/enrolled/{role}, leaving that role empty — or, given probe_serial instead of role, the board enrolled through that probe via DELETE /probes/by-serial/{serial}, the only way to retract a bench board. Exactly one of role and probe_serial. Opens no probe: a board that is unplugged, or that no longer answers, retracts exactly like an attached one. removed is false, not an error, when nothing was enrolled under that role. This is also the only way to clear a board enrolled under an invented role (e.g. 'client-nucleo') from before the role vocabulary closed to dut/dev-bench.")]
     async fn unenroll_probe(
         &self,
-        Parameters(UnenrollProbeParams { role }): Parameters<UnenrollProbeParams>,
+        Parameters(UnenrollProbeParams { role, probe_serial }): Parameters<UnenrollProbeParams>,
     ) -> Result<CallToolResult, McpError> {
-        match self.core.unenroll_probe(&role).await {
-            Ok(removed) => Self::ok_json(serde_json::json!({ "removed": removed, "role": role })),
-            Err(e) => Self::err_text(format!("unenroll_probe failed: {e:#}")),
+        match (role, probe_serial) {
+            (Some(role), None) => match self.core.unenroll_probe(&role).await {
+                Ok(removed) => Self::ok_json(serde_json::json!({ "removed": removed, "role": role })),
+                Err(e) => Self::err_text(format!("unenroll_probe failed: {e:#}")),
+            },
+            (None, Some(serial)) => match self.core.unenroll_probe_by_serial(&serial).await {
+                Ok(removed) => Self::ok_json(serde_json::json!({ "removed": removed, "probe_serial": serial })),
+                Err(e) => Self::err_text(format!("unenroll_probe failed: {e:#}")),
+            },
+            _ => Self::err_text("unenroll_probe needs exactly one of role and probe_serial".to_string()),
         }
     }
 

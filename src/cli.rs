@@ -95,12 +95,17 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         Commands::ResetDevBench => reset_dev_bench(&config, &core, json).await,
         Commands::DevBenchHello => dev_bench_hello(&core, json).await,
         Commands::EnrollProbe { role, chip, probe_serial, name } => {
-            enroll_probe(&core, &role, &chip, probe_serial.as_deref(), name.as_deref(), json).await
+            enroll_probe(&core, role.as_deref().unwrap_or(""), &chip, probe_serial.as_deref(), name.as_deref(), json)
+                .await
         }
         Commands::SetRoleBoard { role, board, chip } => {
             set_role_board(&core, &role, &board, &chip, json).await
         }
-        Commands::UnenrollProbe { role } => unenroll_probe(&core, &role, json).await,
+        Commands::UnenrollProbe { role, probe_serial } => match (role, probe_serial) {
+            (_, Some(serial)) => unenroll_by_probe(&core, &serial, json).await,
+            (Some(role), None) => unenroll_probe(&core, &role, json).await,
+            (None, None) => error_result(json, "unenroll-probe needs --role or --probe-serial".to_string()),
+        },
         Commands::Validate { role } => validate(&core, &role, json).await,
         Commands::Alerts { limit } => alerts(&core, limit, json).await,
         Commands::ListSerialPorts => serial_ports(&core, json).await,
@@ -883,9 +888,9 @@ async fn enroll_probe(
                 "confirmed_at_utc_ms": resp.confirmed_at_utc_ms,
             }),
             format!(
-                "enrolled probe {} as role '{}' ({}, chip '{}', hardware_id {})",
+                "enrolled probe {} as {} ({}, chip '{}', hardware_id {})",
                 resp.probe_serial,
-                resp.role,
+                if resp.role.is_empty() { "a bench board".to_string() } else { format!("role '{}'", resp.role) },
                 if resp.name.is_empty() { "unnamed".to_string() } else { format!("board '{}'", resp.name) },
                 resp.chip,
                 resp.hardware_id
@@ -946,6 +951,25 @@ async fn unenroll_probe(core: &CoreClient, role: &str, json: bool) -> i32 {
                 format!("unenrolled role '{role}' — that role is now empty")
             } else {
                 format!("nothing was enrolled under role '{role}'")
+            },
+        ),
+        Err(e) => error_result(json, format!("unenroll-probe failed: {e:#}")),
+    }
+}
+
+/// `DELETE /probes/by-serial/{serial}` — retracts the board enrolled
+/// through a probe, whatever role it holds; the only retraction a bench
+/// board has (decision 84). Same `removed: false` shape as above.
+async fn unenroll_by_probe(core: &CoreClient, serial: &str, json: bool) -> i32 {
+    match core.unenroll_probe_by_serial(serial).await {
+        Ok(removed) => finish(
+            json,
+            true,
+            serde_json::json!({ "success": true, "removed": removed, "probe_serial": serial }),
+            if removed {
+                format!("unenrolled the board on probe {serial}")
+            } else {
+                format!("nothing was enrolled through probe {serial}")
             },
         ),
         Err(e) => error_result(json, format!("unenroll-probe failed: {e:#}")),
