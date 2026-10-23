@@ -9,7 +9,9 @@
 
 use anyhow::{bail, Context, Result};
 use crate::config::Config;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 /// The word a project argument uses to mean "the open desk's".
 pub const DESK: &str = "desk";
@@ -48,32 +50,76 @@ fn same_tree(a: &Path, b: &Path) -> bool {
     a == b || a.starts_with(&b) || b.starts_with(&a)
 }
 
-/// The configured project a name means: itself, or for an empty name or
-/// `desk`, the project whose `source_path` is the open desk's firmware repo.
-pub fn resolve(config: &Config, name: &str) -> Result<String> {
-    let name = name.trim();
-    if !name.is_empty() && name != DESK {
-        return Ok(name.to_string());
+/// A firmware repo's own `embarch/embarch.toml` (what `embarch init`
+/// writes), loaded once per process and kept: the server's own config is one
+/// repo's, and a desk is often another's. Leaked on purpose — a handful of
+/// desks at most, held for the life of the process, so a project borrowed
+/// from one lives as long as any caller needs it.
+fn repo_config(repo: &Path) -> Option<&'static Config> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, &'static Config>>> = OnceLock::new();
+    let path = repo.join("embarch").join("embarch.toml");
+    let mut cache = CACHE.get_or_init(Default::default).lock().ok()?;
+    if let Some(c) = cache.get(&path) {
+        return Some(c);
     }
-    let (desk, repos) = open_desk()?;
-    resolve_in(config, &desk, &repos)
+    let config: &'static Config = Box::leak(Box::new(Config::load_from_path(&path).ok()?));
+    cache.insert(path, config);
+    Some(config)
 }
 
-fn resolve_in(config: &Config, desk: &str, repos: &[PathBuf]) -> Result<String> {
-    if repos.is_empty() {
-        bail!("the open desk {desk:?} names no firmware repo");
+/// The project a name means, and the config it lives in (`None` = the
+/// server's own). A named project is itself. An empty name or `desk` is the
+/// open desk's: a project in the server's config whose `source_path` is the
+/// desk's firmware repo, else one in that repo's own `embarch/embarch.toml`.
+/// Several candidates is an error naming them, never a guess.
+pub fn resolve(config: &Config, name: &str) -> Result<(Option<&'static Config>, String)> {
+    let name = name.trim();
+    if !name.is_empty() && name != DESK {
+        return Ok((None, name.to_string()));
     }
-    for repo in repos {
-        if let Some(p) = config.projects.iter().find(|p| same_tree(&p.source_path, repo)) {
-            return Ok(p.name.clone());
+    let (desk, repos) = open_desk()?;
+    if let Some(n) = resolve_in(config, &desk, &repos)? {
+        return Ok((None, n));
+    }
+    for repo in &repos {
+        if let Some(own) = repo_config(repo) {
+            if let Some(n) = resolve_in(own, &desk, std::slice::from_ref(repo))? {
+                return Ok((Some(own), n));
+            }
         }
     }
     let known: Vec<String> = config.projects.iter().map(|p| format!("{} ({})", p.name, p.source_path.display())).collect();
     bail!(
-        "the open desk {desk:?}'s firmware repo {} is not a project in embarch-api's config; configured: {}",
-        repos[0].display(),
+        "the open desk {desk:?}'s firmware repo {} is not a project in embarch-api's config ({}), and it has no \
+         embarch/embarch.toml of its own — run `embarch init` there, or name a project",
+        repos.first().map(|r| r.display().to_string()).unwrap_or_default(),
         known.join(", ")
     )
+}
+
+/// The one project of `config` on the desk's repos; `None` when there is none.
+fn resolve_in(config: &Config, desk: &str, repos: &[PathBuf]) -> Result<Option<String>> {
+    if repos.is_empty() {
+        bail!("the open desk {desk:?} names no firmware repo");
+    }
+    for repo in repos {
+        let hits: Vec<&str> = config
+            .projects
+            .iter()
+            .filter(|p| same_tree(&p.source_path, repo))
+            .map(|p| p.name.as_str())
+            .collect();
+        match hits.as_slice() {
+            [] => continue,
+            [one] => return Ok(Some(one.to_string())),
+            many => bail!(
+                "the open desk {desk:?}'s repo {} has several projects — name one: {}",
+                repo.display(),
+                many.join(", ")
+            ),
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -83,7 +129,7 @@ mod tests {
     #[test]
     fn a_named_project_is_never_redirected() {
         let config: Config = toml::from_str("[core]\nbase_url = \"http://127.0.0.1:1\"\ntoken = \"x\"\n").unwrap_or_else(|_| panic!("minimal config"));
-        assert_eq!(resolve(&config, "fw").unwrap(), "fw");
+        assert_eq!(resolve(&config, "fw").unwrap().1, "fw");
     }
 
     #[test]
@@ -95,10 +141,13 @@ mod tests {
             dir.display()
         );
         let config: Config = toml::from_str(&toml_text).unwrap();
-        assert_eq!(resolve_in(&config, "D", std::slice::from_ref(&dir)).unwrap(), "fw");
-        assert_eq!(resolve_in(&config, "D", &[dir.join("app")]).unwrap(), "fw");
-        let err = resolve_in(&config, "D", &[PathBuf::from("/nowhere/else")]).unwrap_err().to_string();
-        assert!(err.contains("not a project") && err.contains("fw"), "{err}");
+        assert_eq!(resolve_in(&config, "D", std::slice::from_ref(&dir)).unwrap().as_deref(), Some("fw"));
+        assert_eq!(resolve_in(&config, "D", &[dir.join("app")]).unwrap().as_deref(), Some("fw"));
+        assert_eq!(resolve_in(&config, "D", &[PathBuf::from("/nowhere/else")]).unwrap(), None);
+        let two = format!("{toml_text}\n[[projects]]\nname = \"fw2\"\nsource_path = \"{}\"\nchip = \"x\"\nflash_format = \"hex\"\nbuild_command = [\"true\"]\nartifact_path = \"a.hex\"\n", dir.display());
+        let config2: Config = toml::from_str(&two).unwrap();
+        let err = resolve_in(&config2, "D", std::slice::from_ref(&dir)).unwrap_err().to_string();
+        assert!(err.contains("several projects") && err.contains("fw2"), "{err}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -41,9 +41,9 @@ impl EmbarchApi {
     /// An empty project or `desk` means the open desk's firmware repo
     /// (`embarch-open-desk-proposal.md`).
     fn project(&self, name: &str) -> Result<&ProjectConfig, McpError> {
-        let name = crate::open_desk::resolve(&self.config, name)
+        let (own, name) = crate::open_desk::resolve(&self.config, name)
             .map_err(|e| McpError::invalid_params(format!("{e:#}"), None))?;
-        self.config
+        own.unwrap_or(&self.config)
             .project(&name)
             .map_err(|e| McpError::invalid_params(e.to_string(), None))
     }

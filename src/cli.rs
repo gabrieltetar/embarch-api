@@ -138,8 +138,8 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
 
 /// `desk` names the open desk's firmware repo (`embarch-open-desk-proposal.md`).
 fn lookup_project<'a>(config: &'a Config, name: &str) -> Result<&'a ProjectConfig, String> {
-    let name = crate::open_desk::resolve(config, name).map_err(|e| format!("{e:#}"))?;
-    config.project(&name).map_err(|e| e.to_string())
+    let (own, name) = crate::open_desk::resolve(config, name).map_err(|e| format!("{e:#}"))?;
+    own.unwrap_or(config).project(&name).map_err(|e| e.to_string())
 }
 
 impl TargetSelection {
