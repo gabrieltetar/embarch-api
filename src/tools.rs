@@ -38,9 +38,13 @@ impl EmbarchApi {
         }
     }
 
+    /// An empty project or `desk` means the open desk's firmware repo
+    /// (`embarch-open-desk-proposal.md`).
     fn project(&self, name: &str) -> Result<&ProjectConfig, McpError> {
+        let name = crate::open_desk::resolve(&self.config, name)
+            .map_err(|e| McpError::invalid_params(format!("{e:#}"), None))?;
         self.config
-            .project(name)
+            .project(&name)
             .map_err(|e| McpError::invalid_params(e.to_string(), None))
     }
 
@@ -94,7 +98,9 @@ impl EmbarchApi {
 /// project.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ProjectParams {
-    /// Name of a project from embarch-api's config file (see `list_projects`).
+    /// Name of a project from embarch-api's config file (see `list_projects`). Omit it, or
+    /// say "desk", to use the open desk's firmware repo.
+    #[serde(default)]
     pub project: String,
 }
 
@@ -105,7 +111,9 @@ pub struct ProjectParams {
 /// `build_command` verbatim and has nowhere to apply them.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct TargetParams {
-    /// Name of a project from embarch-api's config file.
+    /// Name of a project from embarch-api's config file (see `list_projects`). Omit it, or
+    /// say "desk", to use the open desk's firmware repo.
+    #[serde(default)]
     pub project: String,
     /// Zephyr board name. Only for a discovery = "zephyr-west" project — a
     /// static project refuses it. See `list_targets`.
@@ -156,7 +164,9 @@ impl TargetParams {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct FlashParams {
-    /// Name of a project from embarch-api's config file.
+    /// Name of a project from embarch-api's config file (see `list_projects`). Omit it, or
+    /// say "desk", to use the open desk's firmware repo.
+    #[serde(default)]
     pub project: String,
     /// Zephyr board name. Only for a discovery = "zephyr-west" project — a
     /// static project refuses it rather than ignoring it.
@@ -211,7 +221,9 @@ impl FlashParams {
 /// the DUT's USB identity and writes the slot it owns.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct BootloadParams {
-    /// Name of a project from embarch-api's config file.
+    /// Name of a project from embarch-api's config file (see `list_projects`). Omit it, or
+    /// say "desk", to use the open desk's firmware repo.
+    #[serde(default)]
     pub project: String,
     /// Zephyr board name. Only for a discovery = "zephyr-west" project — a
     /// static project refuses it.
@@ -264,7 +276,9 @@ pub struct DeclareBootloadPortsParams {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SerialLogParams {
-    /// Name of a project from embarch-api's config file.
+    /// Name of a project from embarch-api's config file (see `list_projects`). Omit it, or
+    /// say "desk", to use the open desk's firmware repo.
+    #[serde(default)]
     pub project: String,
     /// Serial port to read from. Defaults to the project's configured
     /// serial_port if omitted.

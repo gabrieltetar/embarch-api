@@ -3,6 +3,7 @@ mod capacity;
 mod cli;
 mod dev_bench;
 mod logging;
+mod open_desk;
 mod reflash;
 mod study;
 mod tools;
