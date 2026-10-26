@@ -292,7 +292,7 @@ pub struct EnrollProbeResponse {
     /// The row this enrol replaced, when it was a different board's
     /// (`embarch-core` decision 87). Absent when nothing was replaced, and
     /// kept absent on re-serialisation, so a caller that never reads it
-    /// sees the body it always saw (`embarch-api` decision 85).
+    /// sees the body it always saw (`embarch-api` decision 87).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub displaced: Option<EnrolledBoard>,
     /// The role this probe held before the enrol moved it (re-enrolling the
