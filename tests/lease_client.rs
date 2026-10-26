@@ -193,6 +193,12 @@ fn status_exposes_the_lease_and_last_images_so_a_session_can_compare_sha256() {
     assert_eq!(v["lease"]["holder"], "sess-a");
     assert_eq!(v["last_images"][0]["sha256"], "ab12");
     assert_eq!(v["last_images"][0]["chip"], "nRF54L15");
+    let old = rt.block_on(MockCore::start(Behavior::json_ok(json!({ "status": "ok", "probes": [] }))));
+    let v: serde_json::Value = serde_json::from_slice(&cli(&old, None, &["--json", "status"]).stdout).unwrap();
+    assert!(v["last_images"].is_null());
+    let none = rt.block_on(MockCore::start(Behavior::json_ok(json!({ "status": "ok", "probes": [], "last_images": [] }))));
+    let v: serde_json::Value = serde_json::from_slice(&cli(&none, None, &["--json", "status"]).stdout).unwrap();
+    assert_eq!(v["last_images"], json!([]));
 }
 
 #[tokio::test]
@@ -200,7 +206,9 @@ async fn an_older_core_status_without_the_new_fields_still_parses() {
     let mock = MockCore::start(Behavior::json_ok(json!({ "status": "ok", "probes": [] }))).await;
     let s = client(&mock).status().await.unwrap();
     assert!(s.lease.is_none());
-    assert!(s.last_images.is_empty());
+    assert!(s.last_images.is_none());
+    let mock = MockCore::start(Behavior::json_ok(json!({ "status": "ok", "probes": [], "last_images": [] }))).await;
+    assert_eq!(client(&mock).status().await.unwrap().last_images, Some(vec![]));
 }
 
 #[tokio::test]

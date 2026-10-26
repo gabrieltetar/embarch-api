@@ -85,10 +85,11 @@ pub struct StatusResponse {
     pub lease: Option<LeaseView>,
     /// The last image Core flashed or bootloaded per chip since it started.
     /// **An absent entry means unknown, not "nothing flashed"**: the record
-    /// is in memory and a flash by another tool does not appear. Empty for a
-    /// Core that predates it.
+    /// is in memory and a flash by another tool does not appear. `None` for a
+    /// Core that predates it (unknown, embarch-api decision 58); `Some([])`
+    /// is Core saying it has flashed nothing since it started.
     #[serde(default)]
-    pub last_images: Vec<FlashedImage>,
+    pub last_images: Option<Vec<FlashedImage>>,
 }
 
 /// Environment variable `dispatch` reads on every request for a lease token
