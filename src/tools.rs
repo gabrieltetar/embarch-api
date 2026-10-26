@@ -608,6 +608,49 @@ pub struct SignalExchangeParams {
     pub match_after_echo: Option<bool>,
 }
 
+/// `embarch-core` decision 92's `POST /signals/{name}/capture`.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CaptureStartParams {
+    /// A declared signal on a direct route.
+    pub signal: String,
+    /// Core's default and cap apply.
+    #[serde(default)]
+    pub max_s: Option<u64>,
+    /// Core's default and cap apply.
+    #[serde(default)]
+    pub max_bytes: Option<u64>,
+}
+
+/// `GET /signals/{name}/capture`.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CaptureReadParams {
+    pub signal: String,
+    /// Byte offset to read from; pass the previous reply's next_offset. Default 0.
+    #[serde(default)]
+    pub after: Option<u64>,
+    /// Most bytes to return; Core's cap applies.
+    #[serde(default)]
+    pub limit: Option<u64>,
+    /// The id capture_start returned; an older capture answers 404.
+    #[serde(default)]
+    pub id: Option<String>,
+}
+
+/// `DELETE /signals/{name}/capture`.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CaptureStopParams {
+    pub signal: String,
+    /// Byte offset to read the final text from; default 0.
+    #[serde(default)]
+    pub after: Option<u64>,
+    /// Most bytes to return; Core's cap applies.
+    #[serde(default)]
+    pub limit: Option<u64>,
+    /// The id capture_start returned; an older capture answers 404.
+    #[serde(default)]
+    pub id: Option<String>,
+}
+
 /// `embarch-core` decision 81's `POST /live/mem-read`.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct MemReadParams {
@@ -1445,6 +1488,39 @@ impl EmbarchApi {
                 Self::ok_json(v)
             }
             Err(e) => Self::err_text(format!("signal_exchange failed: {e:#}")),
+        }
+    }
+
+    #[tool(description = "Start recording one declared signal's console in the background, via embarch-core's POST /signals/{signal}/capture (embarch-core decision 92). Returns at once with id and state; take no hardware lock, so signal_exchange on another signal, flash and reset run while it records. Read it with capture_read, end it with capture_stop. One capture per signal (a second start is a 409 naming the first); direct routes only. max_s and max_bytes: Core's defaults and caps apply, an out-of-range value is its 400.")]
+    async fn capture_start(
+        &self,
+        Parameters(CaptureStartParams { signal, max_s, max_bytes }): Parameters<CaptureStartParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match self.core.signal_capture_start(&signal, max_s, max_bytes).await {
+            Ok(resp) => Self::ok_json(serde_json::json!(resp)),
+            Err(e) => Self::err_text(format!("capture_start failed: {e:#}")),
+        }
+    }
+
+    #[tool(description = "Read a background capture's text, via GET /signals/{signal}/capture. Offsets are bytes into the capture's stream: pass the reply's next_offset back as `after` to get only what is new (this tool keeps no state). Returns text, next_offset, state (running, reopening, stopped, expired, byte_cap), running, total_bytes and gaps. state reopening with a gaps entry is a USB device re-enumerating (a reset), not a failure: the text holds [embarch: port lost] and [embarch: port reopened] markers and the capture goes on.")]
+    async fn capture_read(
+        &self,
+        Parameters(CaptureReadParams { signal, after, limit, id }): Parameters<CaptureReadParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match self.core.signal_capture_read(&signal, after, limit, id.as_deref()).await {
+            Ok(resp) => Self::ok_json(serde_json::json!(resp)),
+            Err(e) => Self::err_text(format!("capture_read failed: {e:#}")),
+        }
+    }
+
+    #[tool(description = "Stop a background capture and return its final text from `after`, via DELETE /signals/{signal}/capture. The capture is dropped: the next capture_read is a 404. Same reply shape as capture_read.")]
+    async fn capture_stop(
+        &self,
+        Parameters(CaptureStopParams { signal, after, limit, id }): Parameters<CaptureStopParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match self.core.signal_capture_stop(&signal, after, limit, id.as_deref()).await {
+            Ok(resp) => Self::ok_json(serde_json::json!(resp)),
+            Err(e) => Self::err_text(format!("capture_stop failed: {e:#}")),
         }
     }
 

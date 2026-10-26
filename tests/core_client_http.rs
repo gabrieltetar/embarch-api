@@ -128,6 +128,9 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.declare_signal(&signal).await;
     let _ = client.remove_signal("outpost").await;
     let _ = client.signal_exchange_with("console", "help\n", Some("uart:~$ "), Some(500), Some(1000), Some(false)).await;
+    let _ = client.signal_capture_start("console", Some(30), None).await;
+    let _ = client.signal_capture_read("console", Some(0), None, None).await;
+    let _ = client.signal_capture_stop("console", None, None, None).await;
     let _ = client.mem_read("dut", &[(0x4002_103C, 1)]).await;
     let _ = client.set_dev_bench_link(Some("MOCK-BRIDGE-0001"), Some(2)).await;
     // `bootload` reads its image off disk before it sends anything, so it
@@ -214,6 +217,9 @@ async fn every_outbound_call_carries_the_bearer_token() {
         ("POST", "/signals"),
         ("DELETE", "/signals/outpost"),
         ("POST", "/signals/console/exchange"),
+        ("POST", "/signals/console/capture"),
+        ("GET", "/signals/console/capture"),
+        ("DELETE", "/signals/console/capture"),
         ("POST", "/live/mem-read"),
         ("POST", "/dev-bench/link"),
         ("POST", "/bootload"),

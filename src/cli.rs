@@ -122,6 +122,18 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         Commands::SignalExchange { name, write, until, timeout_ms, no_newline, port_wait_ms, match_after_echo, clean } => {
             signal_exchange(&core, &name, &write, until.as_deref(), timeout_ms, port_wait_ms, match_after_echo, !no_newline, clean, json).await
         }
+        Commands::CaptureStart { signal, max_s, max_bytes } => {
+            let r = core.signal_capture_start(&signal, max_s, max_bytes).await;
+            capture_result(&r, "capture-start", false, json)
+        }
+        Commands::CaptureRead { signal, after, limit, id } => {
+            let r = core.signal_capture_read(&signal, after, limit, id.as_deref()).await;
+            capture_result(&r, "capture-read", true, json)
+        }
+        Commands::CaptureStop { signal, after, limit, id } => {
+            let r = core.signal_capture_stop(&signal, after, limit, id.as_deref()).await;
+            capture_result(&r, "capture-stop", true, json)
+        }
         Commands::MemRead { ranges, role } => mem_read(&core, &role, &ranges, json).await,
         Commands::ListSignals => list_signals(&core, json).await,
         Commands::RemoveSignal { name } => remove_signal(&core, &name, json).await,
@@ -1221,6 +1233,30 @@ async fn list_signals(core: &CoreClient, json: bool) -> i32 {
     }
 }
 
+/// Prints a capture reply. Human mode: `text` alone on stdout (so it pipes),
+/// one stderr line with the offsets and state, one per gap.
+fn capture_result(r: &anyhow::Result<embarch_core_client::SignalCaptureResponse>, what: &str, text_only: bool, json: bool) -> i32 {
+    match r {
+        Ok(resp) => {
+            if !json {
+                eprintln!(
+                    "{what}: id {} state {} next_offset {} total_bytes {} elapsed_ms {}",
+                    resp.id, resp.state, resp.next_offset, resp.total_bytes, resp.elapsed_ms
+                );
+                for g in &resp.gaps {
+                    match g.reopened_at_ms {
+                        Some(r) => eprintln!("{what}: gap at offset {}: port lost {} ms, reopened {} ms", g.offset, g.lost_at_ms, r),
+                        None => eprintln!("{what}: gap at offset {}: port lost {} ms, still away", g.offset, g.lost_at_ms),
+                    }
+                }
+            }
+            let human = if text_only { resp.text.clone() } else { format!("capture started: id {} state {}", resp.id, resp.state) };
+            finish(json, true, serde_json::json!({ "success": true, "capture": resp }), human)
+        }
+        Err(e) => error_result(json, format!("{what} failed: {e:#}")),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn signal_exchange(
     core: &CoreClient,
@@ -2096,7 +2132,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 36,
+            arms, 39,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."

@@ -905,6 +905,62 @@ impl SerialLogResponse {
     }
 }
 
+/// `POST /signals/{name}/capture`'s body (`embarch-core` decision 92).
+#[derive(Debug, Serialize)]
+struct SignalCaptureRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_s: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_bytes: Option<u64>,
+}
+
+/// One `gaps` entry of a capture: the port went away (a USB device
+/// re-enumerating) and came back. `offset` is where in the byte stream the
+/// `[embarch: port lost]` marker sits.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct CaptureGap {
+    #[serde(default)]
+    pub offset: u64,
+    #[serde(default)]
+    pub lost_at_ms: u64,
+    /// `None` while the port is still away.
+    #[serde(default)]
+    pub reopened_at_ms: Option<u64>,
+}
+
+/// The reply of all three `/signals/{name}/capture` routes (`embarch-core`
+/// decision 92). Fields beyond `state` default so an older or newer Core
+/// still parses.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SignalCaptureResponse {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub signal: String,
+    #[serde(default)]
+    pub port: String,
+    #[serde(default)]
+    pub baud: u32,
+    /// `running`, `reopening`, `stopped`, `expired` or `byte_cap`.
+    pub state: String,
+    #[serde(default)]
+    pub running: bool,
+    /// Byte offset `text` starts at (the `after` that was asked for).
+    #[serde(default)]
+    pub offset: u64,
+    /// Pass this back as `after` to read only what is new.
+    #[serde(default)]
+    pub next_offset: u64,
+    #[serde(default)]
+    pub total_bytes: u64,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub elapsed_ms: u64,
+    #[serde(default)]
+    pub gaps: Vec<CaptureGap>,
+}
+
 #[derive(Debug, Serialize)]
 struct SignalExchangeRequest<'a> {
     write: &'a str,
@@ -1141,6 +1197,20 @@ impl StudyRunOptions {
 /// but it is free-form and reaches this from a config-declared command, so
 /// encoding it is not optional. Hand-rolled rather than adding a dependency
 /// for one call site.
+fn capture_query(after: Option<u64>, limit: Option<u64>, id: Option<&str>) -> Vec<(&'static str, String)> {
+    let mut q = Vec::new();
+    if let Some(a) = after {
+        q.push(("after", a.to_string()));
+    }
+    if let Some(l) = limit {
+        q.push(("limit", l.to_string()));
+    }
+    if let Some(i) = id {
+        q.push(("id", i.to_string()));
+    }
+    q
+}
+
 fn urlencode(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for byte in raw.as_bytes() {
@@ -2470,6 +2540,49 @@ impl CoreClient {
         // The port wait comes before the exchange's own deadline, so it adds to the request's.
         let timeout = self.serial_timeout + Duration::from_millis(port_wait_ms.unwrap_or(0));
         self.send(self.client.post(url).json(&body), timeout).await
+    }
+
+    /// `POST /signals/{name}/capture` — starts a background read of a direct
+    /// signal's port and returns at once (`embarch-core` decision 92).
+    /// Caps and defaults are Core's; an out-of-range value is Core's `400`,
+    /// a capture already running is its `409` (named in the error text).
+    /// Reuses `status_timeout`: the request returns in milliseconds.
+    pub async fn signal_capture_start(
+        &self,
+        name: &str,
+        max_s: Option<u64>,
+        max_bytes: Option<u64>,
+    ) -> Result<SignalCaptureResponse> {
+        let url = format!("{}/signals/{}/capture", self.base_url().await?, urlencode(name));
+        let body = SignalCaptureRequest { max_s, max_bytes };
+        self.send(self.client.post(url).json(&body), self.status_timeout).await
+    }
+
+    /// `GET /signals/{name}/capture` — the capture's bytes from `after`
+    /// (`limit` caps them, Core's maximum applies) with `next_offset`.
+    /// `id` pins a capture: an older one answers `404`.
+    pub async fn signal_capture_read(
+        &self,
+        name: &str,
+        after: Option<u64>,
+        limit: Option<u64>,
+        id: Option<&str>,
+    ) -> Result<SignalCaptureResponse> {
+        let url = format!("{}/signals/{}/capture", self.base_url().await?, urlencode(name));
+        self.send(self.client.get(url).query(&capture_query(after, limit, id)), self.status_timeout).await
+    }
+
+    /// `DELETE /signals/{name}/capture` — stops the capture, answers as the
+    /// read does with its final state, and drops it.
+    pub async fn signal_capture_stop(
+        &self,
+        name: &str,
+        after: Option<u64>,
+        limit: Option<u64>,
+        id: Option<&str>,
+    ) -> Result<SignalCaptureResponse> {
+        let url = format!("{}/signals/{}/capture", self.base_url().await?, urlencode(name));
+        self.send(self.client.delete(url).query(&capture_query(after, limit, id)), self.status_timeout).await
     }
 
     /// `POST /live/mem-read` — each `(address, words)` range of the target

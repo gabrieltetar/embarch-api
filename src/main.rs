@@ -551,6 +551,45 @@ pub enum Commands {
         #[arg(long)]
         clean: bool,
     },
+    /// Start recording a declared signal's console in the background, via
+    /// embarch-core (`embarch-core` decision 92). Prints Core's answer (id,
+    /// state); read it with `capture-read`, end it with `capture-stop`.
+    CaptureStart {
+        /// The declared signal's name (a direct route).
+        signal: String,
+        /// Core's default (60) and cap apply.
+        #[arg(long)]
+        max_s: Option<u64>,
+        /// Core's default and cap apply.
+        #[arg(long)]
+        max_bytes: Option<u64>,
+    },
+    /// Print a background capture's text from byte offset --after, and on
+    /// stderr the next offset to pass back, the state and any gaps (a USB
+    /// device re-enumerating is not a failure).
+    CaptureRead {
+        signal: String,
+        /// Byte offset to read from (default 0): the previous next_offset.
+        #[arg(long)]
+        after: Option<u64>,
+        /// Most bytes to return; Core's cap applies.
+        #[arg(long)]
+        limit: Option<u64>,
+        /// The id `capture-start` returned.
+        #[arg(long)]
+        id: Option<String>,
+    },
+    /// Stop a background capture and print its final text from --after. The
+    /// capture is dropped: the next `capture-read` is a 404.
+    CaptureStop {
+        signal: String,
+        #[arg(long)]
+        after: Option<u64>,
+        #[arg(long)]
+        limit: Option<u64>,
+        #[arg(long)]
+        id: Option<String>,
+    },
     /// Read 32-bit words of an enrolled target's memory over its probe, via
     /// embarch-core (`embarch-core` decision 81). Every range is read under
     /// one halt of a running core, which is then let run again; the answer
