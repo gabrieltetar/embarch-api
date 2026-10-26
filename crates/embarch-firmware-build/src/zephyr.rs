@@ -12,7 +12,7 @@
 //! combination that isn't real — two distinct failure modes, both found by
 //! checking against a real target repo rather than a synthetic fixture
 //! alone:
-//! - **No devicetree source at all** (`dts_exists`): `board.yml` can declare
+//! - **No devicetree source at all** (`dts_status`): `board.yml` can declare
 //!   a SoC/variant that was never given real `.dts` files (confirmed real
 //!   example: `ref_nrf54dk` declares `nrf54l05`/`nrf54l10`/an `nrf54l15`
 //!   `xip`/`ns` split that board.yml lists but only one of those five
@@ -248,6 +248,10 @@ fn extra_args_hash(extra_args: &[String]) -> u64 {
 pub enum ScanError {
     NoBoardYml,
     NoAppDir,
+    /// `board.yml` files were found but every (SoC, cluster, variant)
+    /// candidate was dropped for lack of devicetree source (decision 64).
+    /// One line per dropped candidate: the board, and the file(s) looked for.
+    AllBoardsDropped(Vec<String>),
 }
 
 impl std::fmt::Display for ScanError {
@@ -260,6 +264,11 @@ impl std::fmt::Display for ScanError {
             ScanError::NoAppDir => write!(
                 f,
                 "neither app/ nor apps/ found under the project's source_path — this doesn't look like a Zephyr/west project"
+            ),
+            ScanError::AllBoardsDropped(notes) => write!(
+                f,
+                "found board.yml files but no board has devicetree source Zephyr would accept, so no targets:\n  {}",
+                notes.join("\n  ")
             ),
         }
     }
@@ -278,10 +287,16 @@ pub fn scan(source_path: &Path) -> Result<Vec<Target>, ScanError> {
     let apps = scan_apps(source_path)?;
 
     let mut targets = Vec::new();
+    let mut notes = Vec::new();
+    let mut survivors = 0usize;
     for board in &boards {
+        let single_soc = board.yml.board.socs.len() == 1;
         for soc in &board.yml.board.socs {
-            push_targets_for_soc(&mut targets, board, soc, &apps);
+            survivors += push_targets_for_soc(&mut targets, &mut notes, board, soc, single_soc, &apps);
         }
+    }
+    if survivors == 0 {
+        return Err(ScanError::AllBoardsDropped(notes));
     }
     Ok(targets)
 }
@@ -318,8 +333,19 @@ pub fn scan(source_path: &Path) -> Result<Vec<Target>, ScanError> {
 /// cpucluster already present among the named variants (skipping any
 /// cpucluster a `default`-named variant already maps to `None` for, to avoid
 /// a duplicate) — then every candidate, named or synthesized, still has to
-/// pass `dts_exists` below to survive at all.
-fn push_targets_for_soc(out: &mut Vec<Target>, board: &BoardDef, soc: &SocSection, apps: &[String]) {
+/// pass `dts_status` below to survive at all.
+///
+/// Returns how many candidates had devicetree source behind them (before the
+/// revision and app axes), and appends one line to `notes` per candidate that
+/// did not (decision 64).
+fn push_targets_for_soc(
+    out: &mut Vec<Target>,
+    notes: &mut Vec<String>,
+    board: &BoardDef,
+    soc: &SocSection,
+    single_soc: bool,
+    apps: &[String],
+) -> usize {
     struct Selected<'a> {
         name: Option<&'a str>,
         cpucluster: Option<&'a str>,
@@ -356,7 +382,16 @@ fn push_targets_for_soc(out: &mut Vec<Target>, board: &BoardDef, soc: &SocSectio
     // is the check that excludes `ref_nrf54dk`'s `nrf54l05`/`nrf54l10`/
     // `nrf54l15`-`xip`/`nrf54l15`-`ns`: board.yml declares all four, but none
     // has a `.dts` file, only bare `nrf54l15`/`cpuapp` does.
-    candidates.retain(|c| dts_exists(&board.dir, &board.yml.board.name, &soc.name, c.cpucluster, c.name));
+    candidates.retain(|c| {
+        match dts_status(&board.dir, &board.yml.board.name, &soc.name, c.cpucluster, c.name, single_soc) {
+            DtsStatus::Found => true,
+            DtsStatus::Dropped(why) => {
+                notes.push(why);
+                false
+            }
+        }
+    });
+    let survivors = candidates.len();
 
     let revisions = candidate_revisions(&board.yml.board.revision);
     let default_revision = board.yml.board.revision.as_ref().and_then(|r| r.default.as_deref());
@@ -371,6 +406,7 @@ fn push_targets_for_soc(out: &mut Vec<Target>, board: &BoardDef, soc: &SocSectio
                 variant.name,
                 revision.as_deref(),
                 default_revision,
+                single_soc,
             );
             if !backed {
                 continue;
@@ -387,17 +423,19 @@ fn push_targets_for_soc(out: &mut Vec<Target>, board: &BoardDef, soc: &SocSectio
             }
         }
     }
+    survivors
 }
 
-/// Whether `<board>_<soc>[_<cpucluster>][_<variant>].dts` exists in
-/// `board_dir` — the real gate on whether a (soc, cpucluster, variant)
-/// combination has devicetree source to build at all, independent of the
-/// revision axis `revision_is_backed` covers. See the module doc for the
-/// real `ref_nrf54dk` finding this exists to catch.
-fn dts_exists(board_dir: &Path, board: &str, soc: &str, cpucluster: Option<&str>, variant: Option<&str>) -> bool {
+/// `<board>[_<soc>][_<cpucluster>][_<variant>]` — the file stem Zephyr
+/// looks for. `with_soc = false` is the shortened form Zephyr accepts only
+/// for a board declaring exactly one SoC (`dts.cmake`'s
+/// `BOARD_<board>_SINGLE_SOC` branch, decision 64).
+fn board_stem(board: &str, soc: &str, cpucluster: Option<&str>, variant: Option<&str>, with_soc: bool) -> String {
     let mut stem = board.to_string();
-    stem.push('_');
-    stem.push_str(soc);
+    if with_soc {
+        stem.push('_');
+        stem.push_str(soc);
+    }
     if let Some(c) = cpucluster {
         stem.push('_');
         stem.push_str(c);
@@ -406,7 +444,49 @@ fn dts_exists(board_dir: &Path, board: &str, soc: &str, cpucluster: Option<&str>
         stem.push('_');
         stem.push_str(v);
     }
-    board_dir.join(format!("{stem}.dts")).exists()
+    stem
+}
+
+enum DtsStatus {
+    Found,
+    /// Why the candidate was dropped, one line naming board and files.
+    Dropped(String),
+}
+
+/// Whether devicetree source Zephyr would accept exists for a (soc,
+/// cpucluster, variant) combination — the real gate on whether it can build
+/// at all, independent of the revision axis `revision_is_backed` covers. See
+/// the module doc for the real `ref_nrf54dk` finding this exists to catch.
+///
+/// Mirrors `zephyr/cmake/modules/dts.cmake`: `<board>_<soc>….dts` always;
+/// the shortened `<board>….dts` only for a single-SoC board (a multi-SoC
+/// board with one is Zephyr's `FATAL_ERROR`), and never together with the
+/// long one (Zephyr's "conflicting file names" error). Decision 64.
+fn dts_status(
+    board_dir: &Path,
+    board: &str,
+    soc: &str,
+    cpucluster: Option<&str>,
+    variant: Option<&str>,
+    single_soc: bool,
+) -> DtsStatus {
+    let long = format!("{}.dts", board_stem(board, soc, cpucluster, variant, true));
+    let short = format!("{}.dts", board_stem(board, soc, cpucluster, variant, false));
+    let has_long = board_dir.join(&long).exists();
+    let has_short = board_dir.join(&short).exists();
+    match (has_long, has_short, single_soc) {
+        (true, true, true) => DtsStatus::Dropped(format!(
+            "board '{board}' (soc {soc}): both {long} and {short} exist; Zephyr refuses conflicting file names, keep one"
+        )),
+        (_, true, false) => DtsStatus::Dropped(format!(
+            "board '{board}' (soc {soc}): {short} found but the board declares multiple SoCs, so Zephyr refuses the shortened name; use {long}"
+        )),
+        (true, _, _) | (_, true, true) => DtsStatus::Found,
+        (false, false, true) => {
+            DtsStatus::Dropped(format!("board '{board}' (soc {soc}): looked for {long} or {short}, found neither"))
+        }
+        (false, false, false) => DtsStatus::Dropped(format!("board '{board}' (soc {soc}): looked for {long}, not found")),
+    }
 }
 
 /// Every revision worth considering: the declared default (even if
@@ -459,6 +539,7 @@ fn candidate_revisions(revision: &Option<RevisionSection>) -> Vec<Option<String>
 /// named variant, even at the default revision, is the conservative
 /// posture consistent with decision 12's original purpose: erring toward
 /// fewer, correct proposals rather than more, unverifiable ones.
+#[allow(clippy::too_many_arguments)]
 fn revision_is_backed(
     board_dir: &Path,
     board: &str,
@@ -467,6 +548,7 @@ fn revision_is_backed(
     variant: Option<&str>,
     revision: Option<&str>,
     default_revision: Option<&str>,
+    single_soc: bool,
 ) -> bool {
     let Some(revision) = revision else {
         // No revision axis for this board at all — always backed by the
@@ -477,23 +559,17 @@ fn revision_is_backed(
         return true;
     }
 
-    let mut stem = board.to_string();
-    stem.push('_');
-    stem.push_str(soc);
-    if let Some(c) = cpucluster {
-        stem.push('_');
-        stem.push_str(c);
+    // A single-SoC board may use the shortened stem here too (decision 64).
+    let suffix = revision.replace('.', "_");
+    let mut stems = vec![board_stem(board, soc, cpucluster, variant, true)];
+    if single_soc {
+        stems.push(board_stem(board, soc, cpucluster, variant, false));
     }
-    if let Some(v) = variant {
-        stem.push('_');
-        stem.push_str(v);
-    }
-    stem.push('_');
-    stem.push_str(&revision.replace('.', "_"));
-
-    [".overlay", ".defconfig"]
-        .iter()
-        .any(|ext| board_dir.join(format!("{stem}{ext}")).exists())
+    stems.iter().any(|stem| {
+        [".overlay", ".defconfig"]
+            .iter()
+            .any(|ext| board_dir.join(format!("{stem}_{suffix}{ext}")).exists())
+    })
 }
 
 /// Every `board.yml`/`.yaml` under `source_path/boards`, recursively — not
@@ -1164,8 +1240,14 @@ board:
         fs::create_dir_all(&app_dir).unwrap();
         fs::write(app_dir.join("CMakeLists.txt"), "").unwrap();
 
-        let targets = scan(dir.path()).unwrap();
-        assert_eq!(targets, vec![], "{targets:#?}");
+        match scan(dir.path()) {
+            Err(ScanError::AllBoardsDropped(notes)) => {
+                assert_eq!(notes.len(), 1, "{notes:?}");
+                assert!(notes[0].contains("nodts_nrf54l05.dts"), "{notes:?}");
+                assert!(notes[0].contains("nodts.dts"), "{notes:?}");
+            }
+            other => panic!("expected AllBoardsDropped, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1204,6 +1286,99 @@ board:
         assert_eq!(targets.len(), 1, "{targets:#?}");
         assert_eq!(targets[0].cpucluster.as_deref(), Some("cpuapp"));
         assert_eq!(targets[0].variant, None);
+    }
+
+    /// Writes a board dir the way upstream single-SoC boards lay it out
+    /// (`<board>.dts`, `<board>_defconfig`, a `board.yml` with `socs`) plus
+    /// one app, and returns the repo root's board dir.
+    fn write_board_repo(root: &Path, yml: &str, files: &[&str]) -> PathBuf {
+        let board_dir = root.join("boards/acme/brd");
+        fs::create_dir_all(&board_dir).unwrap();
+        fs::write(board_dir.join("board.yml"), yml).unwrap();
+        for f in files {
+            fs::write(board_dir.join(f), "").unwrap();
+        }
+        let app_dir = root.join("app/dev");
+        fs::create_dir_all(&app_dir).unwrap();
+        fs::write(app_dir.join("CMakeLists.txt"), "").unwrap();
+        board_dir
+    }
+
+    const ONE_SOC: &str = "board:\n  name: brd\n  socs:\n    - name: stm32g0b1xx\n";
+
+    /// Decision 64: an upstream-shaped single-SoC board (`<board>.dts`, no
+    /// `<board>_<soc>.dts`) yields its target.
+    #[test]
+    fn single_soc_board_with_shortened_dts_yields_its_target() {
+        let dir = tempfile_dir();
+        write_board_repo(dir.path(), ONE_SOC, &["brd.dts", "brd_defconfig"]);
+        let targets = scan(dir.path()).unwrap();
+        assert_eq!(targets.len(), 1, "{targets:#?}");
+        assert_eq!(targets[0].board, "brd");
+        assert_eq!(targets[0].soc, "stm32g0b1xx");
+        assert_eq!(targets[0].cpucluster, None);
+    }
+
+    /// Decision 64: Zephyr's own `FATAL_ERROR` — a multi-SoC board may not
+    /// use the shortened name — becomes a named reason, not a target.
+    #[test]
+    fn multi_soc_board_with_shortened_dts_is_refused_with_a_reason() {
+        let dir = tempfile_dir();
+        let yml = "board:\n  name: brd\n  socs:\n    - name: a1\n    - name: b2\n";
+        write_board_repo(dir.path(), yml, &["brd.dts"]);
+        match scan(dir.path()) {
+            Err(ScanError::AllBoardsDropped(notes)) => {
+                assert_eq!(notes.len(), 2, "{notes:?}");
+                assert!(notes[0].contains("multiple SoCs") && notes[0].contains("brd.dts"), "{notes:?}");
+            }
+            other => panic!("expected AllBoardsDropped, got {other:?}"),
+        }
+    }
+
+    /// Decision 64: both stems present is Zephyr's "conflicting file names"
+    /// error; the board is refused by name.
+    #[test]
+    fn single_soc_board_with_both_dts_names_is_refused_by_name() {
+        let dir = tempfile_dir();
+        write_board_repo(dir.path(), ONE_SOC, &["brd.dts", "brd_stm32g0b1xx.dts"]);
+        match scan(dir.path()) {
+            Err(ScanError::AllBoardsDropped(notes)) => {
+                assert_eq!(notes.len(), 1, "{notes:?}");
+                assert!(notes[0].contains("board 'brd'") && notes[0].contains("conflicting"), "{notes:?}");
+            }
+            other => panic!("expected AllBoardsDropped, got {other:?}"),
+        }
+    }
+
+    /// Decision 64: one dropped board among live ones is not an error; only
+    /// "every candidate dropped" is.
+    #[test]
+    fn a_dropped_board_beside_a_live_one_is_not_an_error() {
+        let dir = tempfile_dir();
+        write_board_repo(dir.path(), ONE_SOC, &["brd.dts"]);
+        write_single_board(dir.path());
+        let targets = scan(dir.path()).unwrap();
+        assert_eq!(targets.len(), 2, "{targets:#?}");
+    }
+
+    /// Decision 64: `revision_is_backed` accepts the shortened revision
+    /// overlay for a single-SoC board, and not for a multi-SoC one.
+    #[test]
+    fn shortened_revision_overlay_backs_a_single_soc_board_only() {
+        let dir = tempfile_dir();
+        let board_dir = write_board_repo(dir.path(), ONE_SOC, &["brd.dts", "brd_2.overlay"]);
+        assert!(revision_is_backed(&board_dir, "brd", "stm32g0b1xx", None, None, Some("2"), Some("1"), true));
+        assert!(!revision_is_backed(&board_dir, "brd", "stm32g0b1xx", None, None, Some("2"), Some("1"), false));
+        assert!(!revision_is_backed(&board_dir, "brd", "stm32g0b1xx", None, None, Some("3"), Some("1"), true));
+    }
+
+    #[test]
+    fn single_soc_board_with_revisions_keeps_its_shortened_revision() {
+        let dir = tempfile_dir();
+        let yml = "board:\n  name: brd\n  socs:\n    - name: stm32g0b1xx\n  revision:\n    default: \"1\"\n    revisions:\n      - name: \"1\"\n      - name: \"2\"\n";
+        write_board_repo(dir.path(), yml, &["brd.dts", "brd_2.overlay"]);
+        let revs: Vec<_> = scan(dir.path()).unwrap().into_iter().map(|t| t.revision).collect();
+        assert_eq!(revs.len(), 2, "{revs:?}");
     }
 
     #[test]
