@@ -3,8 +3,8 @@ use bytes::Bytes;
 use embarch_study_designer::{StreamEncoding, Study, StudyResult};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::OnceCell;
 
 use crate::CoreConfig;
@@ -36,6 +36,11 @@ pub struct CoreClient {
     /// uploads bytes instead of sending a path for those classes.
     resolved: Arc<OnceCell<(String, TopologyClass)>>,
     token: String,
+    /// The bench lease this process holds or was handed (decision 93 of
+    /// embarch-core; `embarch-api` decision 90). `dispatch` sends it as
+    /// `X-Embarch-Lease` on every request; when empty it falls back to
+    /// `EMBARCH_LEASE_TOKEN`, which is how a second process inherits one.
+    lease: Arc<Mutex<HeldLease>>,
     client: reqwest::Client,
     status_timeout: Duration,
     reset_timeout: Duration,
@@ -74,6 +79,90 @@ pub struct StatusResponse {
     /// "compatible" — see that method.
     #[serde(default)]
     pub study_designer_schema_version: Option<u32>,
+    /// The live bench lease without its token, `None` when none is live or
+    /// Core predates the lease (embarch-core decision 93).
+    #[serde(default)]
+    pub lease: Option<LeaseView>,
+    /// The last image Core flashed or bootloaded per chip since it started.
+    /// **An absent entry means unknown, not "nothing flashed"**: the record
+    /// is in memory and a flash by another tool does not appear. Empty for a
+    /// Core that predates it.
+    #[serde(default)]
+    pub last_images: Vec<FlashedImage>,
+}
+
+/// Environment variable `dispatch` reads on every request for a lease token
+/// when this process holds none of its own. `embarch-atlas` reaches Core only
+/// by running the `embarch-api` CLI, so exporting this reaches it unchanged.
+pub const LEASE_TOKEN_ENV: &str = "EMBARCH_LEASE_TOKEN";
+
+/// The request header Core reads the lease token from.
+pub const LEASE_HEADER: &str = "X-Embarch-Lease";
+
+/// A bench lease as Core shows it: everything except the token.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LeaseView {
+    pub holder: String,
+    pub purpose: String,
+    pub started_at: String,
+    pub expires_at: String,
+    pub ttl_s: u64,
+}
+
+/// `POST /lease`'s answer: the view plus the token, which Core shows once.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LeaseGrant {
+    pub token: String,
+    #[serde(flatten)]
+    pub lease: LeaseView,
+}
+
+/// One `last_images` entry of `GET /status`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FlashedImage {
+    pub chip: String,
+    #[serde(default)]
+    pub probe_serial: Option<String>,
+    pub path: String,
+    #[serde(default)]
+    pub sha256: Option<String>,
+    pub flashed_at: String,
+    #[serde(default)]
+    pub lease_holder: Option<String>,
+}
+
+/// Core refused a hardware request, or a lease call, because another session
+/// holds the bench. `message` is Core's own text, verbatim: it names the
+/// holder, the purpose, and when the lease started and expires.
+#[derive(Debug)]
+pub struct LeaseHeldError {
+    pub message: String,
+}
+
+impl std::fmt::Display for LeaseHeldError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for LeaseHeldError {}
+
+/// Core's `409` body for a request without the live lease's token starts
+/// with this (`embarch-core` `lease.rs`, `LeaseView::refusal`). The only
+/// thing that tells it from a study or dev-bench `409`, which share the status.
+const LEASE_REFUSAL_PREFIX: &str = "bench leased by ";
+
+fn lease_refusal(status: reqwest::StatusCode, body: &str) -> Option<anyhow::Error> {
+    (status == reqwest::StatusCode::CONFLICT && body.starts_with(LEASE_REFUSAL_PREFIX))
+        .then(|| anyhow::Error::new(LeaseHeldError { message: body.to_string() }))
+}
+
+/// The lease this process holds, and when it last renewed it.
+#[derive(Default)]
+struct HeldLease {
+    token: Option<String>,
+    ttl_s: Option<u64>,
+    renewed: Option<Instant>,
 }
 
 /// `embarch-api` and Core disagree about `embarch-study-designer`'s host
@@ -1512,6 +1601,7 @@ impl CoreClient {
             address: Arc::new(address),
             resolved: Arc::new(OnceCell::new()),
             token,
+            lease: Arc::new(Mutex::new(HeldLease::default())),
             client,
             status_timeout: Duration::from_secs(config.status_timeout_secs),
             reset_timeout: Duration::from_secs(config.reset_timeout_secs),
@@ -1632,6 +1722,15 @@ impl CoreClient {
         timeout: Option<Duration>,
     ) -> Result<reqwest::Response> {
         let request = request.bearer_auth(&self.token);
+        let request = match self.effective_lease_token() {
+            Some(token) => {
+                let mut value = reqwest::header::HeaderValue::from_str(&token)
+                    .map_err(|_| anyhow!("the bench lease token is not a valid HTTP header value (check {LEASE_TOKEN_ENV})"))?;
+                value.set_sensitive(true);
+                request.header(LEASE_HEADER, value)
+            }
+            None => request,
+        };
         let request = match timeout {
             Some(timeout) => request.timeout(timeout),
             None => request,
@@ -1739,6 +1838,114 @@ impl CoreClient {
                 }
             }
             _ => format!("embarch-core returned {status}: {body}"),
+        }
+    }
+
+    /// The token `dispatch` sends: the one this process took or was given
+    /// ([`CoreClient::set_lease_token`]), else `EMBARCH_LEASE_TOKEN`, read on
+    /// every call so a long-lived process sees a later export. Blank is none.
+    pub fn effective_lease_token(&self) -> Option<String> {
+        let held = self.lease.lock().expect("lease state poisoned").token.clone();
+        held.or_else(|| std::env::var(LEASE_TOKEN_ENV).ok())
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+    }
+
+    /// Adopt a token another process took, so this one sends it and
+    /// [`CoreClient::lease_keepalive`] renews it.
+    pub fn set_lease_token(&self, token: String) {
+        let mut held = self.lease.lock().expect("lease state poisoned");
+        *held = HeldLease { token: Some(token), ttl_s: None, renewed: None };
+    }
+
+    /// `POST /lease`. On success this client holds the token: every later
+    /// request of this process carries it. A live lease held by another
+    /// session is a [`LeaseHeldError`] naming it. The token is in the result
+    /// and **only there**; Core shows it once.
+    pub async fn lease_take(&self, holder: &str, purpose: Option<&str>, ttl_s: u64) -> Result<LeaseGrant> {
+        let url = format!("{}/lease", self.base_url().await?);
+        let body = serde_json::json!({ "holder": holder, "purpose": purpose, "ttl_s": ttl_s });
+        let response = self.dispatch(self.client.post(url).json(&body), Some(self.status_timeout)).await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_else(|_| "<no response body>".to_string());
+            return Err(lease_refusal(status, &body).unwrap_or_else(|| anyhow!("embarch-core returned {status}: {body}")));
+        }
+        let grant: LeaseGrant = response.json().await.context("failed to parse embarch-core's response as JSON")?;
+        *self.lease.lock().expect("lease state poisoned") = HeldLease {
+            token: Some(grant.token.clone()),
+            ttl_s: Some(grant.lease.ttl_s),
+            renewed: Some(Instant::now()),
+        };
+        Ok(grant)
+    }
+
+    /// `PUT /lease` with this client's token. `ttl_s` of `None` renews to the
+    /// lease's own TTL. A `404` (no lease: released, expired, or Core
+    /// restarted) and a `409` (not our token) are errors carrying Core's text.
+    pub async fn lease_renew(&self, ttl_s: Option<u64>) -> Result<LeaseView> {
+        let url = format!("{}/lease", self.base_url().await?);
+        let body = serde_json::json!({ "ttl_s": ttl_s });
+        let view: LeaseView = self.send(self.client.put(url).json(&body), self.status_timeout).await?;
+        let mut held = self.lease.lock().expect("lease state poisoned");
+        held.ttl_s = Some(view.ttl_s);
+        held.renewed = Some(Instant::now());
+        Ok(view)
+    }
+
+    /// `DELETE /lease` with this client's token; forgets it on success.
+    pub async fn lease_release(&self) -> Result<()> {
+        let url = format!("{}/lease", self.base_url().await?);
+        self.send_no_content(self.client.delete(url), self.status_timeout).await?;
+        *self.lease.lock().expect("lease state poisoned") = HeldLease::default();
+        Ok(())
+    }
+
+    /// `GET /lease`: the live lease without its token, `Ok(None)` for none.
+    pub async fn lease_show(&self) -> Result<Option<LeaseView>> {
+        let url = format!("{}/lease", self.base_url().await?);
+        let response = self.dispatch(self.client.get(url), Some(self.status_timeout)).await?;
+        let status = response.status();
+        if status.is_success() {
+            return response.json().await.context("failed to parse embarch-core's response as JSON").map(Some);
+        }
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let body = response.text().await.unwrap_or_default();
+        Err(anyhow!("embarch-core returned {status}: {body}"))
+    }
+
+    /// Renews whichever lease this client sends a token for, forever, so a
+    /// holder does not depend on a model remembering to. Meant to be spawned
+    /// once by a long-lived process (the MCP server) on a clone of the
+    /// client. Wakes each second and renews when a third of the TTL has
+    /// passed since the last renew; a token of unknown TTL (taken by another
+    /// process) renews at once, which also learns the TTL. A failed renew is
+    /// logged and retried a third of a TTL later, never fatal.
+    pub async fn lease_keepalive(&self) {
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            if self.effective_lease_token().is_none() {
+                continue;
+            }
+            let (ttl_s, renewed) = {
+                let held = self.lease.lock().expect("lease state poisoned");
+                (held.ttl_s, held.renewed)
+            };
+            let due = match (ttl_s, renewed) {
+                (Some(ttl), Some(at)) => at.elapsed() >= Duration::from_secs((ttl / 3).max(1)),
+                _ => true,
+            };
+            if !due {
+                continue;
+            }
+            if let Err(e) = self.lease_renew(None).await {
+                tracing::warn!("bench lease renew failed: {e:#}");
+                let mut held = self.lease.lock().expect("lease state poisoned");
+                held.ttl_s.get_or_insert(90);
+                held.renewed = Some(Instant::now());
+            }
         }
     }
 
@@ -2078,6 +2285,9 @@ impl CoreClient {
             .await
             .unwrap_or_else(|_| "<no response body>".to_string());
 
+        if let Some(held) = lease_refusal(status, &body) {
+            return Err(held);
+        }
         if status == reqwest::StatusCode::CONFLICT || status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
             return match serde_json::from_str::<TopologyMismatchBody>(&body) {
                 Ok(m) => Err(anyhow::Error::new(TopologyMismatchError::from(m))),
@@ -2256,6 +2466,9 @@ impl CoreClient {
             .await
             .unwrap_or_else(|_| "<no response body>".to_string());
 
+        if let Some(held) = lease_refusal(status, &body) {
+            return Err(held);
+        }
         if status == reqwest::StatusCode::CONFLICT {
             return match serde_json::from_str::<StudyConflictBody>(&body) {
                 Ok(conflict) => Err(anyhow::Error::new(StudyConflictError {
@@ -2778,6 +2991,9 @@ impl CoreClient {
             .await
             .unwrap_or_else(|_| "<no response body>".to_string());
 
+        if let Some(held) = lease_refusal(status, &body) {
+            return Err(held);
+        }
         if status == reqwest::StatusCode::CONFLICT {
             return Err(anyhow::Error::new(DevBenchBusyError { message: body }));
         }

@@ -3,6 +3,7 @@ mod bootload;
 mod capacity;
 mod cli;
 mod dev_bench;
+mod lease;
 mod logging;
 mod open_desk;
 mod reflash;
@@ -186,6 +187,34 @@ pub enum Commands {
     /// Retract the DUT's declared bootload ports. Reports removed=false, not
     /// an error, when none were declared.
     ClearBootloadPorts,
+    /// Take the bench lease (embarch-core decision 93): this session holds
+    /// both boards until it releases or the TTL runs out, and every other
+    /// session's hardware call is refused by name. Prints the token once;
+    /// export it as EMBARCH_LEASE_TOKEN so every later call, and embarch-atlas,
+    /// sends it. Nothing renews a CLI-taken lease: run lease-renew, or take a
+    /// long enough --ttl-s.
+    LeaseTake {
+        /// Who is taking it, shown to anyone refused. Defaults to "embarch-api cli".
+        #[arg(long)]
+        holder: Option<String>,
+        /// What for, shown to anyone refused.
+        #[arg(long)]
+        purpose: Option<String>,
+        /// Seconds, 1 to 14400. Defaults to 3600.
+        #[arg(long)]
+        ttl_s: Option<u64>,
+    },
+    /// Renew the lease whose token EMBARCH_LEASE_TOKEN carries, to --ttl-s
+    /// from now (its own TTL when omitted).
+    LeaseRenew {
+        #[arg(long)]
+        ttl_s: Option<u64>,
+    },
+    /// Release the lease whose token EMBARCH_LEASE_TOKEN carries.
+    LeaseRelease,
+    /// Show the live bench lease (holder, purpose, expiry; never the token),
+    /// or that there is none.
+    LeaseShow,
     /// Reset a project's target chip via embarch-core.
     Reset {
         project: String,
@@ -826,6 +855,12 @@ async fn async_main() -> Result<()> {
             ""
         }
     );
+
+    // Renews whichever lease this process sends a token for (one it took, or
+    // one inherited from EMBARCH_LEASE_TOKEN), so a holder does not depend on
+    // a model remembering to (decision 90).
+    let keepalive = core.clone();
+    tokio::spawn(async move { keepalive.lease_keepalive().await });
 
     let server = EmbarchApi::new(Arc::new(config), core);
     let running = server

@@ -78,6 +78,14 @@ impl EmbarchApi {
         Self::err_text(json_out::pretty(value))
     }
 
+    fn lease_result(report: crate::lease::Report) -> Result<CallToolResult, McpError> {
+        if report.success {
+            Self::ok_json(report.value)
+        } else {
+            Self::err_json(report.value)
+        }
+    }
+
     fn err_text(message: impl Into<String>) -> Result<CallToolResult, McpError> {
         Ok(CallToolResult::error(vec![ContentBlock::text(message.into())]))
     }
@@ -92,6 +100,22 @@ impl EmbarchApi {
             "stderr": outcome.stderr,
         })
     }
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct LeaseTakeParams {
+    /// Who is taking it, shown to anyone refused. Defaults to "embarch-api mcp".
+    pub holder: Option<String>,
+    /// What for, shown to anyone refused.
+    pub purpose: Option<String>,
+    /// Seconds, 1 to 14400. Defaults to 900.
+    pub ttl_s: Option<u64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct LeaseRenewParams {
+    /// Seconds from now, 1 to 14400. Omit to renew to the lease's own ttl.
+    pub ttl_s: Option<u64>,
 }
 
 /// Parameters shared by every tool that operates on a single configured
@@ -867,7 +891,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Get embarch-core's status: whether it's reachable and what debug probes it currently sees.")]
+    #[tool(description = "Get embarch-core's status: whether it's reachable and what debug probes it currently sees. Also lease (who holds the bench, until when, or null; embarch-api decision 90) and last_images: per chip, the last image Core flashed or bootloaded since it started, with its sha256 and flashed_at — compare sha256 with your own image before reflashing. An absent chip means unknown, NOT nothing flashed: the record is in memory and a flash by another tool does not appear.")]
     async fn status(&self) -> Result<CallToolResult, McpError> {
         match self.core.status().await {
             Ok(status) => Self::ok_json(serde_json::json!({
@@ -878,6 +902,8 @@ impl EmbarchApi {
                     "product_id": p.product_id,
                     "serial_number": p.serial_number,
                 })).collect::<Vec<_>>(),
+                "lease": status.lease,
+                "last_images": status.last_images,
             })),
             Err(e) => Self::err_text(format!(
                 "embarch-core unreachable or returned an error: {e:#}"
@@ -1113,6 +1139,33 @@ impl EmbarchApi {
             Ok(ports) => Self::ok_json(serde_json::json!({ "declared": ports })),
             Err(e) => Self::err_text(format!("declare_bootload_ports failed: {e:#}")),
         }
+    }
+
+    #[tool(description = "Take the bench lease (embarch-api decision 90, embarch-core decision 93): this session holds BOTH boards until it releases or the ttl runs out, and every other session's flash, reset, bootload, serial_log, signal_exchange, mem_read, validate, run_study and the like is refused 409 naming holder, purpose and expiry. Take it before a sequence of hardware calls and release it after. Refused, with Core's text verbatim, if another session holds it. This server then sends the token on every call and renews it on a timer for as long as it runs, so do not renew by hand. The result carries the token once: to reach a CLI call or embarch-atlas from this session, export it as EMBARCH_LEASE_TOKEN there. ttl_s is 1 to 14400, default 900; it is how long a crashed session keeps the bench.")]
+    async fn lease_take(&self, Parameters(params): Parameters<LeaseTakeParams>) -> Result<CallToolResult, McpError> {
+        let report = crate::lease::take(
+            &self.core,
+            params.holder.as_deref().unwrap_or("embarch-api mcp"),
+            params.purpose.as_deref(),
+            params.ttl_s.unwrap_or(crate::lease::MCP_DEFAULT_TTL_S),
+        )
+        .await;
+        Self::lease_result(report)
+    }
+
+    #[tool(description = "Renew the bench lease this server holds (or whose token EMBARCH_LEASE_TOKEN gave it) to ttl_s from now, its own ttl when omitted (embarch-api decision 90). The server already renews on a timer, so this is only for changing the ttl. Errors with Core's text if no lease is live (released, expired, or Core restarted) or the token is not the live one.")]
+    async fn lease_renew(&self, Parameters(params): Parameters<LeaseRenewParams>) -> Result<CallToolResult, McpError> {
+        Self::lease_result(crate::lease::renew(&self.core, params.ttl_s).await)
+    }
+
+    #[tool(description = "Release the bench lease this server holds (embarch-api decision 90), so other sessions may use the hardware. Errors with Core's text if no lease is live or the token is not the live one.")]
+    async fn lease_release(&self) -> Result<CallToolResult, McpError> {
+        Self::lease_result(crate::lease::release(&self.core).await)
+    }
+
+    #[tool(description = "Show the live bench lease (embarch-api decision 90): holder, purpose, start, expiry, never the token; lease is null when none is live. this_process_sends_a_token says whether this server sends one on its calls. Not refused by a lease, so it works for a session that does not hold it.")]
+    async fn lease_show(&self) -> Result<CallToolResult, McpError> {
+        Self::lease_result(crate::lease::show(&self.core).await)
     }
 
     #[tool(description = "Show the DUT's declared bootload ports via embarch-core's GET /bootload/ports. declared is null, not an error, when none are declared.")]

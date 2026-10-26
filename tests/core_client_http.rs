@@ -143,6 +143,10 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.declare_bootload_ports(None, &boot_id).await;
     let _ = client.bootload_ports().await;
     let _ = client.clear_bootload_ports().await;
+    let _ = client.lease_take("sweep", Some("sweep"), 60).await;
+    let _ = client.lease_renew(None).await;
+    let _ = client.lease_release().await;
+    let _ = client.lease_show().await;
     let _ = client.list_studies().await;
     let _ = client.get_study_status("study-1").await;
     let _ = client.study_streams("study-1").await;
@@ -226,6 +230,10 @@ async fn every_outbound_call_carries_the_bearer_token() {
         ("PUT", "/bootload/ports"),
         ("GET", "/bootload/ports"),
         ("DELETE", "/bootload/ports"),
+        ("POST", "/lease"),
+        ("PUT", "/lease"),
+        ("DELETE", "/lease"),
+        ("GET", "/lease"),
         ("GET", "/study/study-1"),
         ("GET", "/study/study-1/streams"),
         ("GET", "/study/study-1/steps"),

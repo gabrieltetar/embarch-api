@@ -38,6 +38,28 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         Commands::DeclareBootloadPorts { bootloader, bootloader_interface, app, app_interface } => {
             declare_bootload_ports(&core, app.as_deref(), app_interface, &bootloader, bootloader_interface, json).await
         }
+        Commands::LeaseTake { holder, purpose, ttl_s } => {
+            let report = crate::lease::take(
+                &core,
+                holder.as_deref().unwrap_or("embarch-api cli"),
+                purpose.as_deref(),
+                ttl_s.unwrap_or(crate::lease::CLI_DEFAULT_TTL_S),
+            )
+            .await;
+            finish(json, report.success, report.value, report.human)
+        }
+        Commands::LeaseRenew { ttl_s } => {
+            let report = crate::lease::renew(&core, ttl_s).await;
+            finish(json, report.success, report.value, report.human)
+        }
+        Commands::LeaseRelease => {
+            let report = crate::lease::release(&core).await;
+            finish(json, report.success, report.value, report.human)
+        }
+        Commands::LeaseShow => {
+            let report = crate::lease::show(&core).await;
+            finish(json, report.success, report.value, report.human)
+        }
         Commands::ShowBootloadPorts => show_bootload_ports(&core, json).await,
         Commands::ClearBootloadPorts => clear_bootload_ports(&core, json).await,
         Commands::SerialLog {
@@ -388,7 +410,10 @@ async fn status(core: &CoreClient, json: bool) -> i32 {
             finish(
                 json,
                 true,
-                serde_json::json!({ "success": true, "status": status.status, "probes": probes }),
+                serde_json::json!({
+                    "success": true, "status": status.status, "probes": probes,
+                    "lease": status.lease, "last_images": status.last_images,
+                }),
                 human,
             )
         }
@@ -2189,7 +2214,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 40,
+            arms, 44,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."
