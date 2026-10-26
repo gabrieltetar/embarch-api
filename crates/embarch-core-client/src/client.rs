@@ -870,10 +870,39 @@ struct LogsRecentResponse {
     lines: Vec<String>,
 }
 
+/// `GET /serial-log`'s body. `truncated` is Core's byte-cap flag
+/// (`EMBARCH_SERIAL_LOG_MAX_BYTES`): `Some(true)` means `lines` is a prefix of
+/// what the port said. `None` is "this Core did not say" (an older Core), never
+/// "no" — decision 58's three-valued shape.
 #[derive(Debug, Deserialize)]
 pub struct SerialLogResponse {
     pub port: String,
     pub lines: Vec<String>,
+    #[serde(default)]
+    pub truncated: Option<bool>,
+}
+
+impl SerialLogResponse {
+    /// The one line a surface shows next to the capture, or `None` when Core
+    /// said the capture is complete.
+    pub fn truncation_note(&self) -> Option<&'static str> {
+        match self.truncated {
+            Some(true) => Some("[TRUNCATED — Core's byte cap cut this capture short; the lines are a prefix]"),
+            Some(false) => None,
+            None => Some("[truncation unknown — this Core did not report whether the capture was cut short]"),
+        }
+    }
+
+    /// The JSON both the CLI and the MCP tool emit: `truncated` is `true`,
+    /// `false` or `null` (not reported), with a `truncation_note` when it is
+    /// not a plain `false`.
+    pub fn to_json(&self) -> serde_json::Value {
+        let mut v = serde_json::json!({ "port": self.port, "lines": self.lines, "truncated": self.truncated });
+        if let Some(n) = self.truncation_note() {
+            v["truncation_note"] = n.into();
+        }
+        v
+    }
 }
 
 #[derive(Debug, Serialize)]

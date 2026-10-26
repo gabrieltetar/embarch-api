@@ -1528,7 +1528,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Read the serial console log for a project via embarch-core, opening the named port on CORE'S OWN MACHINE — not the machine this MCP server or its caller runs on. Falls back to the project's configured serial_port/serial_baud if not overridden; if neither gives a port, call list_serial_ports to discover a value Core's machine actually recognises (e.g. a Windows COM name when Core runs on Windows and the caller is WSL2 — a guess from the caller's own /dev/ttyACM0-style name will not resolve there). duration_ms is bounded by embarch-core's own cap on this route — see /serial-log in embarch-core's interface docs for the current number.")]
+    #[tool(description = "Read the serial console log for a project via embarch-core, opening the named port on CORE'S OWN MACHINE — not the machine this MCP server or its caller runs on. Falls back to the project's configured serial_port/serial_baud if not overridden; if neither gives a port, call list_serial_ports to discover a value Core's machine actually recognises (e.g. a Windows COM name when Core runs on Windows and the caller is WSL2 — a guess from the caller's own /dev/ttyACM0-style name will not resolve there). duration_ms is bounded by embarch-core's own cap on this route — see /serial-log in embarch-core's interface docs for the current number. The result's truncated is true when Core's byte cap cut the capture short (lines is then only a prefix — do not treat it as the whole log), false when complete, and null with a truncation_note when this Core did not report it.")]
     async fn serial_log(
         &self,
         Parameters(SerialLogParams {
@@ -1556,10 +1556,7 @@ impl EmbarchApi {
         let duration_ms = duration_ms.unwrap_or(2_000);
 
         match self.core.serial_log(&port, baud, duration_ms).await {
-            Ok(resp) => Self::ok_json(serde_json::json!({
-                "port": resp.port,
-                "lines": resp.lines,
-            })),
+            Ok(resp) => Self::ok_json(resp.to_json()),
             Err(e) => Self::err_text(format!("serial-log failed for '{}': {e:#}", project.name)),
         }
     }

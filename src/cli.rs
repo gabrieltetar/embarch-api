@@ -1427,17 +1427,18 @@ async fn serial_log(
 
     match core.serial_log(&port, baud, duration_ms).await {
         Ok(resp) => {
-            let human = if resp.lines.is_empty() {
+            let mut human = if resp.lines.is_empty() {
                 format!("serial-log on {}: no lines captured", resp.port)
             } else {
                 format!("serial-log on {}:\n{}", resp.port, resp.lines.join("\n"))
             };
-            finish(
-                json,
-                true,
-                serde_json::json!({ "success": true, "port": resp.port, "lines": resp.lines }),
-                human,
-            )
+            if let Some(note) = resp.truncation_note() {
+                human.push('\n');
+                human.push_str(note);
+            }
+            let mut value = resp.to_json();
+            value["success"] = true.into();
+            finish(json, true, value, human)
         }
         Err(e) => error_result(json, format!("serial-log failed for '{}': {e:#}", project.name)),
     }
