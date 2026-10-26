@@ -476,7 +476,7 @@ async fn flash(
                 "firmware_path": path,
                 "target": resolved.descriptor,
             }),
-            format!("flashed '{project_name}' via chip {} ({}){}", resp.chip, path, erased_note(&resp.erased)),
+            format!("flashed '{project_name}' via chip {} ({}){}", resp.chip, path, erased_note(resp.erased.as_deref())),
         ),
         Err(e) => error_result(json, format!("flash failed for '{project_name}': {e:#}")),
     }
@@ -546,7 +546,7 @@ async fn build_and_flash(
             }),
             format!(
                 "build and flash succeeded for '{project_name}' via chip {} ({}){}",
-                resp.chip, core_firmware_path, erased_note(&resp.erased)
+                resp.chip, core_firmware_path, erased_note(resp.erased.as_deref())
             ),
         ),
         Err(e) => error_result(
@@ -732,7 +732,7 @@ async fn flash_dev_bench(
                 "firmware_path": path,
                 "target": resolved.descriptor,
             }),
-            format!("flashed dev_bench via chip {} ({}){}", resp.chip, path, erased_note(&resp.erased)),
+            format!("flashed dev_bench via chip {} ({}){}", resp.chip, path, erased_note(resp.erased.as_deref())),
         ),
         Err(e) => error_result(json, format!("flash failed for dev_bench: {e:#}")),
     }
@@ -803,7 +803,7 @@ async fn build_and_flash_dev_bench(
             }),
             format!(
                 "build and flash succeeded for dev_bench via chip {} ({}){}",
-                resp.chip, core_firmware_path, erased_note(&resp.erased)
+                resp.chip, core_firmware_path, erased_note(resp.erased.as_deref())
             ),
         ),
         Err(e) => error_result(json, format!("build succeeded but flash failed for dev_bench: {e:#}")),
@@ -1263,14 +1263,14 @@ fn exchange_problem(
     timeout_ms: Option<u64>,
 ) -> Option<(i32, String)> {
     let bytes = resp.text.len();
-    let echo = if resp.text.contains(line.trim_end_matches('\n')) { "seen" } else { "not seen" };
+    let echo = if resp.echo_seen == Some(true) || resp.text.contains(line.trim_end_matches('\n')) { "seen" } else { "not seen" };
     if bytes == 0 {
         return Some((
             EXIT_EXCHANGE_NO_REPLY,
             format!("signal-exchange: no reply: 0 bytes read in {} ms (timeout {} ms)", resp.elapsed_ms, timeout_ms.map_or("default".to_string(), |t| t.to_string())),
         ));
     }
-    if resp.port_lost {
+    if resp.port_lost == Some(true) {
         return Some((
             EXIT_EXCHANGE_TRUNCATED,
             format!("signal-exchange: port lost after {} ms: the command ran, the reply is incomplete: {bytes} bytes read, echo {echo}", resp.elapsed_ms),
@@ -1951,11 +1951,10 @@ async fn study_stream_load(core: &CoreClient, study_id: &str, name: &str, json: 
 }
 
 /// `"; erased 0x..0x.., ..."` when Core blanked ranges, else nothing.
-fn erased_note(erased: &[String]) -> String {
-    if erased.is_empty() {
-        String::new()
-    } else {
-        format!("; erased {}", erased.join(", "))
+fn erased_note(erased: Option<&[String]>) -> String {
+    match erased {
+        Some(e) if !e.is_empty() => format!("; erased {}", e.join(", ")),
+        _ => String::new(),
     }
 }
 

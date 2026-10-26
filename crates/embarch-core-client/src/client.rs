@@ -161,10 +161,11 @@ pub struct FlashResponse {
     pub flashed: bool,
     pub chip: String,
     /// Ranges `erase: true` blanked, like `"0x08000000..0x08080000"`
-    /// (`embarch-core` decision 84). Empty without `erase` or after a
-    /// vendor-tool flash. Absent from an older Core, hence the default.
+    /// (`embarch-core` decision 84). `Some(empty)` without `erase` or after a
+    /// vendor-tool flash; `None` when Core did not say (an older Core), which
+    /// is not the same answer as "nothing erased" (decision 58).
     #[serde(default)]
-    pub erased: Vec<String>,
+    pub erased: Option<Vec<String>>,
 }
 
 /// What a bootload is told about the DUT, from the project's
@@ -860,18 +861,19 @@ pub struct SignalExchangeResponse {
     pub until_seen: bool,
     pub truncated: bool,
     pub elapsed_ms: u64,
-    /// Bytes that came back (`embarch-core` decision 85). Absent from an older Core.
-    #[serde(default)]
-    pub bytes_read: usize,
-    /// The written line appeared in the reply: a live shell.
-    #[serde(default)]
-    pub echo_seen: bool,
-    /// The write and its flush succeeded. An older Core never said; `false` there means unknown.
-    #[serde(default)]
-    pub written: bool,
+    /// Bytes that came back (`embarch-core` decision 85). `None`: this Core did not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes_read: Option<usize>,
+    /// The written line appeared in the reply: a live shell. `None`: this Core did not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub echo_seen: Option<bool>,
+    /// The write and its flush succeeded. `None`: this Core did not say, which is not `false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub written: Option<bool>,
     /// A read error after the write: `text` holds what arrived, and the command ran.
-    #[serde(default)]
-    pub port_lost: bool,
+    /// `None`: this Core did not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port_lost: Option<bool>,
     /// Only when no byte came back: which port Core opened.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port_identity: Option<ExchangePortIdentity>,
@@ -917,8 +919,8 @@ impl SignalExchangeResponse {
     /// reply. Never advises a resend: a reply that says `written` ran the command.
     pub fn wire_notes(&self, line: &str) -> Vec<String> {
         let mut notes = Vec::new();
-        let echo = if self.echo_seen || self.text.contains(line.trim_end_matches('\n')) { "seen" } else { "not seen" };
-        if self.port_lost {
+        let echo = if self.echo_seen == Some(true) || self.text.contains(line.trim_end_matches('\n')) { "seen" } else { "not seen" };
+        if self.port_lost == Some(true) {
             notes.push(format!(
                 "port lost after the write: the command ran (do not resend it); {} bytes arrived before the port went, echo {echo}",
                 self.text.len()
@@ -926,8 +928,10 @@ impl SignalExchangeResponse {
         }
         if self.text.is_empty() {
             let mut s = format!("no byte came back: echo {echo}");
-            if self.written {
-                s.push_str(", the line was written");
+            match self.written {
+                Some(true) => s.push_str(", the line was written"),
+                Some(false) => s.push_str(", the line was not written"),
+                None => s.push_str(", this Core did not say whether the line was written"),
             }
             notes.push(s);
         }
@@ -2574,8 +2578,19 @@ mod tests {
             r#"{"signal":"s","port":"COM1","baud":115200,"text":"ok","until_seen":true,"truncated":false,"elapsed_ms":5}"#,
         )
         .unwrap();
-        assert!(!old.port_lost && old.port_identity.is_none() && old.core_state.is_none());
+        assert!(old.port_lost.is_none() && old.bytes_read.is_none() && old.echo_seen.is_none() && old.written.is_none() && old.port_identity.is_none() && old.core_state.is_none());
         assert!(old.wire_notes("x\n").is_empty());
+        let out = serde_json::to_value(&old).unwrap();
+        for k in ["bytes_read", "echo_seen", "written", "port_lost"] {
+            assert!(out.get(k).is_none(), "{k} was fabricated: {out}");
+        }
+        // An old-shape reply with no text says the write is unknown, not false.
+        let silent: SignalExchangeResponse = serde_json::from_str(
+            r#"{"signal":"s","port":"c","baud":1,"text":"","until_seen":false,"truncated":false,"elapsed_ms":1}"#,
+        )
+        .unwrap();
+        let n = silent.wire_notes("x\n").join("\n");
+        assert!(n.contains("did not say whether") && !n.contains("not written"), "{n}");
         let new: SignalExchangeResponse = serde_json::from_str(
             r#"{"signal":"s","port":"COM1","baud":115200,"text":"","until_seen":false,"truncated":false,"elapsed_ms":5,
             "bytes_read":0,"echo_seen":false,"written":true,"port_lost":false,
@@ -2595,14 +2610,14 @@ mod tests {
     }
 
     #[test]
-    fn flash_response_erased_defaults_empty_for_an_older_core() {
+    fn flash_response_erased_is_none_for_an_older_core() {
         let old: FlashResponse = serde_json::from_str(r#"{"flashed":true,"chip":"c"}"#).unwrap();
-        assert!(old.erased.is_empty());
+        assert!(old.erased.is_none());
         let new: FlashResponse = serde_json::from_str(
             r#"{"flashed":true,"chip":"c","erased":["0x08000000..0x08080000"]}"#,
         )
         .unwrap();
-        assert_eq!(new.erased, vec!["0x08000000..0x08080000"]);
+        assert_eq!(new.erased, Some(vec!["0x08000000..0x08080000".to_string()]));
     }
 
     use super::*;
