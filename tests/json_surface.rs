@@ -85,6 +85,7 @@ const EVERY_SUBCOMMAND: &[&[&str]] = &[
     &["list-signals"],
     &["remove-signal", "no-such-signal"],
     &["signal-exchange", "--name", "no-such-signal", "--write", "help"],
+    &["bench-exchange", "--listen", "no-such-signal"],
     &["capture-start", "no-such-signal"],
     &["capture-read", "no-such-signal"],
     &["capture-stop", "no-such-signal"],

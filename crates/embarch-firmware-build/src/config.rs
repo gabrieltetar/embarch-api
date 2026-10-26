@@ -93,6 +93,60 @@ pub struct BootloadConfig {
     pub buffer_size: Option<u32>,
 }
 
+/// One command of a named bench snapshot (`[projects.snapshots.<name>]`,
+/// decision 89): the same four fields a `bench_exchange` step takes.
+#[derive(Debug, Default, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SnapshotStep {
+    pub signal: String,
+    pub write: String,
+    #[serde(default)]
+    pub until: Option<String>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub delay_ms: Option<u64>,
+}
+
+/// A named list of status commands across signals, run by
+/// `bench_exchange`'s `snapshot` param and answered in its timeline shape.
+#[derive(Debug, Default, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SnapshotConfig {
+    pub steps: Vec<SnapshotStep>,
+    /// Signals recorded while the snapshot runs.
+    #[serde(default)]
+    pub listen: Vec<String>,
+    #[serde(default)]
+    pub tail_ms: Option<u64>,
+}
+
+impl SnapshotConfig {
+    /// Structural checks only. Whether each signal is declared is Core's
+    /// to say and is checked when the snapshot runs (decision 89).
+    fn validate(&self, project: &str, name: &str) -> Result<()> {
+        let at = format!("project '{project}' snapshot '{name}'");
+        if name.trim().is_empty() {
+            bail!("project '{project}' has a snapshot with an empty name");
+        }
+        if self.steps.is_empty() {
+            bail!("{at} has no steps");
+        }
+        for (i, s) in self.steps.iter().enumerate() {
+            if s.signal.trim().is_empty() || s.write.trim().is_empty() {
+                bail!("{at} step {} needs a non-empty signal and write", i + 1);
+            }
+            if s.until.as_deref().is_some_and(|u| u.is_empty()) {
+                bail!("{at} step {} has an empty until; remove it or give the text to wait for", i + 1);
+            }
+        }
+        if self.listen.iter().any(|l| l.trim().is_empty()) {
+            bail!("{at} has an empty signal name in listen");
+        }
+        Ok(())
+    }
+}
+
 /// What `imgtool` writes beside `zephyr.bin` when a build has MCUboot.
 pub const DEFAULT_BOOTLOAD_ARTIFACT: &str = "zephyr.signed.bin";
 
@@ -287,6 +341,10 @@ pub struct ProjectConfig {
     /// `build_and_bootload`. Absent is the same as an empty table.
     #[serde(default)]
     pub bootload: Option<BootloadConfig>,
+    /// `[projects.snapshots.<name>]`: named status-command lists for
+    /// `bench_exchange`'s `snapshot` param (decision 89).
+    #[serde(default)]
+    pub snapshots: HashMap<String, SnapshotConfig>,
 }
 
 impl ProjectConfig {
@@ -490,6 +548,9 @@ impl Config {
             }
             if let Some(bootload) = &project.bootload {
                 bootload.validate(&project.name)?;
+            }
+            for (name, snap) in &project.snapshots {
+                snap.validate(&project.name, name)?;
             }
 
             // Decision 53: `[[projects.targets]]` is retired, and a config

@@ -134,6 +134,9 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
             let r = core.signal_capture_stop(&signal, after, limit, id.as_deref()).await;
             capture_result(&r, "capture-stop", true, json)
         }
+        Commands::BenchExchange { steps, listen, tail_ms, filters, snapshot, project, poll_ms } => {
+            bench_exchange(&core, &config, steps, listen, tail_ms, filters, snapshot, project, poll_ms, json).await
+        }
         Commands::MemRead { ranges, role } => mem_read(&core, &role, &ranges, json).await,
         Commands::ListSignals => list_signals(&core, json).await,
         Commands::RemoveSignal { name } => remove_signal(&core, &name, json).await,
@@ -1257,6 +1260,60 @@ fn capture_result(r: &anyhow::Result<embarch_core_client::SignalCaptureResponse>
     }
 }
 
+/// `bench-exchange`: the timeline on stdout, the per-step and capture facts
+/// on stderr. A failed step exits 1 with the timeline so far still printed.
+#[allow(clippy::too_many_arguments)]
+async fn bench_exchange(
+    core: &CoreClient,
+    config: &Config,
+    steps: Option<String>,
+    listen: Vec<String>,
+    tail_ms: Option<u64>,
+    filters: Option<String>,
+    snapshot: Option<String>,
+    project: Option<String>,
+    poll_ms: Option<u64>,
+    json: bool,
+) -> i32 {
+    let parse = |what: &str, raw: &Option<String>| -> Result<Option<serde_json::Value>, String> {
+        raw.as_deref().map(|r| serde_json::from_str(r).map_err(|e| format!("--{what} is not valid JSON: {e}"))).transpose()
+    };
+    let build = || -> Result<crate::bench_exchange::Request, String> {
+        let steps = match parse("steps", &steps)? {
+            Some(v) => serde_json::from_value(v).map_err(|e| format!("--steps: {e}"))?,
+            None => Vec::new(),
+        };
+        let filters = match parse("filters", &filters)? {
+            Some(v) => serde_json::from_value(v).map_err(|e| format!("--filters: {e}"))?,
+            None => Default::default(),
+        };
+        Ok(crate::bench_exchange::Request { steps, listen: listen.clone(), tail_ms, filters, snapshot: snapshot.clone(), project: project.clone(), poll_ms })
+    };
+    let req = match build().and_then(|r| crate::bench_exchange::resolve(config, r)) {
+        Ok(r) => r,
+        Err(e) => return error_result(json, format!("bench-exchange: {e}")),
+    };
+    match crate::bench_exchange::run(core, req).await {
+        Ok(v) => {
+            let ok = v["success"].as_bool().unwrap_or(false);
+            if !json {
+                eprintln!("bench-exchange: times are {}", crate::bench_exchange::TIME_BASIS);
+                if let Some(d) = v["dropped"].as_object().filter(|d| !d.is_empty()) {
+                    for (sig, c) in d {
+                        eprintln!("bench-exchange: {sig}: {} lines filtered out, {} over the cap", c["filtered"], c["capped"]);
+                    }
+                }
+                if let Some(e) = v["error"].as_str() {
+                    eprintln!("bench-exchange: {e}");
+                }
+            }
+            let human = v["timeline"].as_str().unwrap_or_default().to_string();
+            finish(json, ok, v, human)
+        }
+        Err(e) => error_result(json, format!("bench-exchange failed: {e}")),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn signal_exchange(
     core: &CoreClient,
@@ -2132,7 +2189,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 39,
+            arms, 40,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."

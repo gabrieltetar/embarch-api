@@ -1491,6 +1491,21 @@ impl EmbarchApi {
         }
     }
 
+    #[tool(description = "Run console commands on declared signals in order while recording other consoles, and return ONE timeline of every row, filtered, in one call (decision 89; replaces hand-built listeners and three to five signal_exchange calls). `steps`: [{signal, write, until?, timeout_ms?, delay_ms?}] run in order. `listen`: signals recorded from before the first step until tail_ms after the last (embarch-core's background capture, decision 92: no hardware lock, direct routes only; a second capture on a listened signal is Core's 409). The timeline string has one row per line: `+ms signal> write` for a command, `+ms signal| text` for received text. A step on a listened signal shows its reply through the capture, once. TIMES ARE THIS CLIENT'S, NOT CORE'S: Core stamps no per-line time, so a captured line carries the moment a poll first saw it (a ceiling, within poll_ms, default 100) - never read a gap shorter than poll_ms as real. Escape codes are left in: filters work on text that still carries them. `filters`: per signal (or \"*\") {include[], exclude[] (case-sensitive substrings), level (err|wrn|inf|dbg floor; untagged lines kept), max_lines}; counts of what each dropped come back under `dropped`. Writes are never filtered. `snapshot` (+ optional `project`): a list of status commands declared under [projects.snapshots.<name>] in config, run after `steps`. Every named signal must be declared (checked before anything is written). A failed step stops the rest and the answer still carries the timeline so far with success false.")]
+    async fn bench_exchange(
+        &self,
+        Parameters(req): Parameters<crate::bench_exchange::Request>,
+    ) -> Result<CallToolResult, McpError> {
+        let req = match crate::bench_exchange::resolve(&self.config, req) {
+            Ok(r) => r,
+            Err(e) => return Self::err_text(format!("bench_exchange: {e}")),
+        };
+        match crate::bench_exchange::run(&self.core, req).await {
+            Ok(v) => Self::ok_json(v),
+            Err(e) => Self::err_text(format!("bench_exchange failed: {e}")),
+        }
+    }
+
     #[tool(description = "Start recording one declared signal's console in the background, via embarch-core's POST /signals/{signal}/capture (embarch-core decision 92). Returns at once with id and state; take no hardware lock, so signal_exchange on another signal, flash and reset run while it records. Read it with capture_read, end it with capture_stop. One capture per signal (a second start is a 409 naming the first); direct routes only. max_s and max_bytes: Core's defaults and caps apply, an out-of-range value is its 400.")]
     async fn capture_start(
         &self,

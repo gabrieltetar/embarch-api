@@ -1,3 +1,4 @@
+mod bench_exchange;
 mod bootload;
 mod capacity;
 mod cli;
@@ -589,6 +590,35 @@ pub enum Commands {
         limit: Option<u64>,
         #[arg(long)]
         id: Option<String>,
+    },
+    /// Run console commands across declared signals while recording others,
+    /// and print one timeline of every row (`+ms signal| text`), filtered.
+    /// Times are this client's, not Core's (decision 89). Steps, filters and
+    /// listen go in as JSON, the shape of the `bench_exchange` MCP tool.
+    BenchExchange {
+        /// JSON array of steps: [{"signal":"bench","write":"pd status","until":"uart:~$ "}]
+        #[arg(long)]
+        steps: Option<String>,
+        /// A signal to record from before the first step to --tail-ms after
+        /// the last; repeatable.
+        #[arg(long)]
+        listen: Vec<String>,
+        /// Keep recording this long after the last step (ms).
+        #[arg(long)]
+        tail_ms: Option<u64>,
+        /// JSON object of per-signal filters keyed by signal name ("*" for the
+        /// rest): {"dut":{"level":"wrn","exclude":["noise"],"max_lines":50}}
+        #[arg(long)]
+        filters: Option<String>,
+        /// A snapshot from `[projects.snapshots.<name>]`; runs after --steps.
+        #[arg(long)]
+        snapshot: Option<String>,
+        /// The project declaring the snapshot (optional when only one does).
+        #[arg(long)]
+        project: Option<String>,
+        /// Read listened consoles this often (ms, default 100, minimum 20).
+        #[arg(long)]
+        poll_ms: Option<u64>,
     },
     /// Read 32-bit words of an enrolled target's memory over its probe, via
     /// embarch-core (`embarch-core` decision 81). Every range is read under
