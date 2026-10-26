@@ -600,6 +600,12 @@ pub struct SignalExchangeParams {
     /// resets. Default 0.
     #[serde(default)]
     pub port_wait_ms: Option<u64>,
+    /// Default true: `until` is searched only after the echo of the written
+    /// line. Set false for a console with echo off (a Zephyr shell after
+    /// `shell echo off`), which never echoes, so `until` would otherwise
+    /// never be searched and the read would run to timeout_ms.
+    #[serde(default)]
+    pub match_after_echo: Option<bool>,
 }
 
 /// `embarch-core` decision 81's `POST /live/mem-read`.
@@ -1423,13 +1429,13 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Write a line to a declared DUT signal and return what came back, via embarch-core's POST /signals/{name}/exchange (embarch-core decision 79): a shell command and its output. The signal must be declared host-to-dut or bidirectional on a direct route (declare_signal; give baud for a UART console). Reads until `until` appears (e.g. the shell prompt \"uart:~$ \") or timeout_ms passes. Returns the raw text, escape codes included, with until_seen, truncated, bytes_read, echo_seen, written and port_lost (a read error after the write: the command ran, do not resend it); when no byte came back it adds port_identity (the port Core opened) and core_state (the DUT core's DHCSR), and wire_notes says it in words. After a flash or reset, pass port_wait_ms (up to 10000) so Core waits for a USB console to re-enumerate instead of failing at once. Takes Core's hardware lock for the exchange only.")]
+    #[tool(description = "Write a line to a declared DUT signal and return what came back, via embarch-core's POST /signals/{name}/exchange (embarch-core decision 79): a shell command and its output. The signal must be declared host-to-dut or bidirectional on a direct route (declare_signal; give baud for a UART console). Reads until `until` appears (e.g. the shell prompt \"uart:~$ \") or timeout_ms passes. Returns the raw text, escape codes included, with until_seen, truncated, bytes_read, echo_seen, written and port_lost (a read error after the write: the command ran, do not resend it); when no byte came back it adds port_identity (the port Core opened) and core_state (the DUT core's DHCSR), and wire_notes says it in words. After a flash or reset, pass port_wait_ms (up to 10000) so Core waits for a USB console to re-enumerate instead of failing at once. By default `until` is searched only after the echo of the written line; on a console with echo off (a shell after `shell echo off`) nothing echoes, so pass match_after_echo false or the read runs to timeout_ms with until_seen false. Takes Core's hardware lock for the exchange only.")]
     async fn signal_exchange(
         &self,
-        Parameters(SignalExchangeParams { name, write, until, timeout_ms, append_newline, port_wait_ms }): Parameters<SignalExchangeParams>,
+        Parameters(SignalExchangeParams { name, write, until, timeout_ms, append_newline, port_wait_ms, match_after_echo }): Parameters<SignalExchangeParams>,
     ) -> Result<CallToolResult, McpError> {
         let line = exchange_line(&write, append_newline.unwrap_or(true));
-        match self.core.signal_exchange(&name, &line, until.as_deref(), timeout_ms, port_wait_ms).await {
+        match self.core.signal_exchange_with(&name, &line, until.as_deref(), timeout_ms, port_wait_ms, match_after_echo).await {
             Ok(resp) => {
                 let notes = resp.wire_notes(&line);
                 let mut v = serde_json::json!(resp);

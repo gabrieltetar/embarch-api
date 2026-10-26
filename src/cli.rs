@@ -119,8 +119,8 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
             tx_pin,
             baud,
         } => declare_signal(&core, name, origin_role, &direction, &route_kind, port_serial, rx_pin, tx_pin, baud, json).await,
-        Commands::SignalExchange { name, write, until, timeout_ms, no_newline, port_wait_ms, clean } => {
-            signal_exchange(&core, &name, &write, until.as_deref(), timeout_ms, port_wait_ms, !no_newline, clean, json).await
+        Commands::SignalExchange { name, write, until, timeout_ms, no_newline, port_wait_ms, match_after_echo, clean } => {
+            signal_exchange(&core, &name, &write, until.as_deref(), timeout_ms, port_wait_ms, match_after_echo, !no_newline, clean, json).await
         }
         Commands::MemRead { ranges, role } => mem_read(&core, &role, &ranges, json).await,
         Commands::ListSignals => list_signals(&core, json).await,
@@ -1229,12 +1229,13 @@ async fn signal_exchange(
     until: Option<&str>,
     timeout_ms: Option<u64>,
     port_wait_ms: Option<u64>,
+    match_after_echo: Option<bool>,
     append_newline: bool,
     clean: bool,
     json: bool,
 ) -> i32 {
     let line = crate::tools::exchange_line(write, append_newline);
-    match core.signal_exchange(name, &line, until, timeout_ms, port_wait_ms).await {
+    match core.signal_exchange_with(name, &line, until, timeout_ms, port_wait_ms, match_after_echo).await {
         Ok(resp) => {
             let text = if clean {
                 clean_exchange(&resp.text, line.trim_end_matches('\n'), until.unwrap_or(""))

@@ -18,6 +18,10 @@ fn reply(text: &str, until_seen: bool, truncated: bool) -> serde_json::Value {
 }
 
 async fn run(body: serde_json::Value, extra: &[&str]) -> Output {
+    run_recorded(body, extra).await.0
+}
+
+async fn run_recorded(body: serde_json::Value, extra: &[&str]) -> (Output, Vec<support::RecordedRequest>) {
     let mock = MockCore::start(Behavior::json_ok(body)).await;
     let dir = std::env::temp_dir().join(format!(
         "embarch-api-sigex-{}-{}",
@@ -38,7 +42,7 @@ async fn run(body: serde_json::Value, extra: &[&str]) -> Output {
         .output()
         .unwrap();
     let _ = std::fs::remove_dir_all(&dir);
-    out
+    (out, mock.requests())
 }
 
 fn code(o: &Output) -> i32 {
@@ -97,4 +101,16 @@ async fn json_output_is_unchanged_and_exit_code_still_marks_the_problem() {
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(v["exchange"]["until_seen"], false);
     assert_eq!(v["exchange"]["text"], "help\r\nx");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn match_after_echo_reaches_core_only_when_given() {
+    let ok = reply("foo\r\nuart:~$ ", true, false);
+    let (o, reqs) = run_recorded(ok.clone(), &["--until", "uart:~$ ", "--match-after-echo", "false"]).await;
+    assert_eq!(code(&o), 0);
+    let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert_eq!(body["match_after_echo"], false);
+    let (_, reqs) = run_recorded(ok, &["--until", "uart:~$ "]).await;
+    let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert!(body.get("match_after_echo").is_none(), "{body}");
 }

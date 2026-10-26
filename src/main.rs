@@ -539,6 +539,11 @@ pub enum Commands {
         /// appear, e.g. a USB console re-enumerating after a reset.
         #[arg(long)]
         port_wait_ms: Option<u64>,
+        /// Whether --until is searched only after the echo of the written
+        /// line (Core's default, true). Pass `false` for a console with echo
+        /// off, which never echoes, so the read would run to the timeout.
+        #[arg(long)]
+        match_after_echo: Option<bool>,
         /// Print the command's output alone: escape codes out (a cursor move
         /// kept as spaces), the echo and everything before it dropped, the
         /// closing prompt (the --until text) dropped. Same as the atlas

@@ -127,7 +127,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.serial_log("COM7", 115_200, 250).await;
     let _ = client.declare_signal(&signal).await;
     let _ = client.remove_signal("outpost").await;
-    let _ = client.signal_exchange("console", "help\n", Some("uart:~$ "), Some(500), Some(1000)).await;
+    let _ = client.signal_exchange_with("console", "help\n", Some("uart:~$ "), Some(500), Some(1000), Some(false)).await;
     let _ = client.mem_read("dut", &[(0x4002_103C, 1)]).await;
     let _ = client.set_dev_bench_link(Some("MOCK-BRIDGE-0001"), Some(2)).await;
     // `bootload` reads its image off disk before it sends anything, so it

@@ -885,6 +885,8 @@ struct SignalExchangeRequest<'a> {
     timeout_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     port_wait_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    match_after_echo: Option<bool>,
 }
 
 /// `POST /signals/{name}/exchange`'s reply (`embarch-core` decision 79).
@@ -2419,8 +2421,23 @@ impl CoreClient {
         timeout_ms: Option<u64>,
         port_wait_ms: Option<u64>,
     ) -> Result<SignalExchangeResponse> {
+        self.signal_exchange_with(name, write, until, timeout_ms, port_wait_ms, None).await
+    }
+
+    /// [`CoreClient::signal_exchange`] plus Core's `match_after_echo`:
+    /// `None` sends nothing (Core's default, on, holds); `Some(false)` makes
+    /// `until` match from the first byte, for a console with echo off.
+    pub async fn signal_exchange_with(
+        &self,
+        name: &str,
+        write: &str,
+        until: Option<&str>,
+        timeout_ms: Option<u64>,
+        port_wait_ms: Option<u64>,
+        match_after_echo: Option<bool>,
+    ) -> Result<SignalExchangeResponse> {
         let url = format!("{}/signals/{}/exchange", self.base_url().await?, urlencode(name));
-        let body = SignalExchangeRequest { write, until, timeout_ms, port_wait_ms };
+        let body = SignalExchangeRequest { write, until, timeout_ms, port_wait_ms, match_after_echo };
         // The port wait comes before the exchange's own deadline, so it adds to the request's.
         let timeout = self.serial_timeout + Duration::from_millis(port_wait_ms.unwrap_or(0));
         self.send(self.client.post(url).json(&body), timeout).await
