@@ -1229,10 +1229,100 @@ pub struct MemReadResponse {
     pub chip: String,
     pub probe_serial: String,
     pub ranges: Vec<MemReadRangeResponse>,
-    /// The core was running and the read stopped it.
+    /// Deprecated (`embarch-core` decision 97; removed after 2026-11-30):
+    /// the core was running and this read halted it, so `false` means "was
+    /// already halted", never "running". Read `found`/`left`.
     pub halted: bool,
-    /// How long it was stopped; 0 when it was already halted.
+    /// How long this read's own halt lasted; 0 when it was already halted.
     pub halted_us: u64,
+    /// The core's state when the request arrived. `None` from a Core older
+    /// than decision 97.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub found: Option<RunState>,
+    /// The core's state when the request returned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left: Option<RunState>,
+    /// Every halt the request made, the identity gate's included.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub halt_count: Option<u32>,
+}
+
+/// Whether a core was executing or stopped by a debugger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RunState {
+    Running,
+    Halted,
+}
+
+#[derive(Debug, Serialize)]
+struct CoreStateRequest<'a> {
+    role: &'a str,
+    halt: bool,
+    samples: u32,
+}
+
+/// `DHCSR` as Core decoded it.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Dhcsr {
+    pub raw: u32,
+    pub s_halt: bool,
+    pub s_sleep: bool,
+    pub s_lockup: bool,
+    pub s_retire_st: bool,
+    pub s_reset_st: bool,
+    /// `lockup`, `halted`, `sleeping` or `running`.
+    pub state: String,
+}
+
+/// `halt=true`'s register file.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CoreRegisters {
+    pub r: Vec<u32>,
+    pub sp: u32,
+    pub lr: u32,
+    pub pc: u32,
+    pub xpsr: u32,
+    pub control: u32,
+    pub primask: u32,
+}
+
+/// `SCB_ICSR`, decoded.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Icsr {
+    pub raw: u32,
+    pub vectactive: u32,
+    pub vectpending: u32,
+    pub isrpending: bool,
+    pub pendstset: bool,
+    pub nmipendset: bool,
+}
+
+/// `POST /live/core-state`'s reply (`embarch-core` decision 97).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CoreStateResponse {
+    pub role: String,
+    pub chip: String,
+    pub probe_serial: String,
+    pub found: RunState,
+    pub left: RunState,
+    pub halt_count: u32,
+    pub halted_us: u64,
+    pub dhcsr: Dhcsr,
+    /// Default mode only.
+    #[serde(default)]
+    pub dhcsr_after: Option<Dhcsr>,
+    /// `null` is a sample the core withheld.
+    #[serde(default)]
+    pub pc_samples: Vec<Option<u32>>,
+    #[serde(default)]
+    pub pc_note: Option<String>,
+    /// `halt=true` only.
+    #[serde(default)]
+    pub registers: Option<CoreRegisters>,
+    /// `halt=true` only.
+    #[serde(default)]
+    pub scb_icsr: Option<Icsr>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2834,6 +2924,14 @@ impl CoreClient {
         self.send(self.client.post(url).json(&body), self.reset_timeout).await
     }
 
+    /// `POST /live/core-state` — where the core of the target enrolled under
+    /// `role` is, read-only (`embarch-core` decision 97). Never halts unless
+    /// `halt`. Reuses `reset_timeout`: an identity check and an attach.
+    pub async fn core_state(&self, role: &str, halt: bool, samples: u32) -> Result<CoreStateResponse> {
+        let url = format!("{}/live/core-state", self.base_url().await?);
+        self.send(self.client.post(url).json(&CoreStateRequest { role, halt, samples }), self.reset_timeout).await
+    }
+
     /// `POST /dev-bench/link` — declares dev-bench's runtime-link USB
     /// serial, by the bridge's own USB serial number and/or which interface
     /// of it (`embarch-core`'s `set_dev_bench_link_handler`). At least one of
@@ -3803,5 +3901,40 @@ mod tests {
         let ex_new: SignalExchangeResponse = serde_json::from_value(serde_json::json!({"signal":"s","port":"p","baud":1,"text":"",
             "until_seen":false,"truncated":false,"elapsed_ms":1,"started_utc_ms":77})).unwrap();
         assert_eq!(ex_new.started_utc_ms, Some(77));
+    }
+
+    #[test]
+    fn mem_read_carries_found_left_and_halt_count_and_tolerates_an_old_core() {
+        let base = serde_json::json!({"role":"dut","chip":"c","probe_serial":"p","ranges":[],"halted":false,"halted_us":0});
+        let old: MemReadResponse = serde_json::from_value(base.clone()).unwrap();
+        assert!(old.found.is_none() && old.halt_count.is_none());
+        assert!(serde_json::to_value(&old).unwrap().get("found").is_none());
+        let mut new = base;
+        new["found"] = "running".into();
+        new["left"] = "halted".into();
+        new["halt_count"] = 2.into();
+        let r: MemReadResponse = serde_json::from_value(new).unwrap();
+        assert_eq!((r.found, r.left, r.halt_count), (Some(RunState::Running), Some(RunState::Halted), Some(2)));
+        assert_eq!(serde_json::to_value(&r).unwrap()["left"], "halted");
+    }
+
+    #[test]
+    fn core_state_response_parses_both_modes() {
+        let dh = |raw: u32, state: &str| serde_json::json!({"raw":raw,"s_halt":false,"s_sleep":false,"s_lockup":false,
+            "s_retire_st":true,"s_reset_st":false,"state":state});
+        let default_mode: CoreStateResponse = serde_json::from_value(serde_json::json!({
+            "role":"dut","chip":"stm32g0b1ve","probe_serial":"p","found":"running","left":"running","halt_count":1,
+            "halted_us":0,"dhcsr":dh(0x0100_0000,"running"),"dhcsr_after":dh(0x0100_0000,"running"),
+            "pc_samples":[134217728,null],"pc_note":null,"registers":null,"scb_icsr":null})).unwrap();
+        assert_eq!(default_mode.pc_samples, vec![Some(0x0800_0000), None]);
+        assert!(default_mode.registers.is_none());
+        let halted: CoreStateResponse = serde_json::from_value(serde_json::json!({
+            "role":"dut","chip":"c","probe_serial":"p","found":"halted","left":"halted","halt_count":0,"halted_us":0,
+            "dhcsr":dh(0x0003_0003,"halted"),"dhcsr_after":null,"pc_samples":[],"pc_note":"halted",
+            "registers":{"r":[0,1,2,3,4,5,6,7,8,9,10,11,12],"sp":1,"lr":2,"pc":3,"xpsr":4,"control":0,"primask":0},
+            "scb_icsr":{"raw":5,"vectactive":5,"vectpending":0,"isrpending":false,"pendstset":false,"nmipendset":false}})).unwrap();
+        assert_eq!(halted.found, RunState::Halted);
+        assert_eq!(halted.registers.unwrap().r.len(), 13);
+        assert_eq!(halted.scb_icsr.unwrap().vectactive, 5);
     }
 }

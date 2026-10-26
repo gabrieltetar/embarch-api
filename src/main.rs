@@ -668,6 +668,22 @@ pub enum Commands {
         #[arg(long, default_value = "dut")]
         role: String,
     },
+    /// Where a core is, read-only, via embarch-core (`embarch-core` decision
+    /// 97). Never halts unless --halt: reads DHCSR and DWT_PCSR samples; with
+    /// --halt it stops the core once (counted in halt_count), reads its
+    /// registers and puts it back as found.
+    CoreState {
+        /// The enrolled role to read from.
+        #[arg(long, default_value = "dut")]
+        role: String,
+        /// Halt the core once to read R0-R12, SP, LR, PC, xPSR, CONTROL,
+        /// PRIMASK and SCB_ICSR; it is left as found.
+        #[arg(long)]
+        halt: bool,
+        /// DWT_PCSR samples, 1 ms apart, when not halting (1 to 64).
+        #[arg(long, default_value_t = 8)]
+        samples: u32,
+    },
     /// List every declared signal link via embarch-core. An empty list is
     /// the normal starting state — nothing has been wired yet.
     ListSignals,

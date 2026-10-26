@@ -161,6 +161,7 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
             bench_exchange(&core, &config, steps, listen, tail_ms, filters, snapshot, project, poll_ms, json).await
         }
         Commands::MemRead { ranges, role } => mem_read(&core, &role, &ranges, json).await,
+        Commands::CoreState { role, halt, samples } => core_state(&core, &role, halt, samples, json).await,
         Commands::ListSignals => list_signals(&core, json).await,
         Commands::RemoveSignal { name } => remove_signal(&core, &name, json).await,
         Commands::DevBenchLink { serial, interface } => {
@@ -1487,6 +1488,16 @@ async fn mem_read(core: &CoreClient, role: &str, ranges: &[String], json: bool) 
     }
 }
 
+async fn core_state(core: &CoreClient, role: &str, halt: bool, samples: u32, json: bool) -> i32 {
+    match core.core_state(role, halt, samples).await {
+        Ok(resp) => {
+            let text = crate::tools::core_state_text(&resp);
+            finish(json, true, serde_json::json!({ "success": true, "state": resp }), text)
+        }
+        Err(e) => error_result(json, format!("core-state failed: {e:#}")),
+    }
+}
+
 async fn remove_signal(core: &CoreClient, name: &str, json: bool) -> i32 {
     match core.remove_signal(name).await {
         Ok(removed) => finish(
@@ -2232,7 +2243,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 44,
+            arms, 45,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."

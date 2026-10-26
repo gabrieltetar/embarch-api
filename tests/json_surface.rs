@@ -94,6 +94,7 @@ const EVERY_SUBCOMMAND: &[&[&str]] = &[
     &["capture-read", "no-such-signal"],
     &["capture-stop", "no-such-signal"],
     &["mem-read", "--range", "0x4002103C"],
+    &["core-state", "--halt"],
     &["dev-bench-link", "--interface", "2"],
     &["versions"],
 ];

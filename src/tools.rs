@@ -694,6 +694,21 @@ pub struct MemReadParams {
     pub role: Option<String>,
 }
 
+/// `embarch-core` decision 97's `POST /live/core-state`.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CoreStateParams {
+    /// The enrolled role to read from; default "dut".
+    #[serde(default)]
+    pub role: Option<String>,
+    /// Stop the core once and read R0-R12, SP, LR, PC, xPSR, CONTROL, PRIMASK
+    /// and SCB_ICSR, then put it back as found. Default false: never halts.
+    #[serde(default)]
+    pub halt: Option<bool>,
+    /// DWT_PCSR samples taken 1 ms apart when not halting, 1 to 64; default 8.
+    #[serde(default)]
+    pub samples: Option<u32>,
+}
+
 /// A number as a caller writes it: `0x`-prefixed hex, or decimal.
 fn parse_number(s: &str) -> Option<u64> {
     let s = s.trim().replace('_', "");
@@ -739,6 +754,61 @@ pub(crate) fn mem_read_text(r: &embarch_core_client::MemReadResponse) -> String 
     } else {
         format!("{} ({}): core was already halted, left halted", r.role, r.chip)
     });
+    if let (Some(found), Some(left), Some(count)) = (r.found, r.left, r.halt_count) {
+        out.push(format!("found {}, left {}, {count} halt(s) in all", run_state(found), run_state(left)));
+    }
+    out.join("\n")
+}
+
+fn run_state(s: embarch_core_client::RunState) -> &'static str {
+    match s {
+        embarch_core_client::RunState::Running => "running",
+        embarch_core_client::RunState::Halted => "halted",
+    }
+}
+
+/// A core-state answer as text: where the core was, was left, how many halts
+/// it cost, then the PC samples or the registers.
+pub(crate) fn core_state_text(r: &embarch_core_client::CoreStateResponse) -> String {
+    let mut out = vec![format!(
+        "{} ({}): found {} ({}), left {}, {} halt(s) in all (the identity gate's included), this request's own halt {} us",
+        r.role,
+        r.chip,
+        run_state(r.found),
+        r.dhcsr.state,
+        run_state(r.left),
+        r.halt_count,
+        r.halted_us
+    )];
+    out.push(format!(
+        "DHCSR {:#010x}: halt={} sleep={} lockup={} retire={} reset={}",
+        r.dhcsr.raw, r.dhcsr.s_halt, r.dhcsr.s_sleep, r.dhcsr.s_lockup, r.dhcsr.s_retire_st, r.dhcsr.s_reset_st
+    ));
+    if let Some(a) = &r.dhcsr_after {
+        out.push(format!("DHCSR after samples {:#010x}: state {}, instructions retired={}", a.raw, a.state, a.s_retire_st));
+    }
+    if !r.pc_samples.is_empty() {
+        let pcs: Vec<String> = r.pc_samples.iter().map(|p| p.map_or("null".to_string(), |v| format!("{v:#010x}"))).collect();
+        out.push(format!("PC samples: {}", pcs.join(" ")));
+    }
+    if let Some(n) = &r.pc_note {
+        out.push(format!("pc_note: {n}"));
+    }
+    if let Some(g) = &r.registers {
+        for (i, v) in g.r.iter().enumerate() {
+            out.push(format!("R{i}: {v:#010x}"));
+        }
+        out.push(format!(
+            "SP {:#010x} LR {:#010x} PC {:#010x} xPSR {:#010x} CONTROL {:#x} PRIMASK {:#x}",
+            g.sp, g.lr, g.pc, g.xpsr, g.control, g.primask
+        ));
+    }
+    if let Some(i) = &r.scb_icsr {
+        out.push(format!(
+            "SCB_ICSR {:#010x}: vectactive={} vectpending={} isrpending={} pendstset={} nmipendset={}",
+            i.raw, i.vectactive, i.vectpending, i.isrpending, i.pendstset, i.nmipendset
+        ));
+    }
     out.join("\n")
 }
 
@@ -1607,7 +1677,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Read 32-bit words of an enrolled target's memory over its debug probe, via embarch-core's POST /live/mem-read (embarch-core decision 81). `ranges` are \"ADDRESS\" or \"ADDRESS:WORDS\" strings, all read under one halt of a running core, which is then let run again: on an STM32G0 sleeping in WFI a running read returns 0 or a stale word, and a halted one is always good. The answer gives the words, whether the core was halted, and for how long (microseconds). Read-only: nothing is written but the halt and the resume. Raw words only; the atlas's reg_read decodes a register by name. Goes through the same board-identity gate as flash and reset.")]
+    #[tool(description = "Read 32-bit words of an enrolled target's memory over its debug probe, via embarch-core's POST /live/mem-read (embarch-core decision 81). `ranges` are \"ADDRESS\" or \"ADDRESS:WORDS\" strings, all read under one halt of a running core, which is then let run again: on an STM32G0 sleeping in WFI a running read returns 0 or a stale word, and a halted one is always good. The answer gives the words, `found` and `left` (running|halted: the core's state when the request arrived and when it returned), `halt_count` (every halt the request made, the identity gate's included) and `halted_us` (this read's own halt, microseconds). `halted` is deprecated (removed after 2026-11-30) and `halted: false` means the core was ALREADY halted, never that it was running: read `found`/`left`. Read-only: nothing is written but the halt and the resume. Raw words only; the atlas's reg_read decodes a register by name. Goes through the same board-identity gate as flash and reset.")]
     async fn mem_read(
         &self,
         Parameters(MemReadParams { ranges, role }): Parameters<MemReadParams>,
@@ -1620,6 +1690,18 @@ impl EmbarchApi {
         match self.core.mem_read(&role, &ranges).await {
             Ok(resp) => Self::ok_json(serde_json::json!(resp)),
             Err(e) => Self::err_text(format!("mem_read failed: {e:#}")),
+        }
+    }
+
+    #[tool(description = "Where a core is, read-only, over its debug probe, via embarch-core's POST /live/core-state (embarch-core decision 97). Default (`halt` false) NEVER halts: it reads DHCSR (halt, sleep, lockup, retire, reset), then `samples` DWT_PCSR program-counter samples 1 ms apart, then DHCSR again, so `dhcsr_after.s_retire_st` says whether instructions retired; a null sample is one the core withheld (asleep). Use it on a hung board: a PC that never moves with no retire is a hang, a PC inside the idle loop is not. `halt=true` HALTS the core once (the halt is counted in `halt_count`, and `halted_us` is how long), reads R0-R12, SP, LR, PC, xPSR, CONTROL, PRIMASK and SCB_ICSR (decoded), then puts it back as found; a core found halted is read and left halted, never resumed. Every answer carries `found`/`left` (running|halted) and `halt_count`, which counts every halt the request made including the identity gate's own (assumed, not measured: Core mirrors topology's STM32G0 halt by chip prefix), so a non-halting call on a running STM32G0 still reports 1. Goes through the same board-identity gate as flash and reset.")]
+    async fn core_state(
+        &self,
+        Parameters(CoreStateParams { role, halt, samples }): Parameters<CoreStateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let role = role.unwrap_or_else(|| "dut".to_string());
+        match self.core.core_state(&role, halt.unwrap_or(false), samples.unwrap_or(8)).await {
+            Ok(resp) => Self::ok_json(serde_json::json!(resp)),
+            Err(e) => Self::err_text(format!("core_state failed: {e:#}")),
         }
     }
 
@@ -2076,6 +2158,34 @@ impl ServerHandler for EmbarchApi {
              'get this working on hardware' case; use build/flash separately when iterating on \
              compiler errors or re-flashing without rebuilding.",
         )
+    }
+}
+
+#[cfg(test)]
+mod core_state_text_tests {
+    use super::*;
+
+    #[test]
+    fn mem_read_text_names_found_left_and_count() {
+        let r: embarch_core_client::MemReadResponse = serde_json::from_value(serde_json::json!({
+            "role":"dut","chip":"c","probe_serial":"p","ranges":[{"address":0x4000_0000u64,"words":[1]}],
+            "halted":false,"halted_us":0,"found":"running","left":"running","halt_count":1})).unwrap();
+        let t = mem_read_text(&r);
+        assert!(t.contains("found running, left running, 1 halt(s) in all"), "{t}");
+    }
+
+    #[test]
+    fn core_state_text_shows_pcs_and_registers() {
+        let dh = serde_json::json!({"raw":0,"s_halt":false,"s_sleep":false,"s_lockup":false,"s_retire_st":false,
+            "s_reset_st":false,"state":"running"});
+        let r: embarch_core_client::CoreStateResponse = serde_json::from_value(serde_json::json!({
+            "role":"dut","chip":"c","probe_serial":"p","found":"running","left":"running","halt_count":2,"halted_us":15,
+            "dhcsr":dh,"dhcsr_after":dh,"pc_samples":[4096,null],"pc_note":null,
+            "registers":{"r":[0,0,0,0,0,0,0,0,0,0,0,0,0],"sp":1,"lr":2,"pc":3,"xpsr":4,"control":0,"primask":0},
+            "scb_icsr":null})).unwrap();
+        let t = core_state_text(&r);
+        assert!(t.contains("2 halt(s) in all") && t.contains("PC samples: 0x00001000 null"), "{t}");
+        assert!(t.contains("R12:") && t.contains("PC 0x00000003"), "{t}");
     }
 }
 
