@@ -585,6 +585,13 @@ pub struct DeclareSignalParams {
     /// serial number, one of list_serial_ports's serial_number values.
     #[serde(default)]
     pub port_serial: Option<String>,
+    /// Only with route_kind "direct", and only when port_serial's device
+    /// exposes several serial ports under one serial (list_serial_ports shows
+    /// one row per interface): the USB interface number carrying this signal.
+    /// Without it Core refuses such a device as ambiguous rather than guess
+    /// (`embarch-topology` decision 46).
+    #[serde(default)]
+    pub interface: Option<u8>,
     /// Required when route_kind is "via-dev-bench": the declared dev-bench
     /// pin the signal's RX side terminates on.
     #[serde(default)]
@@ -808,6 +815,7 @@ pub(crate) fn parse_signal_link(
     direction: &str,
     route_kind: &str,
     port_serial: Option<String>,
+    interface: Option<u8>,
     rx_pin: Option<String>,
     tx_pin: Option<String>,
     baud: Option<u32>,
@@ -830,9 +838,15 @@ pub(crate) fn parse_signal_link(
             let port_serial = port_serial.ok_or_else(|| {
                 "route_kind 'direct' needs port_serial (find one via list_serial_ports)".to_string()
             })?;
-            SignalRoute::Direct { port_serial }
+            SignalRoute::Direct { port_serial, interface }
         }
         "via-dev-bench" => {
+            if interface.is_some() {
+                return Err(
+                    "interface is for a direct route's port; a via-dev-bench route has none"
+                        .to_string(),
+                );
+            }
             let rx_pin = rx_pin
                 .ok_or_else(|| "route_kind 'via-dev-bench' needs rx_pin".to_string())?;
             let tx_pin = tx_pin
@@ -1501,7 +1515,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Declare (or re-declare) where a named DUT signal currently goes, via embarch-core's POST /signals (embarch-topology decision 18, wrapped per embarch-api decision 67). Idempotent by name: re-declaring an existing name overwrites it, which is the migration path for moving a signal from a Direct route (straight to a serial port, port_serial from list_serial_ports) onto dev-bench pins (via-dev-bench, rx_pin/tx_pin) or back — no saved Study changes, since a study names the signal and never its carrier. direction is one of dut-to-host, host-to-dut, bidirectional. route_kind is direct (needs port_serial) or via-dev-bench (needs rx_pin and tx_pin). baud sets the signal's own line rate (e.g. 115200 for a DUT console); without it Core uses its default.")]
+    #[tool(description = "Declare (or re-declare) where a named DUT signal currently goes, via embarch-core's POST /signals (embarch-topology decision 18, wrapped per embarch-api decision 67). Idempotent by name: re-declaring an existing name overwrites it, which is the migration path for moving a signal from a Direct route (straight to a serial port, port_serial from list_serial_ports) onto dev-bench pins (via-dev-bench, rx_pin/tx_pin) or back — no saved Study changes, since a study names the signal and never its carrier. direction is one of dut-to-host, host-to-dut, bidirectional. route_kind is direct (needs port_serial) or via-dev-bench (needs rx_pin and tx_pin). interface, direct only, names the USB interface carrying the signal when port_serial's device exposes several serial ports under one serial (list_serial_ports shows each); without it Core refuses that device as ambiguous rather than guess. baud sets the signal's own line rate (e.g. 115200 for a DUT console); without it Core uses its default.")]
     async fn declare_signal(
         &self,
         Parameters(DeclareSignalParams {
@@ -1510,12 +1524,13 @@ impl EmbarchApi {
             direction,
             route_kind,
             port_serial,
+            interface,
             rx_pin,
             tx_pin,
             baud,
         }): Parameters<DeclareSignalParams>,
     ) -> Result<CallToolResult, McpError> {
-        let link = match parse_signal_link(name, origin_role, &direction, &route_kind, port_serial, rx_pin, tx_pin, baud) {
+        let link = match parse_signal_link(name, origin_role, &direction, &route_kind, port_serial, interface, rx_pin, tx_pin, baud) {
             Ok(l) => l,
             Err(e) => return Self::err_text(e),
         };
@@ -2128,11 +2143,40 @@ mod signal_tests {
                 Some("ABC".to_string()),
                 None,
                 None,
+                None,
                 baud,
             )
         };
         assert_eq!(link(Some(115_200)).unwrap().baud, Some(115_200));
         assert_eq!(link(None).unwrap().baud, None);
         assert!(link(Some(0)).unwrap_err().contains("baud 0"));
+    }
+
+    #[test]
+    fn a_declared_interface_is_carried_on_a_direct_route_and_refused_on_a_relayed_one() {
+        use embarch_core_client::SignalRoute;
+        let link = |route_kind: &str, interface| {
+            parse_signal_link(
+                "console".to_string(),
+                "dut".to_string(),
+                "bidirectional",
+                route_kind,
+                Some("ABC".to_string()),
+                interface,
+                Some("P0.04".to_string()),
+                Some("P0.05".to_string()),
+                None,
+            )
+        };
+        assert_eq!(
+            link("direct", Some(2)).unwrap().route,
+            SignalRoute::Direct { port_serial: "ABC".to_string(), interface: Some(2) }
+        );
+        assert_eq!(
+            link("direct", None).unwrap().route,
+            SignalRoute::Direct { port_serial: "ABC".to_string(), interface: None }
+        );
+        assert!(link("via-dev-bench", Some(2)).unwrap_err().contains("interface"));
+        assert!(link("via-dev-bench", None).is_ok());
     }
 }

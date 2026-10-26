@@ -3112,7 +3112,7 @@ mod tests {
             name: "outpost".to_string(),
             origin_role: "dut".to_string(),
             direction: SignalDirection::DutToHost,
-            route: SignalRoute::Direct { port_serial: "ABC123".to_string() },
+            route: SignalRoute::Direct { port_serial: "ABC123".to_string(), interface: None },
             baud: None,
         }
     }
@@ -3124,6 +3124,23 @@ mod tests {
             serde_json::from_str::<SignalLink>(SIGNAL_LINK_JSON).unwrap(),
             outpost_signal()
         );
+    }
+
+    /// A declared interface (`embarch-topology` decision 46, amended by `suite/052`) rides inside
+    /// the route, and only when declared — the literal above, with none, is unchanged on the wire.
+    /// `embarch-core`'s `a_declared_interface_is_part_of_the_direct_route_on_the_wire` pins it too.
+    #[test]
+    fn a_declared_interface_rides_inside_the_direct_route() {
+        const WITH_INTERFACE: &str = concat!(
+            r#"{"name":"outpost","origin_role":"dut","direction":"dut-to-host","#,
+            r#""route":{"kind":"direct","port_serial":"ABC123","interface":2}}"#
+        );
+        let link = SignalLink {
+            route: SignalRoute::Direct { port_serial: "ABC123".to_string(), interface: Some(2) },
+            ..outpost_signal()
+        };
+        assert_eq!(serde_json::to_string(&link).unwrap(), WITH_INTERFACE);
+        assert_eq!(serde_json::from_str::<SignalLink>(WITH_INTERFACE).unwrap(), link);
     }
 
     /// [`AlertResponse`]'s half of the same wire contract

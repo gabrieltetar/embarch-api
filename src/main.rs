@@ -530,6 +530,11 @@ pub enum Commands {
         /// serial number, one of list-serial-ports's serial_number values.
         #[arg(long)]
         port_serial: Option<String>,
+        /// Only with --route-kind direct, when --port-serial's device exposes
+        /// several serial ports under one serial: the USB interface number
+        /// carrying this signal (list-serial-ports shows one per interface).
+        #[arg(long)]
+        interface: Option<u8>,
         /// Required when --route-kind is via-dev-bench: the declared
         /// dev-bench pin the signal's RX side terminates on.
         #[arg(long)]

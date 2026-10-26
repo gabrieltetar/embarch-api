@@ -104,6 +104,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
         direction: SignalDirection::DutToHost,
         route: SignalRoute::Direct {
             port_serial: "MOCK-BRIDGE-0001".to_string(),
+            interface: None,
         },
         baud: None,
     };

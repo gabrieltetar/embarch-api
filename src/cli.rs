@@ -137,10 +137,11 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
             direction,
             route_kind,
             port_serial,
+            interface,
             rx_pin,
             tx_pin,
             baud,
-        } => declare_signal(&core, name, origin_role, &direction, &route_kind, port_serial, rx_pin, tx_pin, baud, json).await,
+        } => declare_signal(&core, name, origin_role, &direction, &route_kind, port_serial, interface, rx_pin, tx_pin, baud, json).await,
         Commands::SignalExchange { name, write, until, timeout_ms, no_newline, port_wait_ms, match_after_echo, clean } => {
             signal_exchange(&core, &name, &write, until.as_deref(), timeout_ms, port_wait_ms, match_after_echo, !no_newline, clean, json).await
         }
@@ -1218,12 +1219,13 @@ async fn declare_signal(
     direction: &str,
     route_kind: &str,
     port_serial: Option<String>,
+    interface: Option<u8>,
     rx_pin: Option<String>,
     tx_pin: Option<String>,
     baud: Option<u32>,
     json: bool,
 ) -> i32 {
-    let link = match crate::tools::parse_signal_link(name, origin_role, direction, route_kind, port_serial, rx_pin, tx_pin, baud) {
+    let link = match crate::tools::parse_signal_link(name, origin_role, direction, route_kind, port_serial, interface, rx_pin, tx_pin, baud) {
         Ok(l) => l,
         Err(e) => return error_result(json, e),
     };
