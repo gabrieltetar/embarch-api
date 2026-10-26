@@ -1231,6 +1231,9 @@ async fn signal_exchange(
                 resp.text.clone()
             };
             let problem = exchange_problem(&resp, &line, until, timeout_ms);
+            for n in resp.wire_notes(&line) {
+                eprintln!("signal-exchange: {n}");
+            }
             let code = finish(json, true, serde_json::json!({ "success": true, "exchange": resp }), text);
             match problem {
                 Some((c, msg)) => {
@@ -1265,6 +1268,12 @@ fn exchange_problem(
         return Some((
             EXIT_EXCHANGE_NO_REPLY,
             format!("signal-exchange: no reply: 0 bytes read in {} ms (timeout {} ms)", resp.elapsed_ms, timeout_ms.map_or("default".to_string(), |t| t.to_string())),
+        ));
+    }
+    if resp.port_lost {
+        return Some((
+            EXIT_EXCHANGE_TRUNCATED,
+            format!("signal-exchange: port lost after {} ms: the command ran, the reply is incomplete: {bytes} bytes read, echo {echo}", resp.elapsed_ms),
         ));
     }
     if let Some(u) = until {
@@ -1952,6 +1961,19 @@ fn erased_note(erased: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_port_lost_reply_exits_five_and_a_silent_one_stays_four() {
+        let mk = |text: &str, lost: bool| -> embarch_core_client::SignalExchangeResponse {
+            serde_json::from_value(serde_json::json!({"signal":"s","port":"p","baud":1,"text":text,
+                "until_seen":false,"truncated":false,"elapsed_ms":9,"written":true,"port_lost":lost})).unwrap()
+        };
+        let (c, m) = super::exchange_problem(&mk("ab", true), "x\n", Some("$ "), None).unwrap();
+        assert_eq!(c, super::EXIT_EXCHANGE_TRUNCATED);
+        assert!(m.contains("the command ran"), "{m}");
+        let (c, _) = super::exchange_problem(&mk("", true), "x\n", None, None).unwrap();
+        assert_eq!(c, super::EXIT_EXCHANGE_NO_REPLY);
+    }
+
     #[test]
     fn clean_exchange_matches_atlas_clean() {
         use super::clean_exchange as c;

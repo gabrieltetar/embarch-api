@@ -1413,14 +1413,21 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Write a line to a declared DUT signal and return what came back, via embarch-core's POST /signals/{name}/exchange (embarch-core decision 79): a shell command and its output. The signal must be declared host-to-dut or bidirectional on a direct route (declare_signal; give baud for a UART console). Reads until `until` appears (e.g. the shell prompt \"uart:~$ \") or timeout_ms passes. Returns the raw text, escape codes included, with until_seen and truncated. After a flash or reset, pass port_wait_ms (up to 10000) so Core waits for a USB console to re-enumerate instead of failing at once. Takes Core's hardware lock for the exchange only.")]
+    #[tool(description = "Write a line to a declared DUT signal and return what came back, via embarch-core's POST /signals/{name}/exchange (embarch-core decision 79): a shell command and its output. The signal must be declared host-to-dut or bidirectional on a direct route (declare_signal; give baud for a UART console). Reads until `until` appears (e.g. the shell prompt \"uart:~$ \") or timeout_ms passes. Returns the raw text, escape codes included, with until_seen, truncated, bytes_read, echo_seen, written and port_lost (a read error after the write: the command ran, do not resend it); when no byte came back it adds port_identity (the port Core opened) and core_state (the DUT core's DHCSR), and wire_notes says it in words. After a flash or reset, pass port_wait_ms (up to 10000) so Core waits for a USB console to re-enumerate instead of failing at once. Takes Core's hardware lock for the exchange only.")]
     async fn signal_exchange(
         &self,
         Parameters(SignalExchangeParams { name, write, until, timeout_ms, append_newline, port_wait_ms }): Parameters<SignalExchangeParams>,
     ) -> Result<CallToolResult, McpError> {
         let line = exchange_line(&write, append_newline.unwrap_or(true));
         match self.core.signal_exchange(&name, &line, until.as_deref(), timeout_ms, port_wait_ms).await {
-            Ok(resp) => Self::ok_json(serde_json::json!(resp)),
+            Ok(resp) => {
+                let notes = resp.wire_notes(&line);
+                let mut v = serde_json::json!(resp);
+                if !notes.is_empty() {
+                    v["wire_notes"] = serde_json::json!(notes);
+                }
+                Self::ok_json(v)
+            }
             Err(e) => Self::err_text(format!("signal_exchange failed: {e:#}")),
         }
     }

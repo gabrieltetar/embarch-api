@@ -860,6 +860,108 @@ pub struct SignalExchangeResponse {
     pub until_seen: bool,
     pub truncated: bool,
     pub elapsed_ms: u64,
+    /// Bytes that came back (`embarch-core` decision 85). Absent from an older Core.
+    #[serde(default)]
+    pub bytes_read: usize,
+    /// The written line appeared in the reply: a live shell.
+    #[serde(default)]
+    pub echo_seen: bool,
+    /// The write and its flush succeeded. An older Core never said; `false` there means unknown.
+    #[serde(default)]
+    pub written: bool,
+    /// A read error after the write: `text` holds what arrived, and the command ran.
+    #[serde(default)]
+    pub port_lost: bool,
+    /// Only when no byte came back: which port Core opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port_identity: Option<ExchangePortIdentity>,
+    /// Only when no byte came back: what the DUT core's `DHCSR` said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub core_state: Option<ExchangeCoreState>,
+}
+
+/// `port_identity` of an exchange reply.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct ExchangePortIdentity {
+    #[serde(default)]
+    pub vendor_id: Option<u16>,
+    #[serde(default)]
+    pub product_id: Option<u16>,
+    #[serde(default)]
+    pub product: Option<String>,
+    #[serde(default)]
+    pub serial_number: Option<String>,
+}
+
+/// `core_state` of an exchange reply; `unavailable` carries the reason instead of a register.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct ExchangeCoreState {
+    #[serde(default)]
+    pub dhcsr: Option<u32>,
+    #[serde(default)]
+    pub s_halt: Option<bool>,
+    #[serde(default)]
+    pub s_sleep: Option<bool>,
+    #[serde(default)]
+    pub s_lockup: Option<bool>,
+    #[serde(default)]
+    pub s_reset_st: Option<bool>,
+    #[serde(default)]
+    pub s_retire_st: Option<bool>,
+    #[serde(default)]
+    pub unavailable: Option<String>,
+}
+
+impl SignalExchangeResponse {
+    /// One line per wire fact worth saying beyond `text`, or empty for an ordinary
+    /// reply. Never advises a resend: a reply that says `written` ran the command.
+    pub fn wire_notes(&self, line: &str) -> Vec<String> {
+        let mut notes = Vec::new();
+        let echo = if self.echo_seen || self.text.contains(line.trim_end_matches('\n')) { "seen" } else { "not seen" };
+        if self.port_lost {
+            notes.push(format!(
+                "port lost after the write: the command ran (do not resend it); {} bytes arrived before the port went, echo {echo}",
+                self.text.len()
+            ));
+        }
+        if self.text.is_empty() {
+            let mut s = format!("no byte came back: echo {echo}");
+            if self.written {
+                s.push_str(", the line was written");
+            }
+            notes.push(s);
+        }
+        if let Some(p) = &self.port_identity {
+            let hex = |v: Option<u16>| v.map_or("?".to_string(), |v| format!("{v:04x}"));
+            notes.push(format!(
+                "port opened: {}:{} product {} serial {}",
+                hex(p.vendor_id),
+                hex(p.product_id),
+                p.product.as_deref().unwrap_or("?"),
+                p.serial_number.as_deref().unwrap_or("?")
+            ));
+        }
+        if let Some(c) = &self.core_state {
+            if let Some(why) = &c.unavailable {
+                notes.push(format!("core state unavailable: {why}"));
+            } else {
+                let flag = |n: &str, v: Option<bool>| v.map(|v| format!("{n}={}", u8::from(v)));
+                let flags: Vec<String> = [
+                    flag("S_HALT", c.s_halt),
+                    flag("S_SLEEP", c.s_sleep),
+                    flag("S_LOCKUP", c.s_lockup),
+                    flag("S_RESET_ST", c.s_reset_st),
+                    flag("S_RETIRE_ST", c.s_retire_st),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                let dhcsr = c.dhcsr.map_or(String::new(), |d| format!("DHCSR {d:#010x} "));
+                notes.push(format!("core state: {dhcsr}{}", flags.join(" ")));
+            }
+        }
+        notes
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -2466,6 +2568,32 @@ impl CoreClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn exchange_response_parses_an_old_body_and_a_new_one() {
+        let old: SignalExchangeResponse = serde_json::from_str(
+            r#"{"signal":"s","port":"COM1","baud":115200,"text":"ok","until_seen":true,"truncated":false,"elapsed_ms":5}"#,
+        )
+        .unwrap();
+        assert!(!old.port_lost && old.port_identity.is_none() && old.core_state.is_none());
+        assert!(old.wire_notes("x\n").is_empty());
+        let new: SignalExchangeResponse = serde_json::from_str(
+            r#"{"signal":"s","port":"COM1","baud":115200,"text":"","until_seen":false,"truncated":false,"elapsed_ms":5,
+            "bytes_read":0,"echo_seen":false,"written":true,"port_lost":false,
+            "port_identity":{"vendor_id":1155,"product_id":22336,"product":"STLink","serial_number":"A1"},
+            "core_state":{"dhcsr":50331648,"s_halt":false,"s_sleep":true,"s_lockup":false,"s_reset_st":false,"s_retire_st":false}}"#,
+        )
+        .unwrap();
+        let n = new.wire_notes("x\n").join("\n");
+        assert!(n.contains("no byte came back") && n.contains("0483:5740") && n.contains("S_SLEEP=1"), "{n}");
+        let lost: SignalExchangeResponse = serde_json::from_str(
+            r#"{"signal":"s","port":"c","baud":1,"text":"ab","until_seen":false,"truncated":false,"elapsed_ms":1,"written":true,"port_lost":true,"bytes_read":2,"echo_seen":false,
+            "core_state":{"unavailable":"no probe"}}"#,
+        )
+        .unwrap();
+        let n = lost.wire_notes("x\n").join("\n");
+        assert!(n.contains("the command ran (do not resend it)") && n.contains("unavailable: no probe"), "{n}");
+    }
+
     #[test]
     fn flash_response_erased_defaults_empty_for_an_older_core() {
         let old: FlashResponse = serde_json::from_str(r#"{"flashed":true,"chip":"c"}"#).unwrap();
