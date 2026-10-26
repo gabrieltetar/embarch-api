@@ -954,3 +954,44 @@ async fn an_old_core_and_an_undeclared_dut_are_told_apart() {
     assert!(client.bootload_ports().await.unwrap().is_none());
     assert!(!client.clear_bootload_ports().await.unwrap());
 }
+
+/// A stream route's `404` keeps Core's own body: it says which of the cases
+/// applies, and for an undeclared tap it lists the declared ones, so the agent
+/// needs no second `list_study_streams` call (api decision 14, amended).
+/// An empty `404` body falls back to the client's fixed sentence.
+#[tokio::test]
+async fn a_stream_404_keeps_cores_body_and_an_empty_one_falls_back() {
+    for body in [
+        "study 'study-1' declares no stream tap named 'ppg' — it declared: power, gatt",
+        "study 'study-1' captured no streams",
+        "study 'study-1' declared tap 'ppg' but it captured nothing",
+    ] {
+        let mock = MockCore::start(Behavior::plain_text_error(404, "Not Found", body)).await;
+        let client = CoreClient::new(&config(json!({ "base_url": mock.base_url() })))
+            .expect("client did not build");
+
+        let data = client
+            .get_study_stream("study-1", "ppg", false)
+            .await
+            .expect_err("a 404 was reported as success")
+            .to_string();
+        let arrivals = client
+            .get_study_stream_arrivals("study-1", "ppg")
+            .await
+            .expect_err("a 404 was reported as success")
+            .to_string();
+        for error in [data, arrivals] {
+            assert!(error.contains(body), "Core's 404 body was dropped: {error}");
+        }
+    }
+
+    let mock = MockCore::start(Behavior::plain_text_error(404, "Not Found", "")).await;
+    let client = CoreClient::new(&config(json!({ "base_url": mock.base_url() })))
+        .expect("client did not build");
+    let error = client
+        .get_study_stream("study-1", "ppg", false)
+        .await
+        .expect_err("a 404 was reported as success")
+        .to_string();
+    assert!(error.contains("no capture served for stream tap 'ppg'"), "{error}");
+}

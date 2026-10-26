@@ -2559,14 +2559,16 @@ impl CoreClient {
                 .context("failed to read embarch-core's response body");
         }
 
-        if status == reqwest::StatusCode::NOT_FOUND {
-            return Err(anyhow!("{not_found} (study_id: {study_id})"));
-        }
-
         let body = response
             .text()
             .await
             .unwrap_or_else(|_| "<no response body>".to_string());
+        // Core's 404 body says which case applies (undeclared tap, listing the
+        // declared ones; no captured streams; a tap that captured nothing), so
+        // it is kept. `not_found` is only the fallback for an empty body.
+        if status == reqwest::StatusCode::NOT_FOUND && body.trim().is_empty() {
+            return Err(anyhow!("{not_found} (study_id: {study_id})"));
+        }
         Err(anyhow!(Self::format_study_error(status, &body)))
     }
 

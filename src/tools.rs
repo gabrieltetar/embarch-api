@@ -1933,7 +1933,7 @@ impl EmbarchApi {
         }))
     }
 
-    #[tool(description = "Fetch one declared stream tap's capture from a study, by the name the Study gave it. Returns the tap's rendered file when its declared StreamEncoding has one (CSV for Samples and GattTranscript), or its byte-for-byte capture when it doesn't (Raw, OutpostTrace) or when raw is true. What a tap's bytes mean is declared in the Study, never guessed from their content. Call list_study_streams first rather than guessing a name: a 404 names the taps the study did declare, and also covers the separate case of a declared tap that captured nothing.")]
+    #[tool(description = "Fetch one declared stream tap's capture from a study, by the name the Study gave it. Returns the tap's rendered file when its declared StreamEncoding has one (CSV for Samples and GattTranscript), or its byte-for-byte capture when it doesn't (Raw, OutpostTrace) or when raw is true. What a tap's bytes mean is declared in the Study, never guessed from their content. Call list_study_streams first rather than guessing a name: a 404 returns Core's own body, which says which case applies: an undeclared name (listing the taps the study did declare), a study with no captured streams, or a declared tap that captured nothing.")]
     async fn study_stream_data(
         &self,
         Parameters(StudyStreamParams { study_id, name, raw }): Parameters<StudyStreamParams>,
