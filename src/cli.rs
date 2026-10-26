@@ -1954,6 +1954,24 @@ async fn study_stream_data(
     }
 }
 
+/// The bracketed record-check tail of a stream line. A report with
+/// `total == 0` checked nothing (empty capture, or no magic in it), so it says
+/// "no records found" and never "0 of 0 verified", which reads as damage.
+fn record_summary(r: &embarch_study_designer::RecordReport) -> String {
+    let leading = if r.leading_bytes > 0 {
+        format!(", {} leading bytes in no record", r.leading_bytes)
+    } else {
+        String::new()
+    };
+    if r.total == 0 {
+        format!("  [no records found{leading}]")
+    } else if r.all_verified() {
+        format!("  [{} records, all verified]", r.total)
+    } else {
+        format!("  [{} of {} records verified{leading}; bad at {:?}]", r.verified, r.total, r.bad_offsets.as_slice())
+    }
+}
+
 /// `StudyResult.streams` for a completed study — no new Core route, because
 /// `GET /study/{id}` already returns the whole `StudyResult` inline once a
 /// study completes and `streams` has been part of it since Milestone 7 Phase
@@ -1980,23 +1998,7 @@ async fn list_study_streams(core: &CoreClient, study_id: &str, json: bool) -> i3
                                 // of 598 records verified" is the sentence
                                 // that decides whether a capture is usable,
                                 // and "598 of 598" is what earns trusting it.
-                                match s.records.as_ref() {
-                                    None => String::new(),
-                                    Some(r) if r.all_verified() => {
-                                        format!("  [{} records, all verified]", r.total)
-                                    }
-                                    Some(r) => format!(
-                                        "  [{} of {} records verified{}; bad at {:?}]",
-                                        r.verified,
-                                        r.total,
-                                        if r.leading_bytes > 0 {
-                                            format!(", {} leading bytes in no record", r.leading_bytes)
-                                        } else {
-                                            String::new()
-                                        },
-                                        r.bad_offsets.as_slice()
-                                    ),
-                                }
+                                s.records.as_ref().map(record_summary).unwrap_or_default()
                             )
                         })
                         .collect::<Vec<_>>()
@@ -2101,6 +2103,20 @@ fn erased_note(erased: Option<&[String]>) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_zero_record_report_says_no_records_found_not_damage() {
+        let mk = |total: u32, verified: u32, leading: u32| -> embarch_study_designer::RecordReport {
+            serde_json::from_value(serde_json::json!({"total":total,"verified":verified,
+                "bad_offsets":[],"leading_bytes":leading})).unwrap()
+        };
+        let empty = super::record_summary(&mk(0, 0, 0));
+        assert_eq!(empty, "  [no records found]");
+        assert!(super::record_summary(&mk(0, 0, 7)).contains("no records found, 7 leading bytes"));
+        assert!(!empty.contains("of 0"));
+        assert_eq!(super::record_summary(&mk(598, 598, 0)), "  [598 records, all verified]");
+        assert!(super::record_summary(&mk(598, 595, 0)).contains("595 of 598 records verified"));
+    }
+
     #[test]
     fn a_port_lost_reply_exits_five_and_a_silent_one_stays_four() {
         let mk = |text: &str, lost: bool| -> embarch_core_client::SignalExchangeResponse {
