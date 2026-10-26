@@ -169,11 +169,109 @@ impl BuildOutcome {
 #[derive(Default)]
 pub struct BuildLocks {
     locks: StdMutex<HashMap<String, Arc<AsyncMutex<()>>>>,
+    /// Where the cross-process lock files live; `None` is the default
+    /// (`<temp dir>/embarch-build-locks`). See [`BuildLocks::with_lock_dir`].
+    lock_dir: Option<PathBuf>,
 }
+
+/// How often a caller that has to wait re-tries the file lock. Polling
+/// `File::try_lock` instead of a blocking `lock` keeps the wait cancel-safe
+/// (a dropped future simply stops polling) and parks no runtime thread.
+const LOCK_POLL: Duration = Duration::from_millis(200);
 
 impl BuildLocks {
     pub fn new() -> BuildLocks {
         BuildLocks::default()
+    }
+
+    /// A `BuildLocks` whose cross-process lock files live in `dir` instead of
+    /// the default. Two `BuildLocks` (in one process or two) serialize on a
+    /// key only when they share a lock directory; tests use this to stay out
+    /// of the shared one.
+    pub fn with_lock_dir(dir: PathBuf) -> BuildLocks {
+        BuildLocks { lock_dir: Some(dir), ..BuildLocks::default() }
+    }
+
+    #[doc(hidden)]
+    pub fn run_build_path_for_test(&self, key: &str) -> PathBuf {
+        self.lock_path(key)
+    }
+
+    fn lock_path(&self, key: &str) -> PathBuf {
+        let dir = self
+            .lock_dir
+            .clone()
+            .unwrap_or_else(|| std::env::temp_dir().join("embarch-build-locks"));
+        // A readable prefix for a person looking in the directory, plus a
+        // hash of the whole key so two keys that sanitize alike stay apart.
+        // FNV-1a by hand: `DefaultHasher` is not promised stable across
+        // compiler versions, and `embarch-ui` and `embarch-api` may be built
+        // by different ones yet must agree on the file.
+        let mut hash: u64 = 0xcbf29ce484222325;
+        for b in key.bytes() {
+            hash ^= u64::from(b);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        let readable: String = key
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .take(48)
+            .collect();
+        dir.join(format!("{readable}-{hash:016x}.lock"))
+    }
+
+    /// Takes the in-process mutex, then the OS advisory lock on the key's
+    /// file. Returns both guards and a note when another process made the
+    /// caller wait. The OS releases the file lock when the holder exits or
+    /// is killed, so a dead holder never blocks the next build.
+    async fn acquire(
+        &self,
+        key: &str,
+        sink: Option<&LineSink>,
+    ) -> Result<(tokio::sync::OwnedMutexGuard<()>, std::fs::File, Option<String>)> {
+        let guard = self.lock_for(key).lock_owned().await;
+        let path = self.lock_path(key);
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)
+                .with_context(|| format!("failed to create build lock dir {}", dir.display()))?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .with_context(|| format!("failed to open build lock {}", path.display()))?;
+        let mut waited_since: Option<std::time::Instant> = None;
+        loop {
+            match file.try_lock() {
+                Ok(()) => break,
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    if waited_since.is_none() {
+                        waited_since = Some(std::time::Instant::now());
+                        let msg = format!(
+                            "another process is already building {key}; waiting for it to finish"
+                        );
+                        tracing::warn!("{msg}");
+                        if let Some(sink) = sink {
+                            sink(BuildStream::Stderr, &msg);
+                        }
+                    }
+                    tokio::time::sleep(LOCK_POLL).await;
+                }
+                Err(std::fs::TryLockError::Error(e)) => {
+                    return Err(e).with_context(|| {
+                        format!("failed to lock build lock {}", path.display())
+                    });
+                }
+            }
+        }
+        let note = waited_since.map(|t| {
+            format!(
+                "note: waited {:.1}s for another process's build of {key} to finish\n",
+                t.elapsed().as_secs_f64()
+            )
+        });
+        Ok((guard, file, note))
     }
 
     fn lock_for(&self, key: &str) -> Arc<AsyncMutex<()>> {
@@ -185,9 +283,12 @@ impl BuildLocks {
     }
 
     pub async fn run_build(&self, plan: &BuildPlan) -> Result<BuildOutcome> {
-        let lock = self.lock_for(&plan.lock_key);
-        let _guard = lock.lock().await;
-        run_build_locked(plan, None).await
+        let (_guard, _file, note) = self.acquire(&plan.lock_key, None).await?;
+        let mut outcome = run_build_locked(plan, None).await?;
+        if let Some(note) = note {
+            outcome.stderr.insert_str(0, &note);
+        }
+        Ok(outcome)
     }
 
     /// The same build, with each line of output handed to `sink` as it
@@ -209,9 +310,12 @@ impl BuildLocks {
         plan: &BuildPlan,
         sink: LineSink,
     ) -> Result<BuildOutcome> {
-        let lock = self.lock_for(&plan.lock_key);
-        let _guard = lock.lock().await;
-        run_build_locked(plan, Some(sink)).await
+        let (_guard, _file, note) = self.acquire(&plan.lock_key, Some(&sink)).await?;
+        let mut outcome = run_build_locked(plan, Some(sink)).await?;
+        if let Some(note) = note {
+            outcome.stderr.insert_str(0, &note);
+        }
+        Ok(outcome)
     }
 }
 
