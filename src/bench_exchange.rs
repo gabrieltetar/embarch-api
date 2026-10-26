@@ -2,12 +2,14 @@
 //! sequence of console commands and return every listened console as one
 //! filtered timeline, in one call.
 //!
-//! **Times are the client's, not Core's.** Core's capture carries a byte
-//! range, not a per-line receive time (`embarch-core` decision 92), so a
-//! captured line is stamped with the moment a poll first saw it: a ceiling
-//! on when it arrived, to within `poll_ms`. A step's write is stamped just
-//! before the request; an unlistened step's reply at the moment it returned.
-//! Every answer says so (`time_basis`).
+//! **Core's receive time when Core sends it, else the client's.** A capture
+//! read from a Core with `embarch-core` decision 94 carries each line's
+//! first-byte time (`started_utc_ms + rx_ms`), and an exchange reply its
+//! `started_utc_ms`; those place a row exactly. Against an older Core the row
+//! falls back to the moment a poll first saw the line (a ceiling, within
+//! `poll_ms`, decision 89). A write is always stamped by the client just
+//! before its request. Every answer says which basis each signal used
+//! (`time_basis`), so a mixed timeline never reads as exact.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,7 +21,25 @@ use serde_json::{json, Value};
 
 use crate::config::Config;
 
-pub const TIME_BASIS: &str = "ms since the captures started, on this client's clock: a captured line is stamped when a poll first saw it (a ceiling, within poll_ms), a write just before its request, an unlistened reply when it returned; Core stamps no per-line time";
+/// Per-signal basis, assembled by `time_basis`.
+const BASIS_HEAD: &str = "ms since the captures started; a write is stamped by this client just before its request";
+
+/// Says which basis each row used. `core` and `polled` count rows by signal
+/// (a signal can have both when Core sent times for only part of a capture).
+pub fn time_basis(core: &BTreeMap<String, usize>, polled: &BTreeMap<String, usize>) -> String {
+    let mut out = String::from(BASIS_HEAD);
+    let list = |m: &BTreeMap<String, usize>| m.keys().cloned().collect::<Vec<_>>().join(", ");
+    if !core.is_empty() {
+        out.push_str(&format!("; received rows of [{}] are Core's first-byte receive times (exact to the port's read latency, wall clocks aligned at capture start)", list(core)));
+    }
+    if !polled.is_empty() {
+        out.push_str(&format!("; received rows of [{}] are stamped when a poll first saw them (a ceiling, within poll_ms): Core stamps no per-line time", list(polled)));
+    }
+    if core.is_empty() && polled.is_empty() {
+        out.push_str("; no received rows");
+    }
+    out
+}
 
 pub const DEFAULT_POLL_MS: u64 = 100;
 const MIN_POLL_MS: u64 = 20;
@@ -107,6 +127,8 @@ pub struct Row {
     pub signal: String,
     pub kind: Kind,
     pub text: String,
+    /// Placed by Core's receive time, not this client's clock.
+    pub core: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -218,6 +240,25 @@ struct Listener {
     gaps: Vec<embarch_core_client::CaptureGap>,
     note: Option<String>,
     rows: Vec<Row>,
+    /// UTC ms the capture started, when Core said (decision 94).
+    started_utc_ms: Option<u64>,
+    /// Receive times (`rx_ms`) of lines whose first byte arrived, oldest
+    /// first, not yet paired with a completed line.
+    rx_queue: std::collections::VecDeque<u64>,
+}
+
+/// Maps Core's UTC clock onto this timeline: `utc_origin` is the earliest
+/// capture start, which lands at `anchor_ms` on the client's clock.
+#[derive(Debug, Clone, Copy)]
+struct Anchor {
+    utc_origin: u64,
+    anchor_ms: u64,
+}
+
+impl Anchor {
+    fn ms(&self, utc: u64) -> u64 {
+        self.anchor_ms + utc.saturating_sub(self.utc_origin)
+    }
 }
 
 /// A step the exchange answered, as the caller sees it. `reply_in` says where
@@ -308,7 +349,7 @@ pub fn resolve(config: &Config, mut req: Request) -> Result<Request, String> {
 
 /// Reads one listener's capture until Core has nothing more, stamping each
 /// complete line `ms`. `last` also flushes an unterminated tail (a prompt).
-async fn drain(core: &CoreClient, l: &mut Listener, ms: u64, seq: &mut usize, last: bool) {
+async fn drain(core: &CoreClient, l: &mut Listener, ms: u64, seq: &mut usize, last: bool, anchor: Option<Anchor>) {
     if l.done {
         return;
     }
@@ -325,18 +366,18 @@ async fn drain(core: &CoreClient, l: &mut Listener, ms: u64, seq: &mut usize, la
                 l.state = resp.state.clone();
                 l.total_bytes = resp.total_bytes;
                 l.gaps = resp.gaps.clone();
+                if resp.started_utc_ms.is_some() {
+                    l.started_utc_ms = resp.started_utc_ms;
+                }
+                // `lines` entries pair with lines in order: one per line start.
+                l.rx_queue.extend(resp.lines.iter().flatten().map(|x| x.rx_ms));
                 while let Some(at) = l.partial.find('\n') {
                     let line: String = l.partial.drain(..=at).collect();
-                    for t in split_lines(&line) {
-                        l.rows.push(Row { ms, seq: *seq, signal: l.signal.clone(), kind: Kind::Recv, text: t });
-                        *seq += 1;
-                    }
+                    push_line(l, &line, ms, seq, anchor);
                 }
                 if last {
-                    for t in split_lines(&std::mem::take(&mut l.partial)) {
-                        l.rows.push(Row { ms, seq: *seq, signal: l.signal.clone(), kind: Kind::Recv, text: t });
-                        *seq += 1;
-                    }
+                    let tail = std::mem::take(&mut l.partial);
+                    push_line(l, &tail, ms, seq, anchor);
                     l.done = true;
                     return;
                 }
@@ -350,6 +391,24 @@ async fn drain(core: &CoreClient, l: &mut Listener, ms: u64, seq: &mut usize, la
                 return;
             }
         }
+    }
+}
+
+/// Adds one raw line's rows, placed by its Core receive time when Core sent
+/// one (and an anchor exists), else at `ms`. A raw line is always one queue
+/// entry, even when it is blank and yields no row.
+fn push_line(l: &mut Listener, raw: &str, ms: u64, seq: &mut usize, anchor: Option<Anchor>) {
+    if raw.is_empty() {
+        return;
+    }
+    let rx = l.rx_queue.pop_front();
+    let placed = match (anchor, l.started_utc_ms, rx) {
+        (Some(a), Some(s), Some(rx)) => Some(a.ms(s + rx)),
+        _ => None,
+    };
+    for t in split_lines(raw) {
+        l.rows.push(Row { ms: placed.unwrap_or(ms), seq: *seq, signal: l.signal.clone(), kind: Kind::Recv, text: t, core: placed.is_some() });
+        *seq += 1;
     }
 }
 
@@ -404,6 +463,8 @@ pub async fn run(core: &CoreClient, req: Request) -> Result<Value, String> {
                 gaps: Vec::new(),
                 note: None,
                 rows: Vec::new(),
+                started_utc_ms: r.started_utc_ms,
+                rx_queue: Default::default(),
             }),
             Err(e) => {
                 for l in &listeners {
@@ -416,6 +477,15 @@ pub async fn run(core: &CoreClient, req: Request) -> Result<Value, String> {
 
     let t0 = Instant::now();
     let now_ms = move || t0.elapsed().as_millis() as u64;
+    // Core's UTC clock lands on this one at the earliest capture start, taken
+    // when its start reply reached us (late by the request's latency, never
+    // early, so a reply cannot precede its write). Wall clocks are never
+    // compared across hosts.
+    let anchor = listeners
+        .iter()
+        .filter_map(|l| l.started_utc_ms)
+        .min()
+        .map(|utc_origin| Anchor { utc_origin, anchor_ms: now_ms() });
     let finished = AtomicBool::new(false);
     let listened: HashSet<&str> = listen.iter().map(String::as_str).collect();
 
@@ -429,7 +499,8 @@ pub async fn run(core: &CoreClient, req: Request) -> Result<Value, String> {
                 tokio::time::sleep(Duration::from_millis(d)).await;
             }
             let line = crate::tools::exchange_line(&s.write, true);
-            rows.push(Row { ms: now_ms(), seq, signal: s.signal.clone(), kind: Kind::Write, text: s.write.trim_end_matches('\n').to_string() });
+            let write_ms = now_ms();
+            rows.push(Row { ms: write_ms, seq, signal: s.signal.clone(), kind: Kind::Write, text: s.write.trim_end_matches('\n').to_string(), core: false });
             seq += 1;
             match core.signal_exchange_with(&s.signal, &line, s.until.as_deref(), s.timeout_ms, None, s.match_after_echo).await {
                 Ok(r) => {
@@ -437,9 +508,12 @@ pub async fn run(core: &CoreClient, req: Request) -> Result<Value, String> {
                     // A reply on a captured signal also lands in its capture
                     // (embarch-core decision 92): the capture's rows carry it.
                     if !is_listened {
-                        let ms = now_ms();
+                        let (ms, by_core) = match (anchor, r.started_utc_ms) {
+                            (Some(a), Some(u)) => (a.ms(u).max(write_ms), true),
+                            _ => (now_ms(), false),
+                        };
                         for t in split_lines(&r.text) {
-                            rows.push(Row { ms, seq, signal: s.signal.clone(), kind: Kind::Recv, text: t });
+                            rows.push(Row { ms, seq, signal: s.signal.clone(), kind: Kind::Recv, text: t, core: by_core });
                             seq += 1;
                         }
                     }
@@ -470,7 +544,7 @@ pub async fn run(core: &CoreClient, req: Request) -> Result<Value, String> {
             let done = finished.load(Ordering::SeqCst);
             let ms = now_ms();
             for l in listeners.iter_mut() {
-                drain(core, l, ms, &mut seq, false).await;
+                drain(core, l, ms, &mut seq, false, anchor).await;
             }
             if done {
                 break;
@@ -479,8 +553,8 @@ pub async fn run(core: &CoreClient, req: Request) -> Result<Value, String> {
         // Final read and stop, stamped at the moment it happened.
         let ms = now_ms();
         for l in listeners.iter_mut() {
-            drain(core, l, ms, &mut seq, false).await;
-            drain(core, l, ms, &mut seq, true).await;
+            drain(core, l, ms, &mut seq, false, anchor).await;
+            drain(core, l, ms, &mut seq, true, anchor).await;
         }
         listeners
     };
@@ -504,6 +578,10 @@ pub async fn run(core: &CoreClient, req: Request) -> Result<Value, String> {
         captures.insert(l.signal.clone(), c);
     }
     let (timeline, dropped) = build_timeline(rows, &req.filters);
+    let (mut by_core, mut by_poll): (BTreeMap<String, usize>, BTreeMap<String, usize>) = Default::default();
+    for r in timeline.iter().filter(|r| r.kind == Kind::Recv) {
+        *(if r.core { &mut by_core } else { &mut by_poll }).entry(r.signal.clone()).or_default() += 1;
+    }
     let dropped_json: serde_json::Map<String, Value> =
         dropped.iter().map(|(k, d)| (k.clone(), json!({ "filtered": d.filtered, "capped": d.capped }))).collect();
 
@@ -514,7 +592,7 @@ pub async fn run(core: &CoreClient, req: Request) -> Result<Value, String> {
         "steps": summaries,
         "dropped": dropped_json,
         "captures": captures,
-        "time_basis": TIME_BASIS,
+        "time_basis": time_basis(&by_core, &by_poll),
     });
     if let Some(f) = failure {
         out["error"] = json!(f);
@@ -527,7 +605,7 @@ mod tests {
     use super::*;
 
     fn row(ms: u64, seq: usize, sig: &str, kind: Kind, text: &str) -> Row {
-        Row { ms, seq, signal: sig.into(), kind, text: text.into() }
+        Row { ms, seq, signal: sig.into(), kind, text: text.into(), core: false }
     }
 
     #[test]

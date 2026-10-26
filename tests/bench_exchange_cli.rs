@@ -168,3 +168,74 @@ async fn a_snapshot_with_no_steps_is_refused_at_config_load() {
     assert_eq!(o.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&o.stdout).contains("has no steps"), "{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
 }
+
+fn cap_t(text: &str, offset: u64, next: u64, total: u64, started: u64, lines: Value) -> Value {
+    let mut v = cap("running", text, offset, next, total);
+    v["started_utc_ms"] = json!(started);
+    v["lines"] = lines;
+    v
+}
+
+fn router_two(dut: Vec<Behavior>, bench: Vec<Behavior>) -> Behavior {
+    let routes = vec![
+        ("/signals/dut/capture".to_string(), Behavior::Sequence(dut)),
+        ("/signals/bench/capture".to_string(), Behavior::Sequence(bench)),
+        ("/signals".to_string(), Behavior::json_ok(signals())),
+    ];
+    Behavior::Router { routes, otherwise: Box::new(Behavior::plain_text_error(404, "Not Found", "unscripted")) }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn core_receive_times_order_two_consoles_inside_one_poll_window() {
+    // Both consoles' lines arrive in the same poll read; the dut's came 30 ms
+    // after the bench's even though the dut is polled first (listed first).
+    let d = "<inf> dut: late\r\n";
+    let b = "bench: early\r\n";
+    let dut = vec![
+        Behavior::json_ok(cap_t("", 0, 0, 0, 1_000_000, json!([]))),
+        Behavior::json_ok(cap_t(d, 0, d.len() as u64, d.len() as u64, 1_000_000, json!([{ "offset": 0, "rx_ms": 80 }]))),
+        Behavior::json_ok(cap_t("", d.len() as u64, d.len() as u64, d.len() as u64, 1_000_000, json!([]))),
+    ];
+    let bench = vec![
+        Behavior::json_ok(cap_t("", 0, 0, 0, 1_000_005, json!([]))),
+        Behavior::json_ok(cap_t(b, 0, b.len() as u64, b.len() as u64, 1_000_005, json!([{ "offset": 0, "rx_ms": 45 }]))),
+        Behavior::json_ok(cap_t("", b.len() as u64, b.len() as u64, b.len() as u64, 1_000_005, json!([]))),
+    ];
+    let mock = MockCore::start(router_two(dut, bench)).await;
+    let o = run(&mock, "", &["--listen", "dut", "--listen", "bench", "--tail-ms", "150", "--poll-ms", "20"]);
+    assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stdout));
+    let v = json_out(&o);
+    let t = v["timeline"].as_str().unwrap();
+    let lines: Vec<&str> = t.lines().collect();
+    // bench at 1_000_050 and dut at 1_000_080: 30 ms apart, bench first.
+    assert!(lines[0].contains("bench| bench: early") && lines[1].contains("dut| <inf> dut: late"), "{t}");
+    let ms = |l: &str| l[1..l.find(' ').unwrap()].parse::<i64>().unwrap();
+    assert_eq!(ms(lines[1]) - ms(lines[0]), 30, "{t}");
+    let basis = v["time_basis"].as_str().unwrap();
+    assert!(basis.contains("[bench, dut] are Core's first-byte receive times"), "{basis}");
+    assert!(!basis.contains("a poll first saw"), "{basis}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_core_that_sends_times_for_one_console_only_reads_as_mixed() {
+    let d = "<inf> dut: x\r\n";
+    let b = "bench: y\r\n";
+    let dut = vec![
+        Behavior::json_ok(cap_t("", 0, 0, 0, 1_000_000, json!([]))),
+        Behavior::json_ok(cap_t(d, 0, d.len() as u64, d.len() as u64, 1_000_000, json!([{ "offset": 0, "rx_ms": 50 }]))),
+        Behavior::json_ok(cap_t("", d.len() as u64, d.len() as u64, d.len() as u64, 1_000_000, json!([]))),
+    ];
+    // Old Core path: no started_utc_ms and no lines.
+    let bench = vec![
+        Behavior::json_ok(cap("running", "", 0, 0, 0)),
+        Behavior::json_ok(cap("running", b, 0, b.len() as u64, b.len() as u64)),
+        Behavior::json_ok(cap("running", "", b.len() as u64, b.len() as u64, b.len() as u64)),
+    ];
+    let mock = MockCore::start(router_two(dut, bench)).await;
+    let o = run(&mock, "", &["--listen", "dut", "--listen", "bench", "--tail-ms", "150", "--poll-ms", "20"]);
+    let v = json_out(&o);
+    let t = v["timeline"].as_str().unwrap();
+    assert!(t.contains("bench| bench: y") && t.contains("dut| <inf> dut: x"), "{t}");
+    let basis = v["time_basis"].as_str().unwrap();
+    assert!(basis.contains("[dut] are Core's first-byte") && basis.contains("[bench] are stamped when a poll first saw them"), "{basis}");
+}

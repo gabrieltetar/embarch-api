@@ -1049,6 +1049,23 @@ pub struct SignalCaptureResponse {
     pub elapsed_ms: u64,
     #[serde(default)]
     pub gaps: Vec<CaptureGap>,
+    /// The capture's start, UTC ms since the Unix epoch (`embarch-core`
+    /// decision 94). `None`: this Core did not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_utc_ms: Option<u64>,
+    /// One entry per line whose first byte lies in `[offset, next_offset)`.
+    /// `None`: this Core sent no per-line times, which is not "no lines".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines: Option<Vec<CaptureLine>>,
+}
+
+/// A captured line's first-byte receive time (`embarch-core` decision 94).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CaptureLine {
+    /// Absolute byte offset of the line's first byte in the capture.
+    pub offset: u64,
+    /// Ms after `started_utc_ms`, ascending across `lines`.
+    pub rx_ms: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -1075,6 +1092,10 @@ pub struct SignalExchangeResponse {
     pub until_seen: bool,
     pub truncated: bool,
     pub elapsed_ms: u64,
+    /// When the exchange began, UTC ms since the Unix epoch, on the clock a
+    /// capture shares (`embarch-core` decision 94). `None`: this Core did not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_utc_ms: Option<u64>,
     /// Bytes that came back (`embarch-core` decision 85). `None`: this Core did not say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bytes_read: Option<usize>,
@@ -3745,5 +3766,23 @@ mod tests {
         assert!(unreadable.steps.is_none(), "unreadable is not a study that ran no steps");
         assert!(unreadable.taps.is_none());
         assert!(unreadable.note.as_deref().unwrap().contains("cannot read"));
+    }
+
+    #[test]
+    fn capture_and_exchange_receive_times_are_optional_old_core_reads_none() {
+        let old: SignalCaptureResponse = serde_json::from_value(serde_json::json!({"state":"running","text":"a\n"})).unwrap();
+        assert!(old.started_utc_ms.is_none() && old.lines.is_none(), "unknown, not no lines");
+        let new: SignalCaptureResponse = serde_json::from_value(serde_json::json!({
+            "state":"running","started_utc_ms":1000,"lines":[{"offset":0,"rx_ms":5},{"offset":3,"rx_ms":9}]})).unwrap();
+        assert_eq!(new.started_utc_ms, Some(1000));
+        assert_eq!(new.lines.as_ref().unwrap()[1].rx_ms, 9);
+        let empty: SignalCaptureResponse = serde_json::from_value(serde_json::json!({"state":"running","lines":[]})).unwrap();
+        assert_eq!(empty.lines.map(|l| l.len()), Some(0));
+        let ex_old: SignalExchangeResponse = serde_json::from_value(serde_json::json!({"signal":"s","port":"p","baud":1,"text":"",
+            "until_seen":false,"truncated":false,"elapsed_ms":1})).unwrap();
+        assert!(ex_old.started_utc_ms.is_none());
+        let ex_new: SignalExchangeResponse = serde_json::from_value(serde_json::json!({"signal":"s","port":"p","baud":1,"text":"",
+            "until_seen":false,"truncated":false,"elapsed_ms":1,"started_utc_ms":77})).unwrap();
+        assert_eq!(ex_new.started_utc_ms, Some(77));
     }
 }

@@ -1322,7 +1322,7 @@ async fn bench_exchange(
         Ok(v) => {
             let ok = v["success"].as_bool().unwrap_or(false);
             if !json {
-                eprintln!("bench-exchange: times are {}", crate::bench_exchange::TIME_BASIS);
+                eprintln!("bench-exchange: times are {}", v["time_basis"].as_str().unwrap_or(""));
                 if let Some(d) = v["dropped"].as_object().filter(|d| !d.is_empty()) {
                     for (sig, c) in d {
                         eprintln!("bench-exchange: {sig}: {} lines filtered out, {} over the cap", c["filtered"], c["capped"]);
