@@ -881,10 +881,9 @@ async fn enroll_probe(
     json: bool,
 ) -> i32 {
     match core.enroll_probe(role, chip, probe_serial, name).await {
-        Ok(resp) => finish(
-            json,
-            true,
-            serde_json::json!({
+        Ok(resp) => {
+            let moved = resp.moved_roles_note();
+            let mut v = serde_json::json!({
                 "success": true,
                 "probe_serial": resp.probe_serial,
                 "role": resp.role,
@@ -892,16 +891,28 @@ async fn enroll_probe(
                 "chip": resp.chip,
                 "hardware_id": resp.hardware_id,
                 "confirmed_at_utc_ms": resp.confirmed_at_utc_ms,
-            }),
+            });
+            if !moved.is_empty() {
+                v["displaced"] = serde_json::to_value(&resp.displaced).unwrap_or_default();
+                v["vacated"] = serde_json::to_value(&resp.vacated).unwrap_or_default();
+                v["vacated_kept"] = serde_json::to_value(resp.vacated_kept).unwrap_or_default();
+                v["moved"] = moved.clone().into();
+            }
+            finish(
+            json,
+            true,
+            v,
             format!(
-                "enrolled probe {} as {} ({}, chip '{}', hardware_id {})",
+                "enrolled probe {} as {} ({}, chip '{}', hardware_id {}){}",
                 resp.probe_serial,
                 if resp.role.is_empty() { "a bench board".to_string() } else { format!("role '{}'", resp.role) },
                 if resp.name.is_empty() { "unnamed".to_string() } else { format!("board '{}'", resp.name) },
                 resp.chip,
-                resp.hardware_id
+                resp.hardware_id,
+                if moved.is_empty() { String::new() } else { format!("; {moved}") }
             ),
-        ),
+        )
+        }
         Err(e) => error_result(json, format!("enroll-probe failed: {e:#}")),
     }
 }

@@ -1274,14 +1274,24 @@ impl EmbarchApi {
             .enroll_probe(role.as_deref().unwrap_or(""), &chip, probe_serial.as_deref(), name.as_deref())
             .await
         {
-            Ok(resp) => Self::ok_json(serde_json::json!({
-                "probe_serial": resp.probe_serial,
-                "role": resp.role,
-                "name": resp.name,
-                "chip": resp.chip,
-                "hardware_id": resp.hardware_id,
-                "confirmed_at_utc_ms": resp.confirmed_at_utc_ms,
-            })),
+            Ok(resp) => {
+                let moved = resp.moved_roles_note();
+                let mut v = serde_json::json!({
+                    "probe_serial": resp.probe_serial,
+                    "role": resp.role,
+                    "name": resp.name,
+                    "chip": resp.chip,
+                    "hardware_id": resp.hardware_id,
+                    "confirmed_at_utc_ms": resp.confirmed_at_utc_ms,
+                });
+                if !moved.is_empty() {
+                    v["displaced"] = serde_json::to_value(&resp.displaced).unwrap_or_default();
+                    v["vacated"] = serde_json::to_value(&resp.vacated).unwrap_or_default();
+                    v["vacated_kept"] = serde_json::to_value(resp.vacated_kept).unwrap_or_default();
+                    v["moved"] = moved.into();
+                }
+                Self::ok_json(v)
+            }
             Err(e) => Self::err_text(format!("enroll_probe failed: {e:#}")),
         }
     }

@@ -289,6 +289,43 @@ pub struct EnrollProbeResponse {
     /// it sits beside `self_reported_hardware_id` and has to say which it is.
     pub hardware_id: String,
     pub confirmed_at_utc_ms: u64,
+    /// The row this enrol replaced, when it was a different board's
+    /// (`embarch-core` decision 87). Absent when nothing was replaced, and
+    /// kept absent on re-serialisation, so a caller that never reads it
+    /// sees the body it always saw (`embarch-api` decision 85).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub displaced: Option<EnrolledBoard>,
+    /// The role this probe held before the enrol moved it (re-enrolling the
+    /// dev-bench probe as `dut` vacates `dev-bench`). Absent when none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vacated: Option<EnrolledBoard>,
+    /// `vacated`'s row was kept (board type left in place) rather than
+    /// removed. Absent when `vacated` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vacated_kept: Option<bool>,
+}
+
+impl EnrollProbeResponse {
+    /// One sentence per role this enrol moved, empty when none. Shared by
+    /// the CLI and the MCP tool so both say the same thing.
+    pub fn moved_roles_note(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(v) = &self.vacated {
+            parts.push(format!(
+                "role '{}' was vacated by this probe ({})",
+                v.role,
+                if self.vacated_kept == Some(true) { "its board type is kept" } else { "its row is removed" }
+            ));
+        }
+        if let Some(d) = &self.displaced {
+            parts.push(format!(
+                "the board previously in role '{}' ({}) was displaced",
+                d.role,
+                d.probe_serial.as_deref().unwrap_or("no probe")
+            ));
+        }
+        parts.join("; ")
+    }
 }
 
 /// `embarch-core` decision 28's `POST /validate` — an
@@ -2750,6 +2787,25 @@ mod tests {
             link_port_serial: Some("D607104".to_string()),
             link_port_interface: Some(2),
         }
+    }
+
+    #[test]
+    fn an_enroll_response_reads_with_and_without_the_moved_role_fields() {
+        let bare = r#"{"probe_serial":"A","role":"dut","name":"n","chip":"c","hardware_id":"H","confirmed_at_utc_ms":1}"#;
+        let r: EnrollProbeResponse = serde_json::from_str(bare).unwrap();
+        assert!(r.displaced.is_none() && r.vacated.is_none() && r.vacated_kept.is_none());
+        assert_eq!(r.moved_roles_note(), "");
+        assert_eq!(serde_json::to_string(&r).unwrap(), bare);
+        let full = format!(
+            r#"{{"probe_serial":"A","role":"dut","name":"n","chip":"c","hardware_id":"H","confirmed_at_utc_ms":1,"vacated":{b},"vacated_kept":true,"displaced":{b}}}"#,
+            b = ENROLLED_BOARD_RESPONSE_JSON
+        );
+        let r: EnrollProbeResponse = serde_json::from_str(&full).unwrap();
+        assert_eq!(r.vacated, Some(sample_enrolled_board()));
+        assert_eq!(r.displaced, Some(sample_enrolled_board()));
+        assert_eq!(r.vacated_kept, Some(true));
+        let note = r.moved_roles_note();
+        assert!(note.contains("'dev-bench' was vacated") && note.contains("kept") && note.contains("displaced"), "{note}");
     }
 
     #[test]
