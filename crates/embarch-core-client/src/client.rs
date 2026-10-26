@@ -1192,11 +1192,7 @@ impl StudyRunOptions {
     }
 }
 
-/// Percent-encodes everything outside the unreserved set. A version string
-/// is `git describe` output in practice — `g1a2b3c-dirty`, all unreserved —
-/// but it is free-form and reaches this from a config-declared command, so
-/// encoding it is not optional. Hand-rolled rather than adding a dependency
-/// for one call site.
+/// The query of a capture read or stop: only the parameters the caller set.
 fn capture_query(after: Option<u64>, limit: Option<u64>, id: Option<&str>) -> Vec<(&'static str, String)> {
     let mut q = Vec::new();
     if let Some(a) = after {
@@ -1211,6 +1207,11 @@ fn capture_query(after: Option<u64>, limit: Option<u64>, id: Option<&str>) -> Ve
     q
 }
 
+/// Percent-encodes everything outside the unreserved set. A version string
+/// is `git describe` output in practice — `g1a2b3c-dirty`, all unreserved —
+/// but it is free-form and reaches this from a config-declared command, so
+/// encoding it is not optional. Hand-rolled rather than adding a dependency
+/// for one call site.
 fn urlencode(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for byte in raw.as_bytes() {
