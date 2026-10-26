@@ -119,11 +119,13 @@ pub enum Commands {
         /// Flash this file instead of the project's configured artifact_path.
         #[arg(long)]
         firmware_path: Option<String>,
-        /// Fully erase the chip before writing, rather than erasing only the
-        /// sectors the new image covers. The equivalent of `west flash
-        /// --erase`: without it, flash regions the new image doesn't cover
-        /// (a Zephyr settings/NVS partition, and so any BLE bonds or
-        /// provisioning state in it) survive from the previous firmware.
+        /// Erase every writable flash region before writing, rather than
+        /// only the sectors the new image covers. Without it, flash regions
+        /// the new image doesn't cover (a Zephyr settings/NVS partition, and
+        /// so any BLE bonds or provisioning state in it) survive from the
+        /// previous firmware. Skips alias and non-writable regions (an
+        /// STM32's option bytes) and never chip-erases; prints the erased
+        /// ranges.
         #[arg(long)]
         erase: bool,
     },
@@ -132,11 +134,13 @@ pub enum Commands {
         project: String,
         #[command(flatten)]
         target: TargetSelection,
-        /// Fully erase the chip before writing, rather than erasing only the
-        /// sectors the new image covers. The equivalent of `west flash
-        /// --erase`: without it, flash regions the new image doesn't cover
-        /// (a Zephyr settings/NVS partition, and so any BLE bonds or
-        /// provisioning state in it) survive from the previous firmware.
+        /// Erase every writable flash region before writing, rather than
+        /// only the sectors the new image covers. Without it, flash regions
+        /// the new image doesn't cover (a Zephyr settings/NVS partition, and
+        /// so any BLE bonds or provisioning state in it) survive from the
+        /// previous firmware. Skips alias and non-writable regions (an
+        /// STM32's option bytes) and never chip-erases; prints the erased
+        /// ranges.
         #[arg(long)]
         erase: bool,
     },
@@ -326,22 +330,26 @@ pub enum Commands {
         /// artifact.
         #[arg(long)]
         firmware_path: Option<String>,
-        /// Fully erase the chip before writing, rather than erasing only the
-        /// sectors the new image covers. The equivalent of `west flash
-        /// --erase`: without it, flash regions the new image doesn't cover
-        /// (a Zephyr settings/NVS partition, and so any BLE bonds or
-        /// provisioning state in it) survive from the previous firmware.
+        /// Erase every writable flash region before writing, rather than
+        /// only the sectors the new image covers. Without it, flash regions
+        /// the new image doesn't cover (a Zephyr settings/NVS partition, and
+        /// so any BLE bonds or provisioning state in it) survive from the
+        /// previous firmware. Skips alias and non-writable regions (an
+        /// STM32's option bytes) and never chip-erases; prints the erased
+        /// ranges.
         #[arg(long)]
         erase: bool,
     },
     /// Build embarch-dev-bench's own firmware and, only if the build
     /// succeeds with a fresh artifact, flash it.
     BuildAndFlashDevBench {
-        /// Fully erase the chip before writing, rather than erasing only the
-        /// sectors the new image covers. The equivalent of `west flash
-        /// --erase`: without it, flash regions the new image doesn't cover
-        /// (a Zephyr settings/NVS partition, and so any BLE bonds or
-        /// provisioning state in it) survive from the previous firmware.
+        /// Erase every writable flash region before writing, rather than
+        /// only the sectors the new image covers. Without it, flash regions
+        /// the new image doesn't cover (a Zephyr settings/NVS partition, and
+        /// so any BLE bonds or provisioning state in it) survive from the
+        /// previous firmware. Skips alias and non-writable regions (an
+        /// STM32's option bytes) and never chip-erases; prints the erased
+        /// ranges.
         #[arg(long)]
         erase: bool,
     },

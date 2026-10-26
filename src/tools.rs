@@ -140,11 +140,14 @@ pub struct TargetParams {
     /// Omitted or empty falls back to the project's configured
     /// default_extra_args, not "no extra args".
     pub extra_args: Option<Vec<String>>,
-    /// Fully erase the chip before writing, rather than erasing only the
-    /// sectors the new image covers — the equivalent of `west flash --erase`.
-    /// Without it, flash regions the new image doesn't cover survive from
-    /// the previous firmware, including a Zephyr settings/NVS partition and
-    /// so any BLE bonds or provisioning state held there. Defaults to false. Only meaningful for `build_and_flash` — `build` and
+    /// Erase every writable flash region before writing, rather than only
+    /// the sectors the new image covers. Without it, regions the image
+    /// doesn't cover survive from the previous firmware, including a Zephyr
+    /// settings/NVS partition and so any BLE bonds or provisioning state
+    /// held there. Skips alias and non-writable regions (an STM32's option
+    /// bytes) and never chip-erases; fails before erasing anything if a
+    /// region has no usable flash algorithm. The result's `erased` lists the
+    /// ranges blanked (empty when a vendor tool flashed). Defaults to false. Only meaningful for `build_and_flash` — `build` and
     /// `reset` don't write flash, and ignore it.
     pub erase: Option<bool>,
 }
@@ -194,11 +197,14 @@ pub struct FlashParams {
     /// artifact_path — use this to flash an already-built file without
     /// rebuilding. Bypasses target resolution entirely.
     pub firmware_path: Option<String>,
-    /// Fully erase the chip before writing, rather than erasing only the
-    /// sectors the new image covers — the equivalent of `west flash --erase`.
-    /// Without it, flash regions the new image doesn't cover survive from
-    /// the previous firmware, including a Zephyr settings/NVS partition and
-    /// so any BLE bonds or provisioning state held there. Defaults to false.
+    /// Erase every writable flash region before writing, rather than only
+    /// the sectors the new image covers. Without it, regions the image
+    /// doesn't cover survive from the previous firmware, including a Zephyr
+    /// settings/NVS partition and so any BLE bonds or provisioning state
+    /// held there. Skips alias and non-writable regions (an STM32's option
+    /// bytes) and never chip-erases; fails before erasing anything if a
+    /// region has no usable flash algorithm. The result's `erased` lists the
+    /// ranges blanked (empty when a vendor tool flashed). Defaults to false.
     pub erase: Option<bool>,
 }
 
@@ -431,11 +437,14 @@ fn unwrap_stringified_json(v: serde_json::Value) -> Result<serde_json::Value, se
 pub struct FlashDevBenchParams {
     /// Flash this file instead of dev-bench's own configured build artifact.
     pub firmware_path: Option<String>,
-    /// Fully erase the chip before writing, rather than erasing only the
-    /// sectors the new image covers — the equivalent of `west flash --erase`.
-    /// Without it, flash regions the new image doesn't cover survive from
-    /// the previous firmware, including a Zephyr settings/NVS partition and
-    /// so any BLE bonds or provisioning state held there. Defaults to false.
+    /// Erase every writable flash region before writing, rather than only
+    /// the sectors the new image covers. Without it, regions the image
+    /// doesn't cover survive from the previous firmware, including a Zephyr
+    /// settings/NVS partition and so any BLE bonds or provisioning state
+    /// held there. Skips alias and non-writable regions (an STM32's option
+    /// bytes) and never chip-erases; fails before erasing anything if a
+    /// region has no usable flash algorithm. The result's `erased` lists the
+    /// ranges blanked (empty when a vendor tool flashed). Defaults to false.
     pub erase: Option<bool>,
 }
 
@@ -896,6 +905,7 @@ impl EmbarchApi {
                 Ok(resp) => Self::ok_json(serde_json::json!({
                     "flashed": resp.flashed,
                     "chip": resp.chip,
+                    "erased": resp.erased,
                     "firmware_path": firmware_path,
                     "target": resolved.descriptor,
                 })),
@@ -920,6 +930,7 @@ impl EmbarchApi {
             Ok(resp) => Self::ok_json(serde_json::json!({
                 "flashed": resp.flashed,
                 "chip": resp.chip,
+                "erased": resp.erased,
                 "firmware_path": path,
                 "target": resolved.descriptor,
             })),
@@ -987,6 +998,7 @@ impl EmbarchApi {
                 "build": build_json,
                 "flashed": resp.flashed,
                 "chip": resp.chip,
+                "erased": resp.erased,
                 "firmware_path": core_firmware_path,
             })),
             Err(e) => Self::err_text(format!(
@@ -1120,6 +1132,7 @@ impl EmbarchApi {
             Ok(resp) => Self::ok_json(serde_json::json!({
                 "flashed": resp.flashed,
                 "chip": resp.chip,
+                "erased": resp.erased,
                 "firmware_path": path,
                 "target": resolved.descriptor,
             })),
@@ -1181,6 +1194,7 @@ impl EmbarchApi {
                 "build": build_json,
                 "flashed": resp.flashed,
                 "chip": resp.chip,
+                "erased": resp.erased,
                 "firmware_path": core_firmware_path,
             })),
             Err(e) => Self::err_text(format!("build succeeded but flash failed for dev_bench: {e:#}")),

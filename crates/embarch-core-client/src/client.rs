@@ -160,6 +160,11 @@ const OUTPOST_MANIFEST_FILE: &str = "outpost-manifest.json";
 pub struct FlashResponse {
     pub flashed: bool,
     pub chip: String,
+    /// Ranges `erase: true` blanked, like `"0x08000000..0x08080000"`
+    /// (`embarch-core` decision 84). Empty without `erase` or after a
+    /// vendor-tool flash. Absent from an older Core, hence the default.
+    #[serde(default)]
+    pub erased: Vec<String>,
 }
 
 /// What a bootload is told about the DUT, from the project's
@@ -2461,6 +2466,17 @@ impl CoreClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn flash_response_erased_defaults_empty_for_an_older_core() {
+        let old: FlashResponse = serde_json::from_str(r#"{"flashed":true,"chip":"c"}"#).unwrap();
+        assert!(old.erased.is_empty());
+        let new: FlashResponse = serde_json::from_str(
+            r#"{"flashed":true,"chip":"c","erased":["0x08000000..0x08080000"]}"#,
+        )
+        .unwrap();
+        assert_eq!(new.erased, vec!["0x08000000..0x08080000"]);
+    }
+
     use super::*;
 
     /// **The wire shape, written out** — re-scoped 2026-09-12 by `suite/035`

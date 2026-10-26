@@ -472,10 +472,11 @@ async fn flash(
                 "success": true,
                 "flashed": resp.flashed,
                 "chip": resp.chip,
+                "erased": resp.erased,
                 "firmware_path": path,
                 "target": resolved.descriptor,
             }),
-            format!("flashed '{project_name}' via chip {} ({})", resp.chip, path),
+            format!("flashed '{project_name}' via chip {} ({}){}", resp.chip, path, erased_note(&resp.erased)),
         ),
         Err(e) => error_result(json, format!("flash failed for '{project_name}': {e:#}")),
     }
@@ -540,11 +541,12 @@ async fn build_and_flash(
                 "build": build_json,
                 "flashed": resp.flashed,
                 "chip": resp.chip,
+                "erased": resp.erased,
                 "firmware_path": core_firmware_path,
             }),
             format!(
-                "build and flash succeeded for '{project_name}' via chip {} ({})",
-                resp.chip, core_firmware_path
+                "build and flash succeeded for '{project_name}' via chip {} ({}){}",
+                resp.chip, core_firmware_path, erased_note(&resp.erased)
             ),
         ),
         Err(e) => error_result(
@@ -726,10 +728,11 @@ async fn flash_dev_bench(
                 "success": true,
                 "flashed": resp.flashed,
                 "chip": resp.chip,
+                "erased": resp.erased,
                 "firmware_path": path,
                 "target": resolved.descriptor,
             }),
-            format!("flashed dev_bench via chip {} ({})", resp.chip, path),
+            format!("flashed dev_bench via chip {} ({}){}", resp.chip, path, erased_note(&resp.erased)),
         ),
         Err(e) => error_result(json, format!("flash failed for dev_bench: {e:#}")),
     }
@@ -795,11 +798,12 @@ async fn build_and_flash_dev_bench(
                 "build": build_json,
                 "flashed": resp.flashed,
                 "chip": resp.chip,
+                "erased": resp.erased,
                 "firmware_path": core_firmware_path,
             }),
             format!(
-                "build and flash succeeded for dev_bench via chip {} ({})",
-                resp.chip, core_firmware_path
+                "build and flash succeeded for dev_bench via chip {} ({}){}",
+                resp.chip, core_firmware_path, erased_note(&resp.erased)
             ),
         ),
         Err(e) => error_result(json, format!("build succeeded but flash failed for dev_bench: {e:#}")),
@@ -1833,6 +1837,15 @@ async fn study_stream_load(core: &CoreClient, study_id: &str, name: &str, json: 
             json,
             format!("study-stream-load failed for '{study_id}' stream '{name}': {e:#}"),
         ),
+    }
+}
+
+/// `"; erased 0x..0x.., ..."` when Core blanked ranges, else nothing.
+fn erased_note(erased: &[String]) -> String {
+    if erased.is_empty() {
+        String::new()
+    } else {
+        format!("; erased {}", erased.join(", "))
     }
 }
 
