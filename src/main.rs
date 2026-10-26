@@ -515,6 +515,10 @@ pub enum Commands {
     },
     /// Write a line to a declared host-to-dut or bidirectional signal and
     /// print what came back, via embarch-core (`embarch-core` decision 79).
+    ///
+    /// Exit codes: 0 a complete reply; 1 any failure; 3 --until given and
+    /// never seen; 4 zero bytes back; 5 reply truncated. 3, 4 and 5 print
+    /// one line to stderr and still print the reply.
     SignalExchange {
         /// The declared signal's name.
         #[arg(long)]
@@ -535,6 +539,12 @@ pub enum Commands {
         /// appear, e.g. a USB console re-enumerating after a reset.
         #[arg(long)]
         port_wait_ms: Option<u64>,
+        /// Print the command's output alone: escape codes out (a cursor move
+        /// kept as spaces), the echo and everything before it dropped, the
+        /// closing prompt (the --until text) dropped. Same as the atlas
+        /// `shell`. Not applied to --json.
+        #[arg(long)]
+        clean: bool,
     },
     /// Read 32-bit words of an enrolled target's memory over its probe, via
     /// embarch-core (`embarch-core` decision 81). Every range is read under

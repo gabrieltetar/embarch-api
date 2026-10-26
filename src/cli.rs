@@ -119,8 +119,8 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
             tx_pin,
             baud,
         } => declare_signal(&core, name, origin_role, &direction, &route_kind, port_serial, rx_pin, tx_pin, baud, json).await,
-        Commands::SignalExchange { name, write, until, timeout_ms, no_newline, port_wait_ms } => {
-            signal_exchange(&core, &name, &write, until.as_deref(), timeout_ms, port_wait_ms, !no_newline, json).await
+        Commands::SignalExchange { name, write, until, timeout_ms, no_newline, port_wait_ms, clean } => {
+            signal_exchange(&core, &name, &write, until.as_deref(), timeout_ms, port_wait_ms, !no_newline, clean, json).await
         }
         Commands::MemRead { ranges, role } => mem_read(&core, &role, &ranges, json).await,
         Commands::ListSignals => list_signals(&core, json).await,
@@ -1219,16 +1219,117 @@ async fn signal_exchange(
     timeout_ms: Option<u64>,
     port_wait_ms: Option<u64>,
     append_newline: bool,
+    clean: bool,
     json: bool,
 ) -> i32 {
     let line = crate::tools::exchange_line(write, append_newline);
     match core.signal_exchange(name, &line, until, timeout_ms, port_wait_ms).await {
         Ok(resp) => {
-            let text = resp.text.clone();
-            finish(json, true, serde_json::json!({ "success": true, "exchange": resp }), text)
+            let text = if clean {
+                clean_exchange(&resp.text, line.trim_end_matches('\n'), until.unwrap_or(""))
+            } else {
+                resp.text.clone()
+            };
+            let problem = exchange_problem(&resp, &line, until, timeout_ms);
+            let code = finish(json, true, serde_json::json!({ "success": true, "exchange": resp }), text);
+            match problem {
+                Some((c, msg)) => {
+                    eprintln!("{msg}");
+                    c
+                }
+                None => code,
+            }
         }
         Err(e) => error_result(json, format!("signal-exchange failed: {e:#}")),
     }
+}
+
+/// Exit code of `signal-exchange` when `--until` was given and never showed.
+pub const EXIT_EXCHANGE_UNTIL_NOT_SEEN: i32 = 3;
+/// Exit code of `signal-exchange` when zero bytes came back.
+pub const EXIT_EXCHANGE_NO_REPLY: i32 = 4;
+/// Exit code of `signal-exchange` when the reply was cut (`truncated`).
+pub const EXIT_EXCHANGE_TRUNCATED: i32 = 5;
+
+/// What is wrong with an exchange answer, as an exit code and the one stderr
+/// line, or `None` for a complete reply. Zero bytes outranks the rest.
+fn exchange_problem(
+    resp: &embarch_core_client::SignalExchangeResponse,
+    line: &str,
+    until: Option<&str>,
+    timeout_ms: Option<u64>,
+) -> Option<(i32, String)> {
+    let bytes = resp.text.len();
+    let echo = if resp.text.contains(line.trim_end_matches('\n')) { "seen" } else { "not seen" };
+    if bytes == 0 {
+        return Some((
+            EXIT_EXCHANGE_NO_REPLY,
+            format!("signal-exchange: no reply: 0 bytes read in {} ms (timeout {} ms)", resp.elapsed_ms, timeout_ms.map_or("default".to_string(), |t| t.to_string())),
+        ));
+    }
+    if let Some(u) = until {
+        if !resp.until_seen {
+            return Some((
+                EXIT_EXCHANGE_UNTIL_NOT_SEEN,
+                format!("signal-exchange: no `{u}` within {} ms: {bytes} bytes read, echo {echo}", resp.elapsed_ms),
+            ));
+        }
+    }
+    if resp.truncated {
+        return Some((
+            EXIT_EXCHANGE_TRUNCATED,
+            format!("signal-exchange: reply truncated after {} ms: {bytes} bytes read, echo {echo}", resp.elapsed_ms),
+        ));
+    }
+    None
+}
+
+/// The command's output alone — the same transform as the atlas's
+/// `live.clean()`: escape codes out (a cursor-right kept as spaces), `\r`
+/// out, the echo and everything before it dropped, the closing prompt
+/// dropped, one trailing newline.
+pub fn clean_exchange(text: &str, command: &str, prompt: &str) -> String {
+    let t = strip_escapes(text).replace('\r', "");
+    let needle = format!("{command}\n");
+    let mut t = match t.find(&needle) {
+        Some(i) => t[i + needle.len()..].to_string(),
+        None => t,
+    };
+    let p = prompt.trim_end();
+    t.truncate(t.trim_end().len());
+    if !p.is_empty() && t.ends_with(p) {
+        t.truncate(t.len() - p.len());
+    }
+    let t = t.trim_end();
+    format!("{}\n", t.trim_end_matches('\n'))
+}
+
+/// `ESC [ n C` becomes n spaces; any other `ESC [ params letter` goes.
+fn strip_escapes(text: &str) -> String {
+    let b = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let (mut i, mut start) = (0, 0);
+    while i < b.len() {
+        if b[i] == 0x1b && i + 1 < b.len() && b[i + 1] == b'[' {
+            let mut j = i + 2;
+            while j < b.len() && (b[j].is_ascii_digit() || b[j] == b';' || b[j] == b'?') {
+                j += 1;
+            }
+            if j < b.len() && b[j].is_ascii_alphabetic() {
+                out.push_str(&text[start..i]);
+                let params = &text[i + 2..j];
+                if b[j] == b'C' && !params.is_empty() && params.bytes().all(|c| c.is_ascii_digit()) {
+                    out.push_str(&" ".repeat(params.parse::<usize>().unwrap_or(0)));
+                }
+                i = j + 1;
+                start = i;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out.push_str(&text[start..]);
+    out
 }
 
 async fn mem_read(core: &CoreClient, role: &str, ranges: &[String], json: bool) -> i32 {
@@ -1851,6 +1952,19 @@ fn erased_note(erased: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn clean_exchange_matches_atlas_clean() {
+        use super::clean_exchange as c;
+        // echo found, prompt at the end
+        assert_eq!(c("help\r\nfoo\r\nbar\r\nuart:~$ ", "help", "uart:~$ "), "foo\nbar\n");
+        // echo missing: nothing before it to drop
+        assert_eq!(c("foo\r\nuart:~$ ", "help", "uart:~$ "), "foo\n");
+        // escape codes out, cursor-right kept as spaces
+        assert_eq!(c("\x1b[1;32mhelp\x1b[m\r\na\x1b[3Cb\r\n\x1b[1;32muart:~$ \x1b[m", "help", "uart:~$ "), "a   b\n");
+        assert_eq!(c("help\nx\n\n", "help", ""), "x\n");
+        assert_eq!(c("", "help", "uart:~$ "), "\n");
+    }
+
     /// The two source files that make up this crate's machine-readable
     /// surface. Both are `main.rs` modules, so no integration test can
     /// reach them — the guard below reads them as text instead.
