@@ -460,6 +460,85 @@ async fn a_follow_with_no_stream_and_no_poll_fails() {
     );
 }
 
+/// Core's SSE route opens for any id and its keep-alives hold the idle timeout
+/// open, so a 404 on the opening poll with a stream live means the study does
+/// not exist. It must end the follow, naming the id, without a deadline.
+#[tokio::test]
+async fn an_unknown_study_with_a_live_stream_ends_with_an_error() {
+    let mock = MockCore::start(routed(
+        stream(vec![sse_keep_alive()], StreamTail::Hold),
+        Behavior::plain_text_error(404, "Not Found", "unknown study_id"),
+    ))
+    .await;
+
+    let core = CoreClient::new(&config(mock.base_url())).expect("client");
+    let started = Instant::now();
+    let error = core
+        .follow_study(
+            STUDY,
+            &FollowOptions {
+                idle_timeout: Duration::from_secs(30),
+                poll_interval: Duration::from_millis(10),
+                deadline: None,
+            },
+            |_| {},
+        )
+        .await
+        .expect_err("a study Core has never heard of can never finish");
+    let text = format!("{error:#}");
+    assert!(text.contains(STUDY) && text.contains("no record"), "{text}");
+    assert!(error
+        .downcast_ref::<embarch_core_client::UnknownStudyError>()
+        .is_some());
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+/// Any other failure of the opening poll, with a stream open, still follows live.
+#[tokio::test]
+async fn a_non_404_opening_poll_failure_still_follows_live() {
+    let mock = MockCore::start(routed(
+        stream(
+            vec![sse_frame(None, &status_changed("completed", None))],
+            StreamTail::Hold,
+        ),
+        Behavior::plain_text_error(500, "Internal Server Error", "busy"),
+    ))
+    .await;
+
+    let core = CoreClient::new(&config(mock.base_url())).expect("client");
+    let outcome = core
+        .follow_study(STUDY, &fast_options(5_000), |_| {})
+        .await
+        .expect("a 500 on the opening poll is not fatal with a live stream");
+    assert_eq!(outcome.terminal_status.as_deref(), Some("completed"));
+}
+
+/// `interrupted` is terminal and is reported as itself.
+#[tokio::test]
+async fn an_interrupted_study_ends_the_follow_as_interrupted() {
+    let mock = MockCore::start(routed(
+        stream(vec![sse_keep_alive()], StreamTail::Hold),
+        poll_reply("interrupted"),
+    ))
+    .await;
+
+    let core = CoreClient::new(&config(mock.base_url())).expect("client");
+    let outcome = core
+        .follow_study(
+            STUDY,
+            &FollowOptions {
+                idle_timeout: Duration::from_secs(30),
+                poll_interval: Duration::from_millis(10),
+                deadline: None,
+            },
+            |_| {},
+        )
+        .await
+        .expect("interrupted is an outcome, not an error");
+    assert_eq!(outcome.terminal_status.as_deref(), Some("interrupted"));
+    assert!(!outcome.timed_out);
+}
+
 // ---------------------------------------------------------------------------
 // Ordering, budgets, and forward compatibility
 // ---------------------------------------------------------------------------

@@ -1308,6 +1308,27 @@ impl std::fmt::Display for StudyConflictError {
 
 impl std::error::Error for StudyConflictError {}
 
+/// `GET /study/{id}` answered 404: Core has no record of the id. Its own type
+/// so `follow_study` can tell "no such study" (fatal, even with a stream
+/// open, because Core's SSE route opens for any id) from a poll that merely
+/// failed. Message text is unchanged from the string it replaces.
+#[derive(Debug)]
+pub struct UnknownStudyError {
+    pub study_id: String,
+}
+
+impl std::fmt::Display for UnknownStudyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unknown study_id '{}': embarch-core has no record of it",
+            self.study_id
+        )
+    }
+}
+
+impl std::error::Error for UnknownStudyError {}
+
 /// `GET /study/{study_id}`'s body — this repo's `spec.md`. `status` is
 /// left as a plain `String` (matching how `StatusResponse.status` above is
 /// already handled) rather than a closed enum, since this is a
@@ -2132,9 +2153,9 @@ impl CoreClient {
             .unwrap_or_else(|_| "<no response body>".to_string());
 
         if status == reqwest::StatusCode::NOT_FOUND {
-            return Err(anyhow!(
-                "unknown study_id '{study_id}': embarch-core has no record of it"
-            ));
+            return Err(anyhow::Error::new(UnknownStudyError {
+                study_id: study_id.to_string(),
+            }));
         }
 
         Err(anyhow!(Self::format_study_error(status, &body)))

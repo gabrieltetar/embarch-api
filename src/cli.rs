@@ -1599,13 +1599,17 @@ async fn study_follow(
 
     let outcome = match outcome {
         Ok(outcome) => outcome,
-        // Reached only when there is no live stream *and* polling failed too
-        // — an unknown study_id, or Core down. Everything softer than that is
-        // already a `transport` item above.
+        // An unknown study_id (404 on the opening poll, stream open or not),
+        // or no live stream *and* polling failed too (Core down). Everything
+        // softer than that is already a `transport` item above.
         Err(e) => return error_result(json, format!("study-status --follow failed for '{study_id}': {e:#}")),
     };
 
-    let success = !outcome.timed_out;
+    // `interrupted` ends the follow promptly but is not a success: exit 1,
+    // `success: false`, `status: "interrupted"` in the summary. `completed`
+    // and `failed` keep exiting 0 as before (the follow itself worked).
+    let interrupted = outcome.terminal_status.as_deref() == Some("interrupted");
+    let success = !outcome.timed_out && !interrupted;
     let lagged_line = if outcome.lagged_events > 0 {
         format!(
             "\n{} event(s) were dropped from this live feed by embarch-core \
@@ -1618,7 +1622,13 @@ async fn study_follow(
     };
     let human = match (&outcome.terminal_status, outcome.timed_out) {
         (Some(status), _) => format!(
-            "study {study_id}: {status}{}{lagged_line}",
+            "study {study_id}: {status}{}{}{lagged_line}",
+            if interrupted {
+                " — embarch-core holds a partial record with no job behind it; it will not \
+                 move on by itself"
+            } else {
+                ""
+            },
             outcome
                 .reason
                 .as_deref()

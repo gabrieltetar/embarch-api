@@ -1615,7 +1615,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Get a submitted study's status via embarch-core: status (\"pending\"|\"running\"|\"completed\"|\"failed\"), current_step, total_steps, result (once completed), and reason (once failed) — returned verbatim.")]
+    #[tool(description = "Get a submitted study's status via embarch-core: status (\"pending\"|\"running\"|\"completed\"|\"failed\"|\"interrupted\" — a partial record with no job behind it, which Core will not move off by itself), current_step, total_steps, result (once completed), and reason (once failed) — returned verbatim.")]
     async fn study_status(
         &self,
         Parameters(StudyIdParams { study_id }): Parameters<StudyIdParams>,
@@ -1632,7 +1632,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Watch a running study live via embarch-core's SSE event stream (GET /study/{id}/events) instead of polling: returns every step completion, status change and (optionally) sample batch that happened while watching, in order, as they were pushed. Bounded by wait_secs (default 60) — this is a request/response call, so it returns what happened in that window and you call it again to keep watching; `complete: true` means the study reached a terminal status and there is nothing left to watch.\n\nThis is an addition to study_status, not a replacement: study_status is still the way to get one snapshot or the finished StudyResult, and this tool falls back to polling it automatically if the live stream will not open or drops mid-study (`transport` says which happened).\n\nTwo different kinds of incompleteness are reported separately and must not be confused. `lagged` is embarch-core telling you IT dropped events because this subscriber could not keep up — the study is unaffected and its own record on disk is complete, so re-read it with study_status. `events_omitted` is this tool's own max_events cap. Neither is an error.")]
+    #[tool(description = "Watch a running study live via embarch-core's SSE event stream (GET /study/{id}/events) instead of polling: returns every step completion, status change and (optionally) sample batch that happened while watching, in order, as they were pushed. Bounded by wait_secs (default 60) — this is a request/response call, so it returns what happened in that window and you call it again to keep watching; `complete: true` means the study reached a terminal status (completed, failed, or interrupted) and there is nothing left to watch; for `interrupted`, `status` says so and `note` explains, it is neither completed nor failed. A study_id embarch-core has no record of returns an error naming it right away rather than watching until wait_secs.\n\nThis is an addition to study_status, not a replacement: study_status is still the way to get one snapshot or the finished StudyResult, and this tool falls back to polling it automatically if the live stream will not open or drops mid-study (`transport` says which happened).\n\nTwo different kinds of incompleteness are reported separately and must not be confused. `lagged` is embarch-core telling you IT dropped events because this subscriber could not keep up — the study is unaffected and its own record on disk is complete, so re-read it with study_status. `events_omitted` is this tool's own max_events cap. Neither is an error.")]
     async fn study_watch(
         &self,
         Parameters(StudyWatchParams {
@@ -1730,6 +1730,11 @@ impl EmbarchApi {
             "status": outcome.terminal_status,
             "reason": outcome.reason,
             "complete": outcome.terminal_status.is_some(),
+            "note": if outcome.terminal_status.as_deref() == Some("interrupted") {
+                serde_json::json!("interrupted: embarch-core holds a partial record with no job behind it and will not move it on; it is neither completed nor failed")
+            } else {
+                serde_json::Value::Null
+            },
             "timed_out": outcome.timed_out,
             "watched_secs": wait,
             "transport": transport,

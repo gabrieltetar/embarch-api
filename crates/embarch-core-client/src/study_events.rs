@@ -45,7 +45,7 @@ use anyhow::{anyhow, Context, Result};
 use embarch_study_designer::{GattTranscriptEntry, Sample, StepResult};
 use serde::{Deserialize, Serialize};
 
-use crate::client::CoreClient;
+use crate::client::{CoreClient, UnknownStudyError};
 use crate::sse::{SseDecoder, SseFrame};
 
 /// Core's own `StudyEvent` (`embarch-core/src/study.rs`), deserialize side.
@@ -208,9 +208,11 @@ impl StudyEvent {
     }
 }
 
-/// A study status Core will not move off by itself.
+/// A study status Core will not move off by itself. `interrupted` is one: a
+/// `.partial` record with no job behind it. It is its own outcome, never a
+/// `completed` or a `failed`; callers report `terminal_status` verbatim.
 pub fn is_terminal_status(status: &str) -> bool {
-    matches!(status, "completed" | "failed")
+    matches!(status, "completed" | "failed" | "interrupted")
 }
 
 /// One thing that came off the SSE stream.
@@ -476,7 +478,8 @@ pub const LAGGED_NOTE: &str = "embarch-core dropped events for this subscriber b
 /// How a follow finished.
 #[derive(Debug, Clone, Default)]
 pub struct FollowOutcome {
-    /// `"completed"`/`"failed"` if the study reached one within the budget.
+    /// `"completed"`/`"failed"`/`"interrupted"` if the study reached one
+    /// within the budget.
     pub terminal_status: Option<String>,
     pub reason: Option<String>,
     /// Total events Core told us it dropped. Non-zero means the emitted
@@ -610,6 +613,14 @@ impl CoreClient {
                             "the event stream would not open and neither would \
                              GET /study/{study_id}"
                         )
+                    });
+                }
+                // Core's SSE route opens for any id, keep-alives and all, so a
+                // 404 here with a stream open means the study does not exist
+                // and nothing will ever arrive. Only other failures follow live.
+                if e.downcast_ref::<UnknownStudyError>().is_some() {
+                    return Err(e).with_context(|| {
+                        format!("cannot follow '{study_id}': embarch-core has no such study")
                     });
                 }
                 tracing::debug!("initial status poll for {study_id} failed, following live: {e:#}");
