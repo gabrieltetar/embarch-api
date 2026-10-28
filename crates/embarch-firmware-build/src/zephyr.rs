@@ -249,7 +249,7 @@ pub enum ScanError {
     NoBoardYml,
     NoAppDir,
     /// `board.yml` files were found but every (SoC, cluster, variant)
-    /// candidate was dropped for lack of devicetree source (decision 64).
+    /// candidate was dropped for lack of devicetree source (decision 86).
     /// One line per dropped candidate: the board, and the file(s) looked for.
     AllBoardsDropped(Vec<String>),
 }
@@ -337,7 +337,7 @@ pub fn scan(source_path: &Path) -> Result<Vec<Target>, ScanError> {
 ///
 /// Returns how many candidates had devicetree source behind them (before the
 /// revision and app axes), and appends one line to `notes` per candidate that
-/// did not (decision 64).
+/// did not (decision 86).
 fn push_targets_for_soc(
     out: &mut Vec<Target>,
     notes: &mut Vec<String>,
@@ -429,7 +429,7 @@ fn push_targets_for_soc(
 /// `<board>[_<soc>][_<cpucluster>][_<variant>]` — the file stem Zephyr
 /// looks for. `with_soc = false` is the shortened form Zephyr accepts only
 /// for a board declaring exactly one SoC (`dts.cmake`'s
-/// `BOARD_<board>_SINGLE_SOC` branch, decision 64).
+/// `BOARD_<board>_SINGLE_SOC` branch, decision 86).
 fn board_stem(board: &str, soc: &str, cpucluster: Option<&str>, variant: Option<&str>, with_soc: bool) -> String {
     let mut stem = board.to_string();
     if with_soc {
@@ -461,7 +461,7 @@ enum DtsStatus {
 /// Mirrors `zephyr/cmake/modules/dts.cmake`: `<board>_<soc>….dts` always;
 /// the shortened `<board>….dts` only for a single-SoC board (a multi-SoC
 /// board with one is Zephyr's `FATAL_ERROR`), and never together with the
-/// long one (Zephyr's "conflicting file names" error). Decision 64.
+/// long one (Zephyr's "conflicting file names" error). Decision 86.
 fn dts_status(
     board_dir: &Path,
     board: &str,
@@ -559,7 +559,7 @@ fn revision_is_backed(
         return true;
     }
 
-    // A single-SoC board may use the shortened stem here too (decision 64).
+    // A single-SoC board may use the shortened stem here too (decision 86).
     let suffix = revision.replace('.', "_");
     let mut stems = vec![board_stem(board, soc, cpucluster, variant, true)];
     if single_soc {
@@ -1306,7 +1306,7 @@ board:
 
     const ONE_SOC: &str = "board:\n  name: brd\n  socs:\n    - name: stm32g0b1xx\n";
 
-    /// Decision 64: an upstream-shaped single-SoC board (`<board>.dts`, no
+    /// Decision 86: an upstream-shaped single-SoC board (`<board>.dts`, no
     /// `<board>_<soc>.dts`) yields its target.
     #[test]
     fn single_soc_board_with_shortened_dts_yields_its_target() {
@@ -1319,7 +1319,7 @@ board:
         assert_eq!(targets[0].cpucluster, None);
     }
 
-    /// Decision 64: Zephyr's own `FATAL_ERROR` — a multi-SoC board may not
+    /// Decision 86: Zephyr's own `FATAL_ERROR` — a multi-SoC board may not
     /// use the shortened name — becomes a named reason, not a target.
     #[test]
     fn multi_soc_board_with_shortened_dts_is_refused_with_a_reason() {
@@ -1335,7 +1335,7 @@ board:
         }
     }
 
-    /// Decision 64: both stems present is Zephyr's "conflicting file names"
+    /// Decision 86: both stems present is Zephyr's "conflicting file names"
     /// error; the board is refused by name.
     #[test]
     fn single_soc_board_with_both_dts_names_is_refused_by_name() {
@@ -1350,7 +1350,7 @@ board:
         }
     }
 
-    /// Decision 64: one dropped board among live ones is not an error; only
+    /// Decision 86: one dropped board among live ones is not an error; only
     /// "every candidate dropped" is.
     #[test]
     fn a_dropped_board_beside_a_live_one_is_not_an_error() {
@@ -1361,7 +1361,7 @@ board:
         assert_eq!(targets.len(), 2, "{targets:#?}");
     }
 
-    /// Decision 64: `revision_is_backed` accepts the shortened revision
+    /// Decision 86: `revision_is_backed` accepts the shortened revision
     /// overlay for a single-SoC board, and not for a multi-SoC one.
     #[test]
     fn shortened_revision_overlay_backs_a_single_soc_board_only() {
