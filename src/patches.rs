@@ -311,17 +311,17 @@ fn export(series: &Path, repo: &Path, base: &str, scratch: &Path, force: bool) -
 
 // ---------------------------------------------------------------- diff parsing for folds
 
-struct Hunk {
-    old_start: usize,
-    old_len: usize,
-    lines: Vec<String>,
+pub(crate) struct Hunk {
+    pub(crate) old_start: usize,
+    pub(crate) old_len: usize,
+    pub(crate) lines: Vec<String>,
 }
 
-struct FileDiff {
-    path: String,
-    header: Vec<String>,
-    is_new: bool,
-    hunks: Vec<Hunk>,
+pub(crate) struct FileDiff {
+    pub(crate) path: String,
+    pub(crate) header: Vec<String>,
+    pub(crate) is_new: bool,
+    pub(crate) hunks: Vec<Hunk>,
 }
 
 fn parse_range(s: &str) -> (usize, usize) {
@@ -332,7 +332,7 @@ fn parse_range(s: &str) -> (usize, usize) {
     }
 }
 
-fn parse_diff(text: &str) -> Result<Vec<FileDiff>> {
+pub(crate) fn parse_diff(text: &str) -> Result<Vec<FileDiff>> {
     let mut files: Vec<FileDiff> = vec![];
     for line in text.lines() {
         if let Some(rest) = line.strip_prefix("diff --git ") {

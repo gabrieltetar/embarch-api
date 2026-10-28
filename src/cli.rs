@@ -185,6 +185,7 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         // caller does route it through `run`.
         Commands::Versions => versions(json),
         Commands::Patches { action } => crate::patches::run(action, json),
+        Commands::Stack { action } => crate::stack::run(action, json),
     }
 }
 
@@ -2280,7 +2281,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 46,
+            arms, 47,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."

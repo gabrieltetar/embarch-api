@@ -9,6 +9,7 @@ mod logging;
 mod open_desk;
 mod patches;
 mod reflash;
+mod stack;
 mod study;
 mod tools;
 
@@ -760,6 +761,12 @@ pub enum Commands {
         #[command(subcommand)]
         action: patches::PatchesAction,
     },
+    /// Fold review fixes into the commits they belong to and restack a PR
+    /// stack (plan, fold, restack). Needs only `git`: no config, no Core.
+    Stack {
+        #[command(subcommand)]
+        action: stack::StackAction,
+    },
 }
 
 /// Walks up from `start` looking for `embarch/embarch.toml` at each level —
@@ -861,6 +868,10 @@ async fn async_main() -> Result<()> {
     // `patches` is host-side git work only (decision 92): same early dispatch.
     if let Some(Commands::Patches { action }) = cli.command {
         std::process::exit(patches::run(action, cli.json));
+    }
+    // `stack` is host-side git work only (decision 96): same early dispatch.
+    if let Some(Commands::Stack { action }) = cli.command {
+        std::process::exit(stack::run(action, cli.json));
     }
     // Grouped into one fallible step so a CLI run can report a startup
     // failure *through the surface it was asked for*. Returning these
