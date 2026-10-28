@@ -4,6 +4,7 @@ mod build_info;
 mod capacity;
 mod cli;
 mod dev_bench;
+mod instrument;
 mod lease;
 mod logging;
 mod open_desk;
@@ -191,6 +192,60 @@ pub enum Commands {
     /// Retract the DUT's declared bootload ports. Reports removed=false, not
     /// an error, when none were declared.
     ClearBootloadPorts,
+    /// Declare a bench instrument Core drives over a USB serial line (an
+    /// electronic load, a supply), or replace the one of the same name.
+    /// `--preset et54` fills the line facts of an ET54-series load.
+    DeclareInstrument {
+        /// What study steps and instrument-exchange call it.
+        name: String,
+        /// Its USB serial identity, VID:PID or VID:PID:SERIAL in hex.
+        #[arg(long)]
+        port: String,
+        /// Which USB interface of that device.
+        #[arg(long)]
+        interface: Option<u8>,
+        /// A known model's line facts (et54). Explicit flags override it.
+        #[arg(long)]
+        preset: Option<String>,
+        /// Required without a preset.
+        #[arg(long)]
+        baud: Option<u32>,
+        /// lf, cr or crlf (default lf).
+        #[arg(long)]
+        write_terminator: Option<String>,
+        /// lf, cr or crlf (default crlf).
+        #[arg(long)]
+        read_terminator: Option<String>,
+        /// The least time between two commands.
+        #[arg(long)]
+        min_interval_ms: Option<u32>,
+        /// What a carried-out set answers; with it, a set's reply is checked.
+        #[arg(long)]
+        ack_ok: Option<String>,
+        /// What a refused set answers.
+        #[arg(long)]
+        ack_err: Option<String>,
+    },
+    /// List the declared bench instruments.
+    ListInstruments,
+    /// Retract a declared instrument. Reports removed=false, not an error,
+    /// when nothing was declared under the name.
+    RemoveInstrument { name: String },
+    /// Send one command to a declared instrument and print its reply, raw.
+    InstrumentExchange {
+        name: String,
+        /// The command, without a terminator.
+        line: String,
+        /// A query: read and print its reply.
+        #[arg(long)]
+        query: bool,
+        /// Core's default is 2000.
+        #[arg(long)]
+        timeout_ms: Option<u64>,
+        /// How long to wait for the instrument's port to appear.
+        #[arg(long)]
+        port_wait_ms: Option<u64>,
+    },
     /// Take the bench lease (embarch-core decision 93): this session holds
     /// both boards until it releases or the TTL runs out, and every other
     /// session's hardware call is refused by name. Prints the token once;

@@ -62,6 +62,37 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         }
         Commands::ShowBootloadPorts => show_bootload_ports(&core, json).await,
         Commands::ClearBootloadPorts => clear_bootload_ports(&core, json).await,
+        Commands::DeclareInstrument {
+            name,
+            port,
+            interface,
+            preset,
+            baud,
+            write_terminator,
+            read_terminator,
+            min_interval_ms,
+            ack_ok,
+            ack_err,
+        } => {
+            let args = crate::instrument::DeclareArgs {
+                name: &name,
+                port: &port,
+                interface,
+                preset: preset.as_deref(),
+                baud,
+                write_terminator: write_terminator.as_deref(),
+                read_terminator: read_terminator.as_deref(),
+                min_interval_ms,
+                ack_ok: ack_ok.as_deref(),
+                ack_err: ack_err.as_deref(),
+            };
+            declare_instrument(&core, &args, json).await
+        }
+        Commands::ListInstruments => list_instruments(&core, json).await,
+        Commands::RemoveInstrument { name } => remove_instrument(&core, &name, json).await,
+        Commands::InstrumentExchange { name, line, query, timeout_ms, port_wait_ms } => {
+            instrument_exchange(&core, &name, line, query, timeout_ms, port_wait_ms, json).await
+        }
         Commands::SerialLog {
             project,
             signal,
@@ -734,6 +765,78 @@ async fn clear_bootload_ports(core: &CoreClient, json: bool) -> i32 {
             if removed { "cleared the DUT's bootload ports".to_string() } else { "no bootload ports were declared".to_string() },
         ),
         Err(e) => error_result(json, format!("clear-bootload-ports failed: {e:#}")),
+    }
+}
+
+async fn declare_instrument(core: &CoreClient, args: &crate::instrument::DeclareArgs<'_>, json: bool) -> i32 {
+    let inst = match crate::instrument::build(args) {
+        Ok(i) => i,
+        Err(e) => return error_result(json, e),
+    };
+    match core.declare_instrument(&inst).await {
+        Ok(stored) => {
+            let human = format!("declared {}", crate::instrument::describe(&stored));
+            finish(json, true, serde_json::json!({ "success": true, "declared": stored }), human)
+        }
+        Err(e) => error_result(json, format!("declare-instrument failed: {e:#}")),
+    }
+}
+
+async fn list_instruments(core: &CoreClient, json: bool) -> i32 {
+    match core.instruments().await {
+        Ok(list) => {
+            let human = if list.is_empty() {
+                "no instruments declared".to_string()
+            } else {
+                list.iter().map(crate::instrument::describe).collect::<Vec<_>>().join("\n")
+            };
+            finish(json, true, serde_json::json!({ "success": true, "instruments": list }), human)
+        }
+        Err(e) => error_result(json, format!("list-instruments failed: {e:#}")),
+    }
+}
+
+async fn remove_instrument(core: &CoreClient, name: &str, json: bool) -> i32 {
+    match core.remove_instrument(name).await {
+        Ok(removed) => finish(
+            json,
+            true,
+            serde_json::json!({ "success": true, "removed": removed }),
+            if removed { format!("removed instrument {name}") } else { format!("no instrument was declared as {name}") },
+        ),
+        Err(e) => error_result(json, format!("remove-instrument failed: {e:#}")),
+    }
+}
+
+async fn instrument_exchange(
+    core: &CoreClient,
+    name: &str,
+    line: String,
+    query: bool,
+    timeout_ms: Option<u64>,
+    port_wait_ms: Option<u64>,
+    json: bool,
+) -> i32 {
+    let req = embarch_core_client::InstrumentExchange {
+        line,
+        query,
+        timeout_ms: timeout_ms.unwrap_or(embarch_core_client::INSTRUMENT_DEFAULT_TIMEOUT_MS),
+        port_wait_ms: port_wait_ms.unwrap_or(0),
+    };
+    match core.instrument_exchange(name, &req).await {
+        Ok(r) => {
+            // A query's reply, or a set's acknowledgement, is the answer; an unacknowledged set
+            // or a query with no whole reply line exits 1 (decision 97).
+            let ok = r.succeeded();
+            let human = match (r.query, r.ack) {
+                (true, _) if r.terminated => r.reply.clone(),
+                (true, _) => format!("no whole reply line from {name} (got '{}')", r.reply),
+                (false, None) => format!("sent '{}' to {name}", r.line),
+                (false, Some(ack)) => format!("{name} answered '{}' ({ack:?})", r.reply),
+            };
+            finish(json, ok, serde_json::json!({ "success": ok, "reply": r }), human)
+        }
+        Err(e) => error_result(json, format!("instrument-exchange failed: {e:#}")),
     }
 }
 
@@ -2281,7 +2384,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 47,
+            arms, 51,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."

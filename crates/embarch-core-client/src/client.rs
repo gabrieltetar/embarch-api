@@ -302,6 +302,17 @@ fn bootload_route_missing(status: reqwest::StatusCode, body: &str) -> Option<any
     })
 }
 
+/// The instrument routes' version of [`bootload_route_missing`]: a body-less
+/// `404` is a Core older than `embarch-core` decision 104.
+fn instrument_route_missing(status: reqwest::StatusCode, body: &str) -> Option<anyhow::Error> {
+    (status == reqwest::StatusCode::NOT_FOUND && body.trim().is_empty()).then(|| {
+        anyhow!(
+            "embarch-core returned 404 with no body: this Core predates bench instruments \
+             (embarch-core decision 104); deploy a newer one"
+        )
+    })
+}
+
 #[derive(Debug, Serialize)]
 struct ResetRequest<'a> {
     chip: &'a str,
@@ -654,8 +665,11 @@ impl std::error::Error for TopologyMismatchError {}
 // renaming every one of them is churn that buys nothing; a `*Response` suffix
 // is also still an honest name for "the shape `GET /alerts` returns".
 pub use embarch_topology::hardware::{
-    Alert, BootloadPorts, DetectedPort, EnrolledBoard, Route, SignalDirection, SignalLink, UsbPortId,
+    Ack, Alert, BootloadPorts, DetectedPort, EnrolledBoard, Instrument, InstrumentExchange, InstrumentProtocol, InstrumentReply,
+    Route, SignalDirection, SignalLink, UsbPortId,
 };
+/// The `timeout_ms` Core uses for an instrument command when none is sent (`embarch-topology` decision 49).
+pub use embarch_topology::hardware::instrument::DEFAULT_TIMEOUT_MS as INSTRUMENT_DEFAULT_TIMEOUT_MS;
 
 /// One entry from `GET /alerts`. Alias of
 /// [`embarch_topology::hardware::Alert`] — the type Core raises and serves,
@@ -2311,6 +2325,68 @@ impl CoreClient {
 
     /// `DELETE /bootload/ports`. `Ok(false)` when nothing was declared, the
     /// same distinction [`CoreClient::remove_signal`] keeps.
+    /// `PUT /instruments` — declares a bench instrument, or replaces the one
+    /// of the same name (`embarch-core` decision 104, `embarch-topology`
+    /// decision 49). Returns what Core stored. Reuses `status_timeout`: an
+    /// enrollment-file write, no hardware touched.
+    pub async fn declare_instrument(&self, inst: &Instrument) -> Result<Instrument> {
+        let url = format!("{}/instruments", self.base_url().await?);
+        let response = self.dispatch(self.client.put(url).json(inst), Some(self.status_timeout)).await?;
+        let status = response.status();
+        if status.is_success() {
+            return response.json().await.context("failed to parse embarch-core's response as JSON");
+        }
+        let body = response.text().await.unwrap_or_default();
+        Err(instrument_route_missing(status, &body).unwrap_or_else(|| anyhow!("embarch-core returned {status}: {body}")))
+    }
+
+    /// `GET /instruments` — every declared instrument; empty when none are.
+    pub async fn instruments(&self) -> Result<Vec<Instrument>> {
+        let url = format!("{}/instruments", self.base_url().await?);
+        let response = self.dispatch(self.client.get(url), Some(self.status_timeout)).await?;
+        let status = response.status();
+        if status.is_success() {
+            return response.json().await.context("failed to parse embarch-core's response as JSON");
+        }
+        let body = response.text().await.unwrap_or_default();
+        Err(instrument_route_missing(status, &body).unwrap_or_else(|| anyhow!("embarch-core returned {status}: {body}")))
+    }
+
+    /// `DELETE /instruments/{name}`. `Ok(false)` when nothing was declared
+    /// under it, the distinction [`CoreClient::remove_signal`] keeps.
+    pub async fn remove_instrument(&self, name: &str) -> Result<bool> {
+        let url = format!("{}/instruments/{}", self.base_url().await?, urlencode(name));
+        let response = self.dispatch(self.client.delete(url), Some(self.status_timeout)).await?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(true);
+        }
+        let body = response.text().await.unwrap_or_default();
+        if let Some(missing) = instrument_route_missing(status, &body) {
+            return Err(missing);
+        }
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+        Err(anyhow!("embarch-core returned {status}: {body}"))
+    }
+
+    /// `POST /instruments/{name}/exchange` — one command and its reply. The
+    /// request timeout is the serial one plus the port wait plus a second for
+    /// the flush line and the instrument's pacing, which come before the
+    /// command's own deadline on Core's side.
+    pub async fn instrument_exchange(&self, name: &str, req: &InstrumentExchange) -> Result<InstrumentReply> {
+        let url = format!("{}/instruments/{}/exchange", self.base_url().await?, urlencode(name));
+        let timeout = self.serial_timeout + Duration::from_millis(req.port_wait_ms + 1_000);
+        let response = self.dispatch(self.client.post(url).json(req), Some(timeout)).await?;
+        let status = response.status();
+        if status.is_success() {
+            return response.json().await.context("failed to parse embarch-core's response as JSON");
+        }
+        let body = response.text().await.unwrap_or_default();
+        Err(instrument_route_missing(status, &body).unwrap_or_else(|| anyhow!("embarch-core returned {status}: {body}")))
+    }
+
     pub async fn clear_bootload_ports(&self) -> Result<bool> {
         let url = format!("{}/bootload/ports", self.base_url().await?);
         let response = self.dispatch(self.client.delete(url), Some(self.status_timeout)).await?;

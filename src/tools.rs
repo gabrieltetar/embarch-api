@@ -305,6 +305,56 @@ pub struct DeclareBootloadPortsParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DeclareInstrumentParams {
+    /// What study steps and instrument_exchange call it: ASCII letters,
+    /// digits, `-`, `_`, `.`.
+    pub name: String,
+    /// Its USB serial identity, VID:PID or VID:PID:SERIAL in hex (e.g.
+    /// "1a86:7523" for a CH340 bridge, which has no USB serial).
+    pub port: String,
+    /// Which USB interface of that device.
+    pub interface: Option<u8>,
+    /// A known model's measured line facts: "et54" (ET54-series electronic
+    /// load: 9600 baud, LF out, CR LF back, 200 ms between commands, acks
+    /// "Rexecu success"/"Rexecu err"). Any field below overrides it.
+    pub preset: Option<String>,
+    /// Required without a preset.
+    pub baud: Option<u32>,
+    /// "lf", "cr" or "crlf"; default "lf".
+    pub write_terminator: Option<String>,
+    /// "lf", "cr" or "crlf"; default "crlf".
+    pub read_terminator: Option<String>,
+    /// The least time between two commands to it.
+    pub min_interval_ms: Option<u32>,
+    /// What a carried-out set answers. With it declared, every set's reply is
+    /// read and a set without it fails.
+    pub ack_ok: Option<String>,
+    /// What a refused set answers.
+    pub ack_err: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RemoveInstrumentParams {
+    pub name: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct InstrumentExchangeParams {
+    /// A declared instrument's name (see `list_instruments`).
+    pub name: String,
+    /// One command, without a terminator: the instrument's own is added.
+    pub line: String,
+    /// true for a query (its reply is returned); false for a set.
+    #[serde(default)]
+    pub query: bool,
+    /// Core's default is 2000.
+    pub timeout_ms: Option<u64>,
+    /// How long to wait for the instrument's port to appear (a bridge
+    /// powered by the instrument appears only once it is on).
+    pub port_wait_ms: Option<u64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SerialLogParams {
     /// PREFERRED: a declared signal's name (see `list_signals`). Core resolves
     /// its USB serial to the port's current name, reads at the signal's baud and
@@ -1323,6 +1373,61 @@ impl EmbarchApi {
         match self.core.clear_bootload_ports().await {
             Ok(removed) => Self::ok_json(serde_json::json!({ "removed": removed })),
             Err(e) => Self::err_text(format!("clear_bootload_ports failed: {e:#}")),
+        }
+    }
+
+    #[tool(description = "Declare a bench instrument Core drives over a USB serial line — an electronic load, a lab supply — via embarch-core's PUT /instruments (embarch-api decision 97, embarch-topology decision 49), or replace the one of the same name. port is VID:PID[:SERIAL] in hex; declared, never detected, so check list_serial_ports first. preset \"et54\" fills an ET54-series load's measured line facts; otherwise give baud, and terminators default to LF out and CR LF back. Declare ack_ok when the instrument acknowledges a set: every set is then checked and an unacknowledged one fails. Core refuses a second instrument one port could match together with the first: declare serials or interfaces that differ. Touches no hardware.")]
+    async fn declare_instrument(&self, Parameters(p): Parameters<DeclareInstrumentParams>) -> Result<CallToolResult, McpError> {
+        let args = crate::instrument::DeclareArgs {
+            name: &p.name,
+            port: &p.port,
+            interface: p.interface,
+            preset: p.preset.as_deref(),
+            baud: p.baud,
+            write_terminator: p.write_terminator.as_deref(),
+            read_terminator: p.read_terminator.as_deref(),
+            min_interval_ms: p.min_interval_ms,
+            ack_ok: p.ack_ok.as_deref(),
+            ack_err: p.ack_err.as_deref(),
+        };
+        let inst = match crate::instrument::build(&args) {
+            Ok(i) => i,
+            Err(e) => return Self::err_text(e),
+        };
+        match self.core.declare_instrument(&inst).await {
+            Ok(stored) => Self::ok_json(serde_json::json!({ "declared": stored })),
+            Err(e) => Self::err_text(format!("declare_instrument failed: {e:#}")),
+        }
+    }
+
+    #[tool(description = "List the declared bench instruments via embarch-core's GET /instruments, with each one's port identity, baud, terminators, pacing and acknowledgement strings. An empty list, not an error, when none are declared.")]
+    async fn list_instruments(&self) -> Result<CallToolResult, McpError> {
+        match self.core.instruments().await {
+            Ok(list) => Self::ok_json(serde_json::json!({ "instruments": list })),
+            Err(e) => Self::err_text(format!("list_instruments failed: {e:#}")),
+        }
+    }
+
+    #[tool(description = "Retract a declared bench instrument via embarch-core's DELETE /instruments/{name}. removed is false, not an error, when nothing was declared under the name.")]
+    async fn remove_instrument(&self, Parameters(p): Parameters<RemoveInstrumentParams>) -> Result<CallToolResult, McpError> {
+        match self.core.remove_instrument(&p.name).await {
+            Ok(removed) => Self::ok_json(serde_json::json!({ "removed": removed })),
+            Err(e) => Self::err_text(format!("remove_instrument failed: {e:#}")),
+        }
+    }
+
+    #[tool(description = "Send one SCPI command to a declared bench instrument via embarch-core's POST /instruments/{name}/exchange (embarch-core decision 104) and return its reply raw — the instrument's own prefix kept, nothing parsed. Core opens the port, sends an empty line first and keeps its answer apart as flush_reply (a parser holding a partial line answers the next command as an error), honours the instrument's min_interval_ms, sends the line with the declared terminator, and reads one reply line for a query, or for a set when ack_ok is declared. query=true returns reply and terminated (a whole line came back). A set returns ack: ok, refused or unacknowledged; unacknowledged means the instrument did not confirm it, so treat the action as not carried out. Refused 409 while a study holds the bench or when the port is not enumerated (port_wait_ms waits for it). A command can change the instrument's state — switch a load on, lock its front panel — so send only what the person you are working for asked for.")]
+    async fn instrument_exchange(&self, Parameters(p): Parameters<InstrumentExchangeParams>) -> Result<CallToolResult, McpError> {
+        let req = embarch_core_client::InstrumentExchange {
+            line: p.line,
+            query: p.query,
+            timeout_ms: p.timeout_ms.unwrap_or(embarch_core_client::INSTRUMENT_DEFAULT_TIMEOUT_MS),
+            port_wait_ms: p.port_wait_ms.unwrap_or(0),
+        };
+        match self.core.instrument_exchange(&p.name, &req).await {
+            Ok(r) if r.succeeded() => Self::ok_json(serde_json::json!({ "reply": r })),
+            Ok(r) => Self::err_json(serde_json::json!({ "reply": r })),
+            Err(e) => Self::err_text(format!("instrument_exchange failed: {e:#}")),
         }
     }
 

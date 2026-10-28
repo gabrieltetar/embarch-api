@@ -147,6 +147,22 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.declare_bootload_ports(None, &boot_id).await;
     let _ = client.bootload_ports().await;
     let _ = client.clear_bootload_ports().await;
+    let eload = embarch_core_client::Instrument {
+        name: "eload".into(),
+        protocol: Default::default(),
+        port: "1a86:7523".parse().unwrap(),
+        baud: 9600,
+        write_terminator: "\n".into(),
+        read_terminator: "\r\n".into(),
+        min_interval_ms: 200,
+        ack_ok: None,
+        ack_err: None,
+    };
+    let _ = client.declare_instrument(&eload).await;
+    let _ = client.instruments().await;
+    let _ = client.remove_instrument("eload").await;
+    let idn = embarch_core_client::InstrumentExchange { line: "*IDN?".into(), query: true, timeout_ms: 500, port_wait_ms: 0 };
+    let _ = client.instrument_exchange("eload", &idn).await;
     let _ = client.lease_take("sweep", Some("sweep"), 60).await;
     let _ = client.lease_renew(None).await;
     let _ = client.lease_release().await;
@@ -235,6 +251,10 @@ async fn every_outbound_call_carries_the_bearer_token() {
         ("PUT", "/bootload/ports"),
         ("GET", "/bootload/ports"),
         ("DELETE", "/bootload/ports"),
+        ("PUT", "/instruments"),
+        ("GET", "/instruments"),
+        ("DELETE", "/instruments/eload"),
+        ("POST", "/instruments/eload/exchange"),
         ("POST", "/lease"),
         ("PUT", "/lease"),
         ("DELETE", "/lease"),
