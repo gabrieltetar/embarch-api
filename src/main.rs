@@ -501,9 +501,14 @@ pub enum Commands {
     /// is a distinct condition, reported with its own lead and no
     /// fix_it_url (`embarch-core` decision 59, `embarch-api` decision 76).
     Validate {
-        /// The enrollment role to re-check (e.g. "dev-bench").
+        /// The enrollment role to re-check (e.g. "dev-bench"). Give this or
+        /// --probe-serial.
         #[arg(long)]
-        role: String,
+        role: Option<String>,
+        /// Re-check the board enrolled on this probe instead: any enrolled
+        /// board, a role-less bench board included (`embarch-api` decision 95).
+        #[arg(long, conflicts_with = "role")]
+        probe_serial: Option<String>,
     },
     /// List the most recent topology-mismatch alerts from embarch-core's
     /// durable log (`embarch-core` decision 28).
@@ -531,9 +536,14 @@ pub enum Commands {
         /// table.
         #[arg(long)]
         name: String,
-        /// The enrollment role the signal comes out of (e.g. "dut").
+        /// The enrollment role the signal comes out of (e.g. "dut"). Give
+        /// this or --origin-board.
         #[arg(long)]
-        origin_role: String,
+        origin_role: Option<String>,
+        /// The role-less bench board the signal comes out of instead, by its
+        /// enrolled name or probe serial (`embarch-topology` decision 48).
+        #[arg(long, conflicts_with = "origin_role")]
+        origin_board: Option<String>,
         /// dut-to-host, host-to-dut, or bidirectional.
         #[arg(long)]
         direction: String,
@@ -679,18 +689,27 @@ pub enum Commands {
         /// ranges, 256 words in all).
         #[arg(long = "range", required = true)]
         ranges: Vec<String>,
-        /// The enrolled role to read from.
-        #[arg(long, default_value = "dut")]
-        role: String,
+        /// The enrolled role to read from; dut when neither this nor
+        /// --probe-serial is given.
+        #[arg(long)]
+        role: Option<String>,
+        /// Read the board enrolled on this probe instead, a bench board
+        /// included (`embarch-api` decision 95).
+        #[arg(long, conflicts_with = "role")]
+        probe_serial: Option<String>,
     },
     /// Where a core is, read-only, via embarch-core (`embarch-core` decision
     /// 97). Never halts unless --halt: reads DHCSR and DWT_PCSR samples; with
     /// --halt it stops the core once (counted in halt_count), reads its
     /// registers and puts it back as found.
     CoreState {
-        /// The enrolled role to read from.
-        #[arg(long, default_value = "dut")]
-        role: String,
+        /// The enrolled role to read from; dut when neither this nor
+        /// --probe-serial is given.
+        #[arg(long)]
+        role: Option<String>,
+        /// As mem-read's --probe-serial (`embarch-api` decision 95).
+        #[arg(long, conflicts_with = "role")]
+        probe_serial: Option<String>,
         /// Halt the core once to read R0-R12, SP, LR, PC, xPSR, CONTROL,
         /// PRIMASK and SCB_ICSR; it is left as found.
         #[arg(long)]

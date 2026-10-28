@@ -101,6 +101,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let signal = SignalLink {
         name: "outpost".to_string(),
         origin_role: "dut".to_string(),
+        origin_board: None,
         direction: SignalDirection::DutToHost,
         route: SignalRoute::Direct {
             port_serial: "MOCK-BRIDGE-0001".to_string(),
@@ -118,7 +119,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.logs_recent(5).await;
     let _ = client.dev_bench_port().await;
     let _ = client.dev_bench_hello().await;
-    let _ = client.validate("dut").await;
+    let _ = client.validate_board(embarch_core_client::Board::Probe("0671FF")).await;
     let _ = client.reset("nRF52840_xxAA", None).await;
     let _ = client.enroll_probe("dut", "nRF52840_xxAA", None, Some("client-nucleo")).await;
     let _ = client.unenroll_probe("dut").await;
@@ -133,8 +134,8 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.signal_capture_start("console", Some(30), None).await;
     let _ = client.signal_capture_read("console", Some(0), None, None).await;
     let _ = client.signal_capture_stop("console", None, None, None).await;
-    let _ = client.mem_read("dut", &[(0x4002_103C, 1)]).await;
-    let _ = client.core_state("dut", true, 8).await;
+    let _ = client.mem_read_board(embarch_core_client::Board::Probe("0671FF"), &[(0x2000_0000, 1)]).await;
+    let _ = client.core_state_board(embarch_core_client::Board::Probe("0671FF"), false, 8).await;
     let _ = client.set_dev_bench_link(Some("MOCK-BRIDGE-0001"), Some(2)).await;
     // `bootload` reads its image off disk before it sends anything, so it
     // needs one to exist; the bytes themselves never matter to the mock.
@@ -825,6 +826,7 @@ async fn a_no_content_endpoint_surfaces_its_plain_text_error_too() {
         .declare_signal(&SignalLink {
             name: "outpost".to_string(),
             origin_role: "dut".to_string(),
+            origin_board: None,
             direction: SignalDirection::DutToHost,
             route: SignalRoute::ViaDevBench {
                 rx_pin: "P1.04".to_string(),

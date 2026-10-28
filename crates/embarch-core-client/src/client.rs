@@ -424,7 +424,54 @@ impl EnrollProbeResponse {
 /// mid-attach, callable on its own without touching hardware otherwise.
 #[derive(Debug, Serialize)]
 struct ValidateRequest<'a> {
-    role: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    probe_serial: Option<&'a str>,
+}
+
+/// Which enrolled board a validate or a live read reaches (`embarch-api`
+/// decision 95, `embarch-core` decision 103): the board holding a role, or any
+/// enrolled board by its probe serial, a role-less bench board included
+/// (`embarch-topology` decision 41). Sent as exactly one of `role` and
+/// `probe_serial`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Board<'a> {
+    Role(&'a str),
+    Probe(&'a str),
+}
+
+impl<'a> Board<'a> {
+    fn role(self) -> Option<&'a str> {
+        match self {
+            Board::Role(role) => Some(role),
+            Board::Probe(_) => None,
+        }
+    }
+
+    fn probe_serial(self) -> Option<&'a str> {
+        match self {
+            Board::Probe(probe) => Some(probe),
+            Board::Role(_) => None,
+        }
+    }
+
+    /// A Core older than decision 103 ignores `probe_serial` and reads the
+    /// DUT, its default role. The answer names the probe it read through, so
+    /// a by-probe read that came back from another probe is refused here
+    /// rather than handed on as the bench board's.
+    fn check_answered(self, answered_probe: &str) -> Result<()> {
+        if let Board::Probe(asked) = self {
+            if answered_probe != asked {
+                anyhow::bail!(
+                    "asked Core to read through probe '{asked}' and it answered from probe \
+                     '{answered_probe}': this Core predates reading a board by probe serial \
+                     (embarch-core decision 103) and fell back to the DUT; upgrade Core"
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1211,7 +1258,10 @@ struct MemReadRange {
 
 #[derive(Debug, Serialize)]
 struct MemReadRequest<'a> {
-    role: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    probe_serial: Option<&'a str>,
     ranges: Vec<MemReadRange>,
 }
 
@@ -1257,7 +1307,10 @@ pub enum RunState {
 
 #[derive(Debug, Serialize)]
 struct CoreStateRequest<'a> {
-    role: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    probe_serial: Option<&'a str>,
     halt: bool,
     samples: u32,
 }
@@ -2376,10 +2429,17 @@ impl CoreClient {
     /// above: one probe attach plus a couple of memory reads, not a
     /// multi-second flash.
     pub async fn validate(&self, role: &str) -> Result<ValidateResponse> {
+        self.validate_board(Board::Role(role)).await
+    }
+
+    /// [`Self::validate`] on a board named by role or by probe serial
+    /// (`embarch-api` decision 95). A Core older than `embarch-core` decision
+    /// 103 refuses a body with no `role`, so the by-probe form fails loudly there.
+    pub async fn validate_board(&self, board: Board<'_>) -> Result<ValidateResponse> {
         let url = format!("{}/validate", self.base_url().await?);
         let response = self
             .dispatch(
-                self.client.post(url).json(&ValidateRequest { role }),
+                self.client.post(url).json(&ValidateRequest { role: board.role(), probe_serial: board.probe_serial() }),
                 Some(self.reset_timeout),
             )
             .await?;
@@ -2819,7 +2879,23 @@ impl CoreClient {
     pub async fn declare_signal(&self, link: &SignalLink) -> Result<()> {
         let url = format!("{}/signals", self.base_url().await?);
         self.send_no_content(self.client.post(url).json(link), self.status_timeout)
-            .await
+            .await?;
+        // A Core older than `embarch-topology` decision 48 ignores
+        // `origin_board` and stores the signal with an empty role, answering
+        // 204 all the same. Read the row back so that is an error, not a
+        // signal that silently leaves no board (`embarch-api` decision 95).
+        if link.origin_board.is_some() {
+            let stored = self.list_signals().await?.into_iter().find(|s| s.name == link.name);
+            if stored.as_ref().and_then(|s| s.origin_board.as_ref()).is_none() {
+                anyhow::bail!(
+                    "Core stored signal '{}' without its board origin: this Core predates a signal \
+                     leaving a bench board (embarch-topology decision 48) and kept an empty role; \
+                     remove it (remove_signal) and upgrade Core",
+                    link.name
+                );
+            }
+        }
+        Ok(())
     }
 
     /// `GET /signals` — every declared signal link.
@@ -2944,18 +3020,36 @@ impl CoreClient {
     /// again (`embarch-core` decision 81). Reuses `reset_timeout`: an
     /// identity check and an attach, like `/reset`.
     pub async fn mem_read(&self, role: &str, ranges: &[(u64, u32)]) -> Result<MemReadResponse> {
+        self.mem_read_board(Board::Role(role), ranges).await
+    }
+
+    /// [`Self::mem_read`] on a board named by role or by probe serial
+    /// (`embarch-api` decision 95); a by-probe answer from another probe is
+    /// refused ([`Board`]).
+    pub async fn mem_read_board(&self, board: Board<'_>, ranges: &[(u64, u32)]) -> Result<MemReadResponse> {
         let url = format!("{}/live/mem-read", self.base_url().await?);
         let ranges = ranges.iter().map(|&(address, words)| MemReadRange { address, words }).collect();
-        let body = MemReadRequest { role, ranges };
-        self.send(self.client.post(url).json(&body), self.reset_timeout).await
+        let body = MemReadRequest { role: board.role(), probe_serial: board.probe_serial(), ranges };
+        let resp: MemReadResponse = self.send(self.client.post(url).json(&body), self.reset_timeout).await?;
+        board.check_answered(&resp.probe_serial)?;
+        Ok(resp)
     }
 
     /// `POST /live/core-state` — where the core of the target enrolled under
     /// `role` is, read-only (`embarch-core` decision 97). Never halts unless
     /// `halt`. Reuses `reset_timeout`: an identity check and an attach.
     pub async fn core_state(&self, role: &str, halt: bool, samples: u32) -> Result<CoreStateResponse> {
+        self.core_state_board(Board::Role(role), halt, samples).await
+    }
+
+    /// [`Self::core_state`] on a board named by role or by probe serial
+    /// (`embarch-api` decision 95), checked as [`Self::mem_read_board`] is.
+    pub async fn core_state_board(&self, board: Board<'_>, halt: bool, samples: u32) -> Result<CoreStateResponse> {
         let url = format!("{}/live/core-state", self.base_url().await?);
-        self.send(self.client.post(url).json(&CoreStateRequest { role, halt, samples }), self.reset_timeout).await
+        let body = CoreStateRequest { role: board.role(), probe_serial: board.probe_serial(), halt, samples };
+        let resp: CoreStateResponse = self.send(self.client.post(url).json(&body), self.reset_timeout).await?;
+        board.check_answered(&resp.probe_serial)?;
+        Ok(resp)
     }
 
     /// `POST /dev-bench/link` — declares dev-bench's runtime-link USB
@@ -3235,6 +3329,7 @@ mod tests {
         SignalLink {
             name: "outpost".to_string(),
             origin_role: "dut".to_string(),
+            origin_board: None,
             direction: SignalDirection::DutToHost,
             route: SignalRoute::Direct { port_serial: "ABC123".to_string(), interface: None },
             baud: None,
@@ -3531,6 +3626,7 @@ mod tests {
         let link = SignalLink {
             name: "outpost".to_string(),
             origin_role: "dut".to_string(),
+            origin_board: None,
             direction: SignalDirection::DutToHost,
             route: SignalRoute::ViaDevBench { rx_pin: "P0.04".to_string(), tx_pin: "P0.05".to_string() },
             baud: None,

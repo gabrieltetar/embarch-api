@@ -130,12 +130,16 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
             (Some(role), None) => unenroll_probe(&core, &role, json).await,
             (None, None) => error_result(json, "unenroll-probe needs --role or --probe-serial".to_string()),
         },
-        Commands::Validate { role } => validate(&core, &role, json).await,
+        Commands::Validate { role, probe_serial } => match crate::tools::board_of(&role, &probe_serial, None) {
+            Ok(board) => validate(&core, board, json).await,
+            Err(e) => error_result(json, format!("validate: {e}")),
+        },
         Commands::Alerts { limit } => alerts(&core, limit, json).await,
         Commands::ListSerialPorts => serial_ports(&core, json).await,
         Commands::DeclareSignal {
             name,
             origin_role,
+            origin_board,
             direction,
             route_kind,
             port_serial,
@@ -143,7 +147,7 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
             rx_pin,
             tx_pin,
             baud,
-        } => declare_signal(&core, name, origin_role, &direction, &route_kind, port_serial, interface, rx_pin, tx_pin, baud, json).await,
+        } => declare_signal(&core, name, origin_role, origin_board, &direction, &route_kind, port_serial, interface, rx_pin, tx_pin, baud, json).await,
         Commands::SignalExchange { name, write, until, timeout_ms, no_newline, port_wait_ms, match_after_echo, clean } => {
             signal_exchange(&core, &name, &write, until.as_deref(), timeout_ms, port_wait_ms, match_after_echo, !no_newline, clean, json).await
         }
@@ -162,8 +166,14 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         Commands::BenchExchange { steps, listen, tail_ms, filters, snapshot, project, poll_ms } => {
             bench_exchange(&core, &config, steps, listen, tail_ms, filters, snapshot, project, poll_ms, json).await
         }
-        Commands::MemRead { ranges, role } => mem_read(&core, &role, &ranges, json).await,
-        Commands::CoreState { role, halt, samples } => core_state(&core, &role, halt, samples, json).await,
+        Commands::MemRead { ranges, role, probe_serial } => match crate::tools::board_of(&role, &probe_serial, Some("dut")) {
+            Ok(board) => mem_read(&core, board, &ranges, json).await,
+            Err(e) => error_result(json, format!("mem-read: {e}")),
+        },
+        Commands::CoreState { role, probe_serial, halt, samples } => match crate::tools::board_of(&role, &probe_serial, Some("dut")) {
+            Ok(board) => core_state(&core, board, halt, samples, json).await,
+            Err(e) => error_result(json, format!("core-state: {e}")),
+        },
         Commands::ListSignals => list_signals(&core, json).await,
         Commands::RemoveSignal { name } => remove_signal(&core, &name, json).await,
         Commands::DevBenchLink { serial, interface } => {
@@ -1054,8 +1064,8 @@ async fn unenroll_by_probe(core: &CoreClient, serial: &str, json: bool) -> i32 {
     }
 }
 
-async fn validate(core: &CoreClient, role: &str, json: bool) -> i32 {
-    match core.validate(role).await {
+async fn validate(core: &CoreClient, board: embarch_core_client::Board<'_>, json: bool) -> i32 {
+    match core.validate_board(board).await {
         Ok(resp) => {
             // `validated_at_utc_ms` is `None` from a Core older than
             // `tasks/core/026` (`embarch-api` decision 58) — never reported,
@@ -1235,7 +1245,8 @@ async fn serial_ports(core: &CoreClient, json: bool) -> i32 {
 async fn declare_signal(
     core: &CoreClient,
     name: String,
-    origin_role: String,
+    origin_role: Option<String>,
+    origin_board: Option<String>,
     direction: &str,
     route_kind: &str,
     port_serial: Option<String>,
@@ -1245,7 +1256,7 @@ async fn declare_signal(
     baud: Option<u32>,
     json: bool,
 ) -> i32 {
-    let link = match crate::tools::parse_signal_link(name, origin_role, direction, route_kind, port_serial, interface, rx_pin, tx_pin, baud) {
+    let link = match crate::tools::parse_signal_link(name, origin_role, origin_board, direction, route_kind, port_serial, interface, rx_pin, tx_pin, baud) {
         Ok(l) => l,
         Err(e) => return error_result(json, e),
     };
@@ -1493,12 +1504,12 @@ fn strip_escapes(text: &str) -> String {
     out
 }
 
-async fn mem_read(core: &CoreClient, role: &str, ranges: &[String], json: bool) -> i32 {
+async fn mem_read(core: &CoreClient, board: embarch_core_client::Board<'_>, ranges: &[String], json: bool) -> i32 {
     let ranges = match ranges.iter().map(|r| crate::tools::parse_range(r)).collect::<Result<Vec<_>, _>>() {
         Ok(r) => r,
         Err(e) => return error_result(json, e),
     };
-    match core.mem_read(role, &ranges).await {
+    match core.mem_read_board(board, &ranges).await {
         Ok(resp) => {
             let text = crate::tools::mem_read_text(&resp);
             finish(json, true, serde_json::json!({ "success": true, "read": resp }), text)
@@ -1507,8 +1518,8 @@ async fn mem_read(core: &CoreClient, role: &str, ranges: &[String], json: bool) 
     }
 }
 
-async fn core_state(core: &CoreClient, role: &str, halt: bool, samples: u32, json: bool) -> i32 {
-    match core.core_state(role, halt, samples).await {
+async fn core_state(core: &CoreClient, board: embarch_core_client::Board<'_>, halt: bool, samples: u32, json: bool) -> i32 {
+    match core.core_state_board(board, halt, samples).await {
         Ok(resp) => {
             let text = crate::tools::core_state_text(&resp);
             finish(json, true, serde_json::json!({ "success": true, "state": resp }), text)

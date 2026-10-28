@@ -554,8 +554,14 @@ pub struct EnrollProbeParams {
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ValidateParams {
     /// The enrollment role to re-check (e.g. "dev-bench" or a project's own
-    /// DUT role) — matches `enroll_probe`'s own `role`.
-    pub role: String,
+    /// DUT role) — matches `enroll_probe`'s own `role`. Give this or
+    /// probe_serial, not both.
+    #[serde(default)]
+    pub role: Option<String>,
+    /// Re-check the board enrolled on this probe instead — any enrolled
+    /// board, a role-less bench board included (embarch-api decision 95).
+    #[serde(default)]
+    pub probe_serial: Option<String>,
 }
 
 /// `embarch-core` decision 28's `GET /alerts`.
@@ -581,8 +587,15 @@ pub struct DeclareSignalParams {
     /// different carrier.
     pub name: String,
     /// The enrollment role the signal comes out of — "dut" for the
-    /// outpost's UART.
-    pub origin_role: String,
+    /// outpost's UART. Give this or origin_board, not both.
+    #[serde(default)]
+    pub origin_role: Option<String>,
+    /// The role-less bench board the signal comes out of instead, by its
+    /// enrolled name or probe serial; Core stores the probe serial and refuses
+    /// a board that is not enrolled or holds a role (embarch-topology decision
+    /// 48, embarch-api decision 95).
+    #[serde(default)]
+    pub origin_board: Option<String>,
     /// Which way the signal travels: "dut-to-host", "host-to-dut", or
     /// "bidirectional". The outpost is dut-to-host.
     pub direction: String,
@@ -700,6 +713,10 @@ pub struct MemReadParams {
     /// The enrolled role to read from; default "dut".
     #[serde(default)]
     pub role: Option<String>,
+    /// Read the board enrolled on this probe instead of a role's — any
+    /// enrolled board, a bench board included (embarch-api decision 95).
+    #[serde(default)]
+    pub probe_serial: Option<String>,
 }
 
 /// `embarch-core` decision 97's `POST /live/core-state`.
@@ -708,6 +725,9 @@ pub struct CoreStateParams {
     /// The enrolled role to read from; default "dut".
     #[serde(default)]
     pub role: Option<String>,
+    /// As mem_read's probe_serial (embarch-api decision 95).
+    #[serde(default)]
+    pub probe_serial: Option<String>,
     /// Stop the core once and read R0-R12, SP, LR, PC, xPSR, CONTROL, PRIMASK
     /// and SCB_ICSR, then put it back as found. Default false: never halts.
     #[serde(default)]
@@ -715,6 +735,24 @@ pub struct CoreStateParams {
     /// DWT_PCSR samples taken 1 ms apart when not halting, 1 to 64; default 8.
     #[serde(default)]
     pub samples: Option<u32>,
+}
+
+/// The board a validate, mem_read or core_state call names (embarch-api
+/// decision 95): `role` or `probe_serial`, never both; `default_role` when
+/// neither (mem_read and core_state default to the DUT, validate has none).
+pub(crate) fn board_of<'a>(
+    role: &'a Option<String>,
+    probe_serial: &'a Option<String>,
+    default_role: Option<&'a str>,
+) -> Result<embarch_core_client::Board<'a>, String> {
+    use embarch_core_client::Board;
+    match (role.as_deref(), probe_serial.as_deref(), default_role) {
+        (Some(_), Some(_), _) => Err("give role or probe_serial, not both".to_string()),
+        (None, Some(probe), _) => Ok(Board::Probe(probe)),
+        (Some(role), None, _) => Ok(Board::Role(role)),
+        (None, None, Some(role)) => Ok(Board::Role(role)),
+        (None, None, None) => Err("give role or probe_serial".to_string()),
+    }
 }
 
 /// A number as a caller writes it: `0x`-prefixed hex, or decimal.
@@ -889,7 +927,8 @@ pub struct DevBenchLinkParams {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn parse_signal_link(
     name: String,
-    origin_role: String,
+    origin_role: Option<String>,
+    origin_board: Option<String>,
     direction: &str,
     route_kind: &str,
     port_serial: Option<String>,
@@ -941,7 +980,13 @@ pub(crate) fn parse_signal_link(
     if baud == Some(0) {
         return Err("baud 0 is not a line rate: leave it out for Core's default".to_string());
     }
-    Ok(SignalLink { name, origin_role, direction, route, baud })
+    let origin_role = match (origin_role, &origin_board) {
+        (Some(_), Some(_)) => return Err("give origin_role or origin_board, not both".to_string()),
+        (None, None) => return Err("give origin_role (e.g. \"dut\") or origin_board (a bench board's name or probe serial)".to_string()),
+        (Some(role), None) => role,
+        (None, Some(_)) => String::new(),
+    };
+    Ok(SignalLink { name, origin_role, origin_board, direction, route, baud })
 }
 
 #[tool_router]
@@ -1495,12 +1540,16 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Explicit, non-destructive re-check of an already-enrolled board's live identity via embarch-core's POST /validate (embarch-core decision 28) — the same check flash/reset/run_study already run mid-attach, callable on its own without touching hardware otherwise. On a match, returns the enrolled board's fields, including two distinct timestamps: confirmed_at_utc_ms is enrolment time and does not move on a re-check, validated_at_utc_ms is when this call's live check passed (embarch-topology decision 26) — read the latter for freshness, not the former, when it is present. validated_at_utc_ms is null against a Core older than the one that added it (embarch-api decision 58): null means this Core did not report a live-check time, not that the check happened at an unknown time. On a genuine topology mismatch (the attached chip no longer matches what was recorded), returns an error naming both the recorded and live hardware IDs plus a fix_it_url pointing at embarch-ui's Topology tab — relayed as text, never auto-opened (embarch-topology decision 12: opening/focusing the UI is the caller's job). On a probe that is unavailable — not found, or found but unable to open, power-check, attach, core-select, or read a hardware ID from — returns a distinctly-worded error with no fix_it_url; the error's own text names which of those applies (embarch-core decision 59, embarch-api decision 76). Against a Core old enough to predate that field entirely, returns a third, distinctly-worded error saying the condition is unclassifiable rather than guessing — also with no fix_it_url, since that link is not offered on an answer this client could not classify (embarch-api decision 73). On no board enrolled under role yet, returns a plain not-enrolled error.")]
+    #[tool(description = "Explicit, non-destructive re-check of an already-enrolled board's live identity via embarch-core's POST /validate (embarch-core decision 28) — the same check flash/reset/run_study already run mid-attach, callable on its own without touching hardware otherwise. On a match, returns the enrolled board's fields, including two distinct timestamps: confirmed_at_utc_ms is enrolment time and does not move on a re-check, validated_at_utc_ms is when this call's live check passed (embarch-topology decision 26) — read the latter for freshness, not the former, when it is present. validated_at_utc_ms is null against a Core older than the one that added it (embarch-api decision 58): null means this Core did not report a live-check time, not that the check happened at an unknown time. On a genuine topology mismatch (the attached chip no longer matches what was recorded), returns an error naming both the recorded and live hardware IDs plus a fix_it_url pointing at embarch-ui's Topology tab — relayed as text, never auto-opened (embarch-topology decision 12: opening/focusing the UI is the caller's job). On a probe that is unavailable — not found, or found but unable to open, power-check, attach, core-select, or read a hardware ID from — returns a distinctly-worded error with no fix_it_url; the error's own text names which of those applies (embarch-core decision 59, embarch-api decision 76). Against a Core old enough to predate that field entirely, returns a third, distinctly-worded error saying the condition is unclassifiable rather than guessing — also with no fix_it_url, since that link is not offered on an answer this client could not classify (embarch-api decision 73). On no board enrolled under role yet, returns a plain not-enrolled error. Name the board by role, or by probe_serial for any enrolled board, a role-less bench board included (embarch-api decision 95), not both.")]
     async fn validate(
         &self,
-        Parameters(ValidateParams { role }): Parameters<ValidateParams>,
+        Parameters(ValidateParams { role, probe_serial }): Parameters<ValidateParams>,
     ) -> Result<CallToolResult, McpError> {
-        match self.core.validate(&role).await {
+        let board = match board_of(&role, &probe_serial, None) {
+            Ok(b) => b,
+            Err(e) => return Self::err_text(e),
+        };
+        match self.core.validate_board(board).await {
             Ok(resp) => Self::ok_json(serde_json::json!({
                 "ok": true,
                 "role": resp.role,
@@ -1598,12 +1647,13 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Declare (or re-declare) where a named DUT signal currently goes, via embarch-core's POST /signals (embarch-topology decision 18, wrapped per embarch-api decision 67). Idempotent by name: re-declaring an existing name overwrites it, which is the migration path for moving a signal from a Direct route (straight to a serial port, port_serial from list_serial_ports) onto dev-bench pins (via-dev-bench, rx_pin/tx_pin) or back — no saved Study changes, since a study names the signal and never its carrier. direction is one of dut-to-host, host-to-dut, bidirectional. route_kind is direct (needs port_serial) or via-dev-bench (needs rx_pin and tx_pin). interface, direct only, names the USB interface carrying the signal when port_serial's device exposes several serial ports under one serial (list_serial_ports shows each); without it Core refuses that device as ambiguous rather than guess. baud sets the signal's own line rate (e.g. 115200 for a DUT console); without it Core uses its default.")]
+    #[tool(description = "Declare (or re-declare) where a named DUT signal currently goes, via embarch-core's POST /signals (embarch-topology decision 18, wrapped per embarch-api decision 67). Idempotent by name: re-declaring an existing name overwrites it, which is the migration path for moving a signal from a Direct route (straight to a serial port, port_serial from list_serial_ports) onto dev-bench pins (via-dev-bench, rx_pin/tx_pin) or back — no saved Study changes, since a study names the signal and never its carrier. direction is one of dut-to-host, host-to-dut, bidirectional. route_kind is direct (needs port_serial) or via-dev-bench (needs rx_pin and tx_pin). interface, direct only, names the USB interface carrying the signal when port_serial's device exposes several serial ports under one serial (list_serial_ports shows each); without it Core refuses that device as ambiguous rather than guess. baud sets the signal's own line rate (e.g. 115200 for a DUT console); without it Core uses its default. The signal comes out of origin_role (a role, e.g. dut) or origin_board (a role-less bench board, by its enrolled name or probe serial; Core resolves it to the probe serial and refuses a board that is not enrolled or holds a role), exactly one; a reset or core-state read resolved from the signal then reaches that board.")]
     async fn declare_signal(
         &self,
         Parameters(DeclareSignalParams {
             name,
             origin_role,
+            origin_board,
             direction,
             route_kind,
             port_serial,
@@ -1613,7 +1663,7 @@ impl EmbarchApi {
             baud,
         }): Parameters<DeclareSignalParams>,
     ) -> Result<CallToolResult, McpError> {
-        let link = match parse_signal_link(name, origin_role, &direction, &route_kind, port_serial, interface, rx_pin, tx_pin, baud) {
+        let link = match parse_signal_link(name, origin_role, origin_board, &direction, &route_kind, port_serial, interface, rx_pin, tx_pin, baud) {
             Ok(l) => l,
             Err(e) => return Self::err_text(e),
         };
@@ -1693,14 +1743,17 @@ impl EmbarchApi {
     #[tool(description = "Read 32-bit words of an enrolled target's memory over its debug probe, via embarch-core's POST /live/mem-read (embarch-core decision 81). `ranges` are \"ADDRESS\" or \"ADDRESS:WORDS\" strings, all read under one halt of a running core, which is then let run again: on an STM32G0 sleeping in WFI a running read returns 0 or a stale word, and a halted one is always good. The answer gives the words, `found` and `left` (running|halted: the core's state when the request arrived and when it returned), `halt_count` (every halt the request made, the identity gate's included) and `halted_us` (this read's own halt, microseconds). `halted` is deprecated (removed after 2026-11-30) and `halted: false` means the core was ALREADY halted, never that it was running: read `found`/`left`. Read-only: nothing is written but the halt and the resume. Raw words only; the atlas's reg_read decodes a register by name. Goes through the same board-identity gate as flash and reset.")]
     async fn mem_read(
         &self,
-        Parameters(MemReadParams { ranges, role }): Parameters<MemReadParams>,
+        Parameters(MemReadParams { ranges, role, probe_serial }): Parameters<MemReadParams>,
     ) -> Result<CallToolResult, McpError> {
         let ranges = match ranges.iter().map(|r| parse_range(r)).collect::<Result<Vec<_>, _>>() {
             Ok(r) => r,
             Err(e) => return Self::err_text(e),
         };
-        let role = role.unwrap_or_else(|| "dut".to_string());
-        match self.core.mem_read(&role, &ranges).await {
+        let board = match board_of(&role, &probe_serial, Some("dut")) {
+            Ok(b) => b,
+            Err(e) => return Self::err_text(e),
+        };
+        match self.core.mem_read_board(board, &ranges).await {
             Ok(resp) => Self::ok_json(serde_json::json!(resp)),
             Err(e) => Self::err_text(format!("mem_read failed: {e:#}")),
         }
@@ -1709,10 +1762,13 @@ impl EmbarchApi {
     #[tool(description = "Where a core is, read-only, over its debug probe, via embarch-core's POST /live/core-state (embarch-core decision 97). Default (`halt` false) NEVER halts: it reads DHCSR (halt, sleep, lockup, retire, reset), then `samples` DWT_PCSR program-counter samples 1 ms apart, then DHCSR again, so `dhcsr_after.s_retire_st` says whether instructions retired; a null sample is one the core withheld (asleep). Use it on a hung board: a PC that never moves with no retire is a hang, a PC inside the idle loop is not. `halt=true` HALTS the core once (the halt is counted in `halt_count`, and `halted_us` is how long), reads R0-R12, SP, LR, PC, xPSR, CONTROL, PRIMASK and SCB_ICSR (decoded), then puts it back as found; a core found halted is read and left halted, never resumed. Every answer carries `found`/`left` (running|halted) and `halt_count`, which counts every halt the request made including the identity gate's own (assumed, not measured: Core mirrors topology's STM32G0 halt by chip prefix), so a non-halting call on a running STM32G0 still reports 1. Goes through the same board-identity gate as flash and reset.")]
     async fn core_state(
         &self,
-        Parameters(CoreStateParams { role, halt, samples }): Parameters<CoreStateParams>,
+        Parameters(CoreStateParams { role, probe_serial, halt, samples }): Parameters<CoreStateParams>,
     ) -> Result<CallToolResult, McpError> {
-        let role = role.unwrap_or_else(|| "dut".to_string());
-        match self.core.core_state(&role, halt.unwrap_or(false), samples.unwrap_or(8)).await {
+        let board = match board_of(&role, &probe_serial, Some("dut")) {
+            Ok(b) => b,
+            Err(e) => return Self::err_text(e),
+        };
+        match self.core.core_state_board(board, halt.unwrap_or(false), samples.unwrap_or(8)).await {
             Ok(resp) => Self::ok_json(serde_json::json!(resp)),
             Err(e) => Self::err_text(format!("core_state failed: {e:#}")),
         }
@@ -2264,12 +2320,51 @@ mod signal_tests {
         assert_eq!(exchange_line("raw", false), "raw");
     }
 
+    /// Decision 95: a signal leaves a role or a bench board, exactly one; a
+    /// board origin is sent as given, for Core to resolve.
+    #[test]
+    fn a_signal_origin_is_a_role_or_a_board_never_both_or_neither() {
+        let link = |role: Option<&str>, board: Option<&str>| {
+            parse_signal_link(
+                "pd-console".to_string(),
+                role.map(str::to_string),
+                board.map(str::to_string),
+                "bidirectional",
+                "direct",
+                Some("0671FF".to_string()),
+                Some(2),
+                None,
+                None,
+                Some(115_200),
+            )
+        };
+        let on_board = link(None, Some("pd-bench")).unwrap();
+        assert_eq!((on_board.origin_role.as_str(), on_board.origin_board.as_deref()), ("", Some("pd-bench")));
+        assert_eq!(link(Some("dut"), None).unwrap().origin_board, None);
+        assert!(link(Some("dut"), Some("pd-bench")).unwrap_err().contains("not both"));
+        assert!(link(None, None).unwrap_err().contains("origin_board"));
+    }
+
+    /// Decision 95: validate names exactly one board; a live read defaults to the DUT.
+    #[test]
+    fn a_board_is_a_role_or_a_probe_serial() {
+        use crate::tools::board_of;
+        use embarch_core_client::Board;
+        let s = |v: &str| Some(v.to_string());
+        assert_eq!(board_of(&None, &s("0671FF"), None), Ok(Board::Probe("0671FF")));
+        assert_eq!(board_of(&s("dev-bench"), &None, None), Ok(Board::Role("dev-bench")));
+        assert_eq!(board_of(&None, &None, Some("dut")), Ok(Board::Role("dut")));
+        assert!(board_of(&None, &None, None).unwrap_err().contains("role or probe_serial"));
+        assert!(board_of(&s("dut"), &s("0671FF"), Some("dut")).unwrap_err().contains("not both"));
+    }
+
     #[test]
     fn a_declared_baud_is_carried_and_zero_is_refused() {
         let link = |baud| {
             parse_signal_link(
                 "console".to_string(),
-                "dut".to_string(),
+                Some("dut".to_string()),
+                None,
                 "bidirectional",
                 "direct",
                 Some("ABC".to_string()),
@@ -2290,7 +2385,8 @@ mod signal_tests {
         let link = |route_kind: &str, interface| {
             parse_signal_link(
                 "console".to_string(),
-                "dut".to_string(),
+                Some("dut".to_string()),
+                None,
                 "bidirectional",
                 route_kind,
                 Some("ABC".to_string()),
