@@ -38,6 +38,50 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         Commands::DeclareBootloadPorts { bootloader, bootloader_interface, app, app_interface } => {
             declare_bootload_ports(&core, app.as_deref(), app_interface, &bootloader, bootloader_interface, json).await
         }
+        Commands::LedgerAdd { test, result, project, notes, image, image_hash, study_id, commit, branch, roles, broken } => {
+            let proj = match lookup_project(&config, &project) {
+                Ok(p) => p,
+                Err(e) => return error_result(json, e),
+            };
+            let image = image.map(|p| p.display().to_string());
+            let broken = broken.map(|b| b.into_iter().filter(|s| !s.is_empty()).collect());
+            let report = crate::ledger::add(
+                &proj.source_path,
+                &core,
+                crate::ledger::AddArgs {
+                    test: &test,
+                    result: &result,
+                    notes: &notes,
+                    image_path: image.as_deref(),
+                    image_hash: image_hash.as_deref(),
+                    study_id: study_id.as_deref(),
+                    commit: commit.as_deref(),
+                    branch: branch.as_deref(),
+                    roles,
+                    broken,
+                },
+            )
+            .await;
+            finish(json, report.success, report.value, report.human)
+        }
+        Commands::LedgerShow { project, test, limit } => {
+            let proj = match lookup_project(&config, &project) {
+                Ok(p) => p,
+                Err(e) => return error_result(json, e),
+            };
+            let report = crate::ledger::show(&proj.source_path, &core, test.as_deref(), limit.unwrap_or(20)).await;
+            finish(json, report.success, report.value, report.human)
+        }
+        Commands::LedgerPending { project, attached, image, image_hash } => {
+            let proj = match lookup_project(&config, &project) {
+                Ok(p) => p,
+                Err(e) => return error_result(json, e),
+            };
+            let image = image.map(|p| p.display().to_string());
+            let report =
+                crate::ledger::pending_view(&proj.source_path, &core, attached, image.as_deref(), image_hash.as_deref()).await;
+            finish(json, report.success, report.value, report.human)
+        }
         Commands::LeaseTake { holder, purpose, ttl_s } => {
             let report = crate::lease::take(
                 &core,
@@ -106,6 +150,7 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
             reflash,
             allow_version_mismatch,
             project,
+            test,
             target,
         } => {
             run_study(
@@ -115,6 +160,7 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
                 &reflash,
                 allow_version_mismatch,
                 project.as_deref(),
+                test.as_deref(),
                 &target,
                 json,
             )
@@ -1724,6 +1770,7 @@ async fn run_study(
     reflash: &str,
     allow_version_mismatch: bool,
     project: Option<&str>,
+    test: Option<&str>,
     target: &TargetSelection,
     json: bool,
 ) -> i32 {
@@ -1789,6 +1836,22 @@ async fn run_study(
         Ok(outcome) => {
             let mut value = outcome.to_json();
             value["success"] = serde_json::Value::Bool(true);
+            // The ledger row (decision 98): the project the run names, else
+            // the open desk's; with neither, nothing is written and it says so.
+            value["ledger"] = match lookup_project(config, project.unwrap_or("desk")) {
+                Ok(p) => {
+                    crate::ledger::record_submission(
+                        &p.source_path,
+                        core,
+                        test,
+                        &outcome.study_id,
+                        study.name.as_str(),
+                        crate::reflash::dut_image(&outcome),
+                    )
+                    .await
+                }
+                Err(e) => serde_json::json!({ "skipped": e }),
+            };
             let mut human = format!("study submitted: study_id={}", outcome.study_id);
             for step in &outcome.reflashed {
                 human = format!(
@@ -2384,7 +2447,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 51,
+            arms, 54,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."

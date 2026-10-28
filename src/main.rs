@@ -6,6 +6,7 @@ mod cli;
 mod dev_bench;
 mod instrument;
 mod lease;
+mod ledger;
 mod logging;
 mod open_desk;
 mod patches;
@@ -246,6 +247,66 @@ pub enum Commands {
         #[arg(long)]
         port_wait_ms: Option<u64>,
     },
+    /// Append one row to the project's hardware test ledger
+    /// (`embarch/ledger/rows.jsonl`): which test ran, its result, on what
+    /// branch and commit, with which image and which roles attached. Branch
+    /// and commit default to the tree as it stands, the roles to what Core
+    /// reports attached.
+    LedgerAdd {
+        /// A test id from `embarch/ledger/tests.toml`.
+        test: String,
+        /// pass, fail or skipped.
+        result: String,
+        #[arg(long, default_value = "desk")]
+        project: String,
+        #[arg(long, default_value = "")]
+        notes: String,
+        /// The image that ran: hashed (SHA-256) into the row.
+        #[arg(long)]
+        image: Option<PathBuf>,
+        /// An image hash, instead of --image.
+        #[arg(long)]
+        image_hash: Option<String>,
+        #[arg(long)]
+        study_id: Option<String>,
+        #[arg(long)]
+        commit: Option<String>,
+        #[arg(long)]
+        branch: Option<String>,
+        /// Roles attached, instead of reading them from Core.
+        #[arg(long = "role")]
+        roles: Option<Vec<String>>,
+        /// Replace the bench header's known-broken list (repeat; none given
+        /// leaves it alone, one empty string clears it).
+        #[arg(long = "broken")]
+        broken: Option<Vec<String>>,
+    },
+    /// Show the ledger: the bench-state header and the last rows. Closes any
+    /// submitted study row whose study has ended.
+    LedgerShow {
+        #[arg(long, default_value = "desk")]
+        project: String,
+        /// Only this test's rows.
+        #[arg(long)]
+        test: Option<String>,
+        /// How many rows, newest last. Default 20.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// The tests that have not run or must rerun, grouped by the hardware
+    /// each is missing, plus those runnable now. Computed, never stored.
+    LedgerPending {
+        #[arg(long, default_value = "desk")]
+        project: String,
+        /// Roles to treat as attached, instead of reading them from Core.
+        #[arg(long = "attached")]
+        attached: Option<Vec<String>>,
+        /// The image as rebuilt now: a pass whose row hash differs reruns.
+        #[arg(long)]
+        image: Option<PathBuf>,
+        #[arg(long)]
+        image_hash: Option<String>,
+    },
     /// Take the bench lease (embarch-core decision 93): this session holds
     /// both boards until it releases or the TTL runs out, and every other
     /// session's hardware call is refused by name. Prints the token once;
@@ -341,6 +402,9 @@ pub enum Commands {
         /// project, but rebuilding the DUT's firmware is.
         #[arg(long)]
         project: Option<String>,
+        /// The ledger test id this run is for; the ledger row records it.
+        #[arg(long)]
+        test: Option<String>,
         #[command(flatten)]
         target: TargetSelection,
     },

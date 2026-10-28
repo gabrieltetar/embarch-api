@@ -103,6 +103,54 @@ impl EmbarchApi {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct LedgerAddParams {
+    /// A project name, or omit for the open desk's firmware repo.
+    #[serde(default)]
+    pub project: String,
+    /// A test id from the project's embarch/ledger/tests.toml.
+    pub test: String,
+    /// pass, fail or skipped.
+    pub result: String,
+    pub notes: Option<String>,
+    /// Path of the image that ran; its SHA-256 goes into the row.
+    pub image_path: Option<String>,
+    /// An image hash, instead of image_path.
+    pub image_hash: Option<String>,
+    pub study_id: Option<String>,
+    /// Defaults to the tree's HEAD.
+    pub commit: Option<String>,
+    /// Defaults to the tree's current branch.
+    pub branch: Option<String>,
+    /// Roles attached when it ran; defaults to what Core reports.
+    pub roles: Option<Vec<String>>,
+    /// Replaces the bench header's known-broken list; an empty list clears it.
+    pub broken: Option<Vec<String>>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct LedgerShowParams {
+    /// A project name, or omit for the open desk's firmware repo.
+    #[serde(default)]
+    pub project: String,
+    /// Only this test's rows.
+    pub test: Option<String>,
+    /// How many rows, newest last. Defaults to 20.
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct LedgerPendingParams {
+    /// A project name, or omit for the open desk's firmware repo.
+    #[serde(default)]
+    pub project: String,
+    /// Roles to treat as attached, instead of reading them from Core.
+    pub attached: Option<Vec<String>>,
+    /// Path of the image as rebuilt now: a pass whose row hash differs reruns.
+    pub image_path: Option<String>,
+    pub image_hash: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct LeaseTakeParams {
     /// Who is taking it, shown to anyone refused. Defaults to "embarch-api mcp".
     pub holder: Option<String>,
@@ -426,6 +474,9 @@ pub struct RunStudyParams {
     /// rebuilding the DUT's firmware is, and there is nowhere else for the
     /// build target to come from.
     pub project: Option<String>,
+    /// The hardware-ledger test id this run is for (embarch-api decision 98).
+    /// The row run_study appends records it; without one the row has no test.
+    pub test: Option<String>,
     /// Zephyr board name for the DUT reflash. Only meaningful alongside
     /// project, for a discovery = "zephyr-west" project — see list_targets.
     /// A static DUT project refuses this and every field below it rather
@@ -2041,7 +2092,25 @@ impl EmbarchApi {
         match crate::reflash::run_study(&self.config, &self.core, &self.build_locks, &study, request)
             .await
         {
-            Ok(outcome) => Self::ok_json(outcome.to_json()),
+            Ok(outcome) => {
+                let mut value = outcome.to_json();
+                // The ledger row (decision 98): the named project, else the open desk's.
+                value["ledger"] = match self.project(params.project.as_deref().unwrap_or("")) {
+                    Ok(p) => {
+                        crate::ledger::record_submission(
+                            &p.source_path,
+                            &self.core,
+                            params.test.as_deref(),
+                            &outcome.study_id,
+                            study.name.as_str(),
+                            crate::reflash::dut_image(&outcome),
+                        )
+                        .await
+                    }
+                    Err(e) => serde_json::json!({ "skipped": e.message }),
+                };
+                Self::ok_json(value)
+            }
             Err(e) => match e.downcast_ref::<StudyConflictError>() {
                 Some(conflict) => Self::err_text(format!(
                     "a study is already in-flight on embarch-core (study_id: {})",
@@ -2050,6 +2119,50 @@ impl EmbarchApi {
                 None => Self::err_text(format!("run_study failed: {e:#}")),
             },
         }
+    }
+
+    #[tool(description = "Append one row to the project's hardware test ledger (embarch-api decision 98): which test (an id from embarch/ledger/tests.toml) ran, its result (pass, fail or skipped), on which branch and commit (default: the tree's), with which image (image_path is hashed) and which roles attached (default: what Core reports, by role, board name and instrument). broken replaces the bench header's known-broken list. Project omitted means the open desk's firmware repo.")]
+    async fn ledger_add(&self, Parameters(p): Parameters<LedgerAddParams>) -> Result<CallToolResult, McpError> {
+        let project = self.project(&p.project)?;
+        let report = crate::ledger::add(
+            &project.source_path,
+            &self.core,
+            crate::ledger::AddArgs {
+                test: &p.test,
+                result: &p.result,
+                notes: p.notes.as_deref().unwrap_or(""),
+                image_path: p.image_path.as_deref(),
+                image_hash: p.image_hash.as_deref(),
+                study_id: p.study_id.as_deref(),
+                commit: p.commit.as_deref(),
+                branch: p.branch.as_deref(),
+                roles: p.roles,
+                broken: p.broken,
+            },
+        )
+        .await;
+        Self::lease_result(report)
+    }
+
+    #[tool(description = "Show the project's hardware test ledger: the bench-state header (what is attached, from Core, and what is known broken) and the last rows, newest last. First closes any row a run_study left `submitted` whose study has since ended, so a finished study's pass or fail lands here without a separate call.")]
+    async fn ledger_show(&self, Parameters(p): Parameters<LedgerShowParams>) -> Result<CallToolResult, McpError> {
+        let project = self.project(&p.project)?;
+        let report = crate::ledger::show(&project.source_path, &self.core, p.test.as_deref(), p.limit.unwrap_or(20)).await;
+        Self::lease_result(report)
+    }
+
+    #[tool(description = "The hardware tests that have not run or must rerun, computed from the ledger and never stored: runnable_now (every role the test needs is attached) and by_missing_role (grouped by the hardware each lacks). A test reruns when its latest row was not a pass, when that row's commit is no longer reachable from its branch (folded or rebased away), or when its image hash differs from image_path/image_hash as rebuilt now. attached overrides what Core reports; the answer says which one it used.")]
+    async fn ledger_pending(&self, Parameters(p): Parameters<LedgerPendingParams>) -> Result<CallToolResult, McpError> {
+        let project = self.project(&p.project)?;
+        let report = crate::ledger::pending_view(
+            &project.source_path,
+            &self.core,
+            p.attached,
+            p.image_path.as_deref(),
+            p.image_hash.as_deref(),
+        )
+        .await;
+        Self::lease_result(report)
     }
 
     #[tool(description = "Get a submitted study's status via embarch-core: status (\"pending\"|\"running\"|\"completed\"|\"failed\"|\"interrupted\" — a partial record with no job behind it, which Core will not move off by itself), current_step, total_steps, result (once completed), and reason (once failed) — returned verbatim.")]

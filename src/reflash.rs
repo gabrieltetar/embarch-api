@@ -163,6 +163,12 @@ impl RunStudyOutcome {
     }
 }
 
+/// The artifact this run flashed onto the DUT, if it did: what the ledger
+/// hashes into its row (decision 98).
+pub fn dut_image(outcome: &RunStudyOutcome) -> Option<&str> {
+    outcome.reflashed.iter().find(|r| r["target"] == "dut").and_then(|r| r["artifact_path"].as_str())
+}
+
 /// Everything a `run_study` call needs beyond the `Study` itself.
 pub struct RunStudyRequest<'a> {
     pub reflash: ReflashTarget,
