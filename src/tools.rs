@@ -975,7 +975,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Get embarch-core's status: whether it's reachable and what debug probes it currently sees. Also lease (who holds the bench, until when, or null; embarch-api decision 90) and last_images: per chip, the last image Core flashed or bootloaded since it started, with its sha256 and flashed_at — compare sha256 with your own image before reflashing. An absent chip means unknown, NOT nothing flashed: the record is in memory and a flash by another tool does not appear.")]
+    #[tool(description = "Get embarch-core's status: whether it's reachable and what debug probes it currently sees. Also lease (who holds the bench, until when, or null; embarch-api decision 90) and last_images: per chip, the last image Core flashed or bootloaded since it started, with its sha256 and flashed_at — compare sha256 with your own image before reflashing. An absent chip means unknown, NOT nothing flashed: the record is in memory and a flash by another tool does not appear. Also api_build: this embarch-api's own version, commit and dirty flag — an MCP server keeps the binary it was started with until the client reconnects, so compare commit with the checkout's HEAD when behaviour looks older than the code.")]
     async fn status(&self) -> Result<CallToolResult, McpError> {
         match self.core.status().await {
             Ok(status) => Self::ok_json(serde_json::json!({
@@ -988,9 +988,14 @@ impl EmbarchApi {
                 })).collect::<Vec<_>>(),
                 "lease": status.lease,
                 "last_images": status.last_images,
+                // Decision 93: which embarch-api build this MCP server is.
+                // It keeps the binary it was spawned with until the client
+                // reconnects, so this is the one place a session can see it.
+                "api_build": crate::build_info::json(),
             })),
             Err(e) => Self::err_text(format!(
-                "embarch-core unreachable or returned an error: {e:#}"
+                "embarch-core unreachable or returned an error: {e:#} (embarch-api {})",
+                crate::build_info::VERSION_LINE
             )),
         }
     }

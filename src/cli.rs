@@ -282,9 +282,11 @@ pub fn versions(json: bool) -> i32 {
     let api_version = env!("CARGO_PKG_VERSION");
     let host_type_schema_version = embarch_study_designer::HOST_TYPE_SCHEMA_VERSION;
     let human = format!(
-        "embarch-api {api_version} (study-designer host type schema v{host_type_schema_version}, \
-         --json shape v{})",
-        json_out::SCHEMA_VERSION
+        "embarch-api {}; study-designer host type schema v{host_type_schema_version}; \
+         --json shape v{}; built in {}",
+        crate::build_info::VERSION_LINE,
+        json_out::SCHEMA_VERSION,
+        crate::build_info::SOURCE_DIR
     );
     finish(
         json,
@@ -293,6 +295,11 @@ pub fn versions(json: bool) -> i32 {
             "success": true,
             "api_version": api_version,
             "host_type_schema_version": host_type_schema_version,
+            // Decision 93: which build this is, and the checkout it came
+            // from, so `embarch doctor` check 18 can say it is behind.
+            "commit": crate::build_info::COMMIT,
+            "dirty": crate::build_info::dirty(),
+            "source_dir": crate::build_info::SOURCE_DIR,
         }),
         human,
     )
@@ -409,6 +416,7 @@ async fn status(core: &CoreClient, json: bool) -> i32 {
                     .collect();
                 format!("core status: {}\n{}", status.status, probe_lines.join("\n"))
             };
+            let human = format!("{human}\nembarch-api {}", crate::build_info::VERSION_LINE);
 
             finish(
                 json,
@@ -416,11 +424,19 @@ async fn status(core: &CoreClient, json: bool) -> i32 {
                 serde_json::json!({
                     "success": true, "status": status.status, "probes": probes,
                     "lease": status.lease, "last_images": status.last_images,
+                    // Decision 93: the build answering, beside Core's own.
+                    "api_build": crate::build_info::json(),
                 }),
                 human,
             )
         }
-        Err(e) => error_result(json, format!("embarch-core unreachable or returned an error: {e:#}")),
+        Err(e) => error_result(
+            json,
+            format!(
+                "embarch-core unreachable or returned an error: {e:#} (embarch-api {})",
+                crate::build_info::VERSION_LINE
+            ),
+        ),
     }
 }
 

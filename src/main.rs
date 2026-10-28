@@ -1,5 +1,6 @@
 mod bench_exchange;
 mod bootload;
+mod build_info;
 mod capacity;
 mod cli;
 mod dev_bench;
@@ -36,7 +37,8 @@ use config::Config;
 use tools::EmbarchApi;
 
 #[derive(Parser)]
-#[command(name = "embarch-api", version)]
+// `--version` names the commit this binary was built from (decision 93).
+#[command(name = "embarch-api", version = build_info::VERSION_LINE)]
 #[command(about = "MCP server + build orchestrator sitting between Claude Code and embarch-core")]
 struct Cli {
     /// Path to the TOML config file. Falls back to the EMBARCH_API_CONFIG
@@ -710,8 +712,10 @@ pub enum Commands {
         interface: Option<u8>,
     },
     /// Print the version numbers compiled into THIS binary: its crate
-    /// version, the `embarch-study-designer` host type schema version it
-    /// submits studies under, and its `--json` shape version.
+    /// version, the commit it was built from (and whether that build had
+    /// uncommitted changes, and the checkout it was built in), the
+    /// `embarch-study-designer` host type schema version it submits studies
+    /// under, and its `--json` shape version.
     ///
     /// Loads no config and contacts no embarch-core — these are facts about
     /// the installed binary, not about a running system, and the caller that

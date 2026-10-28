@@ -327,6 +327,11 @@ fn versions_answers_without_a_loadable_config() {
             serde_json::json!(SCHEMA_VERSION)
         );
         assert_eq!(value["api_version"], serde_json::json!(env!("CARGO_PKG_VERSION")));
+        // Decision 93: the build's own commit, dirty flag and checkout, which
+        // `embarch doctor` check 18 reads. Pinned against the stamp itself.
+        assert_eq!(value["commit"], serde_json::json!(env!("EMBARCH_BUILD_COMMIT")));
+        assert_eq!(value["dirty"], serde_json::json!(env!("EMBARCH_BUILD_DIRTY") == "1"));
+        assert_eq!(value["source_dir"], serde_json::json!(env!("EMBARCH_BUILD_SOURCE")));
     }
 }
 
