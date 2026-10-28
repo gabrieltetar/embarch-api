@@ -50,6 +50,7 @@ fn fast_options(deadline_ms: u64) -> FollowOptions {
         idle_timeout: Duration::from_millis(500),
         poll_interval: Duration::from_millis(10),
         deadline: Some(Duration::from_millis(deadline_ms)),
+        stop_on_prompt: false,
     }
 }
 
@@ -480,6 +481,7 @@ async fn an_unknown_study_with_a_live_stream_ends_with_an_error() {
                 idle_timeout: Duration::from_secs(30),
                 poll_interval: Duration::from_millis(10),
                 deadline: None,
+                stop_on_prompt: false,
             },
             |_| {},
         )
@@ -530,6 +532,7 @@ async fn an_interrupted_study_ends_the_follow_as_interrupted() {
                 idle_timeout: Duration::from_secs(30),
                 poll_interval: Duration::from_millis(10),
                 deadline: None,
+                stop_on_prompt: false,
             },
             |_| {},
         )
@@ -566,6 +569,7 @@ async fn an_already_finished_study_returns_without_waiting_for_an_event() {
                 idle_timeout: Duration::from_secs(30),
                 poll_interval: Duration::from_millis(10),
                 deadline: None,
+                stop_on_prompt: false,
             },
             |_| {},
         )
@@ -839,4 +843,114 @@ async fn open_study_events_survives_a_gap_longer_than_a_typical_short_timeout() 
         }
     }
     assert_eq!(frames.len(), 2, "both frames must arrive across the gap");
+}
+
+// ---------------------------------------------------------------------------
+// Host-study prompts (`embarch-core` decision 105)
+// ---------------------------------------------------------------------------
+
+fn prompt_fields(prompt_id: u32) -> serde_json::Value {
+    json!({
+        "prompt_id": prompt_id,
+        "list": "Steps",
+        "step_index": 2,
+        "step_name": "plug",
+        "text": "plug in the pack",
+        "opened_utc_ms": 1_000,
+        "deadline_utc_ms": 61_000,
+    })
+}
+
+fn prompt_pending(prompt_id: u32) -> String {
+    let mut v = prompt_fields(prompt_id);
+    v["kind"] = json!("PromptPending");
+    v["study_id"] = json!(STUDY);
+    v.to_string()
+}
+
+/// `GET /study/{id}` for a running host study, with or without a prompt waiting.
+fn host_poll(prompt: Option<u32>) -> Behavior {
+    let mut body = json!({ "status": "running", "current_step": 1, "total_steps": 3, "result": null, "reason": null });
+    if let Some(id) = prompt {
+        body["pending_prompt"] = prompt_fields(id);
+    }
+    Behavior::json_ok(body)
+}
+
+fn opts(stop_on_prompt: bool, deadline_ms: u64) -> FollowOptions {
+    FollowOptions { stop_on_prompt, ..fast_options(deadline_ms) }
+}
+
+/// A prompt pushed live stops a follow that asked to stop for one, with the prompt in the outcome.
+#[tokio::test]
+async fn a_live_prompt_stops_a_follow_that_asked_to_stop() {
+    let mock = MockCore::start(routed(
+        stream(vec![sse_frame(None, &step_completed(0, "a")), sse_frame(None, &prompt_pending(1))], StreamTail::Hold),
+        host_poll(None),
+    ))
+    .await;
+    let core = CoreClient::new(&config(mock.base_url())).expect("client");
+    let mut kinds = vec![];
+    let outcome = core
+        .follow_study(STUDY, &opts(true, 5_000), |item| {
+            if let FollowItem::Event(e) = &item {
+                kinds.push(e.kind());
+            }
+        })
+        .await
+        .expect("follow");
+    assert_eq!(kinds, ["StepCompleted", "PromptPending"]);
+    let p = outcome.prompt_pending.expect("the follow names the prompt it stopped for");
+    assert_eq!((p.prompt_id, p.text.as_str(), p.deadline_utc_ms), (1, "plug in the pack", 61_000));
+    assert!(!outcome.timed_out && outcome.terminal_status.is_none());
+}
+
+/// A prompt published before the subscription is never pushed again, so the opening poll reports
+/// it — to every follower, and a stopping one returns on it.
+#[tokio::test]
+async fn a_prompt_already_waiting_is_found_by_the_opening_poll() {
+    let mock = MockCore::start(routed(stream(vec![sse_keep_alive()], StreamTail::Hold), host_poll(Some(3)))).await;
+    let core = CoreClient::new(&config(mock.base_url())).expect("client");
+    let outcome = core.follow_study(STUDY, &opts(true, 5_000), |_| {}).await.expect("follow");
+    assert_eq!(outcome.prompt_pending.map(|p| p.prompt_id), Some(3));
+
+    // A follower that does not stop still hears of it once, then follows on to its deadline.
+    let mut prompts = 0;
+    let outcome = core
+        .follow_study(STUDY, &opts(false, 150), |item| {
+            if matches!(item, FollowItem::Event(StudyEvent::PromptPending { .. })) {
+                prompts += 1;
+            }
+        })
+        .await
+        .expect("follow");
+    assert_eq!(prompts, 1);
+    assert!(outcome.timed_out && outcome.prompt_pending.is_none());
+}
+
+/// Prompt events and a host study's record decode, and `GET /study/{id}` with a host record still
+/// parses: the record moves to `host_result` instead of failing the bench `StudyResult` parse.
+#[test]
+fn host_events_and_a_host_status_body_decode() {
+    let e: StudyEvent = serde_json::from_str(&prompt_pending(2)).unwrap();
+    assert_eq!(e.as_pending_prompt().map(|p| p.step_name), Some("plug".to_string()));
+    let resolved = json!({ "kind": "PromptResolved", "study_id": STUDY, "prompt_id": 2, "answer": "timed_out", "answered_by": null, "resolved_utc_ms": 9 });
+    let e: StudyEvent = serde_json::from_value(resolved).unwrap();
+    assert_eq!(e.kind(), "PromptResolved");
+    let step = json!({
+        "kind": "HostStepCompleted", "study_id": STUDY, "list": "Steps", "step_index": 0, "detail": "confirmed",
+        "started_utc_ms": 1, "ended_utc_ms": 2, "delay_before_ms": 0,
+        "result": { "step_name": "plug", "outcome": "Pass", "reply": "", "reply_truncated": false, "answered_by": "ui", "elapsed_ms": 5, "iteration": null },
+    });
+    let e: StudyEvent = serde_json::from_value(step).unwrap();
+    assert_eq!(e.kind(), "HostStepCompleted");
+
+    let body = json!({
+        "status": "completed", "current_step": 1, "total_steps": 1, "reason": null,
+        "result": { "kind": "host", "study_name": "pd", "steps": [], "completed": true },
+    });
+    let s = embarch_core_client::study_status_from_json(body).unwrap();
+    assert!(s.result.is_none());
+    assert_eq!(s.host_result.as_ref().and_then(|r| r["study_name"].as_str()), Some("pd"));
+    assert!(s.pending_prompt.is_none());
 }

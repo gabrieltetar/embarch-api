@@ -42,8 +42,10 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
-use embarch_study_designer::{GattTranscriptEntry, Sample, StepResult};
+use embarch_study_designer::{GattTranscriptEntry, HostList, HostStepResult, Sample, StepResult};
 use serde::{Deserialize, Serialize};
+
+use crate::client::PendingPrompt;
 
 use crate::client::{CoreClient, UnknownStudyError};
 use crate::sse::{SseDecoder, SseFrame};
@@ -178,9 +180,79 @@ pub enum StudyEvent {
         value: f64,
         core_rx_utc_ms: u64,
     },
+    /// A host study's step ended (`embarch-core` decision 95): the
+    /// study-designer `HostStepResult`, the list it ran in, its position there
+    /// and Core's `detail` word for why the outcome is what it is.
+    HostStepCompleted {
+        study_id: String,
+        list: HostList,
+        step_index: u32,
+        result: Box<HostStepResult>,
+        detail: String,
+        started_utc_ms: u64,
+        ended_utc_ms: u64,
+        delay_before_ms: u32,
+    },
+    /// A host study's `Prompt` step is waiting for a person (`embarch-core`
+    /// decision 105). The same fields are `pending_prompt` on
+    /// `GET /study/{id}`, which is where a follower that subscribed after
+    /// this was sent finds it: the stream keeps no replay.
+    PromptPending {
+        study_id: String,
+        prompt_id: u32,
+        list: HostList,
+        step_index: u32,
+        step_name: String,
+        text: String,
+        opened_utc_ms: u64,
+        deadline_utc_ms: u64,
+    },
+    /// The pending prompt ended. `answer` is `confirmed`, `cancelled`,
+    /// `timed_out` or `study_cancelled`; `answered_by` (`ui`, `mcp`, `cli`)
+    /// is set for the first two.
+    PromptResolved {
+        study_id: String,
+        prompt_id: u32,
+        answer: String,
+        #[serde(default)]
+        answered_by: Option<String>,
+        resolved_utc_ms: u64,
+    },
 }
 
 impl StudyEvent {
+    /// The prompt this event announces, as `GET /study/{id}` would show it.
+    pub fn as_pending_prompt(&self) -> Option<PendingPrompt> {
+        match self {
+            StudyEvent::PromptPending { prompt_id, list, step_index, step_name, text, opened_utc_ms, deadline_utc_ms, .. } => {
+                Some(PendingPrompt {
+                    prompt_id: *prompt_id,
+                    list: *list,
+                    step_index: *step_index,
+                    step_name: step_name.clone(),
+                    text: text.clone(),
+                    opened_utc_ms: *opened_utc_ms,
+                    deadline_utc_ms: *deadline_utc_ms,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// `PromptPending` for `prompt`, built from a polled `GET /study/{id}`.
+    pub fn prompt_pending(study_id: &str, prompt: &PendingPrompt) -> StudyEvent {
+        StudyEvent::PromptPending {
+            study_id: study_id.to_string(),
+            prompt_id: prompt.prompt_id,
+            list: prompt.list,
+            step_index: prompt.step_index,
+            step_name: prompt.step_name.clone(),
+            text: prompt.text.clone(),
+            opened_utc_ms: prompt.opened_utc_ms,
+            deadline_utc_ms: prompt.deadline_utc_ms,
+        }
+    }
+
     pub fn study_id(&self) -> &str {
         match self {
             StudyEvent::StepCompleted { study_id, .. }
@@ -189,7 +261,10 @@ impl StudyEvent {
             | StudyEvent::StreamText { study_id, .. }
             | StudyEvent::OutpostRows { study_id, .. }
             | StudyEvent::StatusChanged { study_id, .. }
-            | StudyEvent::StructChartValue { study_id, .. } => study_id,
+            | StudyEvent::StructChartValue { study_id, .. }
+            | StudyEvent::HostStepCompleted { study_id, .. }
+            | StudyEvent::PromptPending { study_id, .. }
+            | StudyEvent::PromptResolved { study_id, .. } => study_id,
         }
     }
 
@@ -204,6 +279,9 @@ impl StudyEvent {
             StudyEvent::OutpostRows { .. } => "OutpostRows",
             StudyEvent::StatusChanged { .. } => "StatusChanged",
             StudyEvent::StructChartValue { .. } => "StructChartValue",
+            StudyEvent::HostStepCompleted { .. } => "HostStepCompleted",
+            StudyEvent::PromptPending { .. } => "PromptPending",
+            StudyEvent::PromptResolved { .. } => "PromptResolved",
         }
     }
 }
@@ -362,6 +440,11 @@ pub struct FollowOptions {
     /// status, which is what a CLI user watching a run wants and what an
     /// MCP tool must never do.
     pub deadline: Option<Duration>,
+    /// Return as soon as a host study's `Prompt` is waiting for a person
+    /// (`embarch-core` decision 105), with it in [`FollowOutcome::prompt_pending`].
+    /// What `study_watch` sets: an agent watching a study has to stop and ask
+    /// the person, not wait out its budget while the prompt's deadline runs.
+    pub stop_on_prompt: bool,
 }
 
 impl Default for FollowOptions {
@@ -370,6 +453,7 @@ impl Default for FollowOptions {
             idle_timeout: Duration::from_secs(45),
             poll_interval: Duration::from_secs(2),
             deadline: None,
+            stop_on_prompt: false,
         }
     }
 }
@@ -489,6 +573,9 @@ pub struct FollowOutcome {
     pub used_polling: bool,
     /// Whether the deadline expired before a terminal status.
     pub timed_out: bool,
+    /// The prompt the follow stopped for, when [`FollowOptions::stop_on_prompt`]
+    /// was set and a host study's `Prompt` was waiting.
+    pub prompt_pending: Option<PendingPrompt>,
 }
 
 impl CoreClient {
@@ -592,8 +679,22 @@ impl CoreClient {
         // The already-finished case. A failure here is not fatal: it may
         // just mean Core is briefly busy, and the live stream — if we have
         // one — is still the better source.
+        // The last prompt this follow has reported, so a poll that still sees
+        // it does not report it twice.
+        let mut prompt_seen: Option<u32> = None;
         match self.get_study_status(study_id).await {
             Ok(snapshot) => {
+                // A prompt published before we subscribed is never pushed
+                // again (no replay), so the snapshot is the only place to
+                // learn of it.
+                if let Some(prompt) = &snapshot.pending_prompt {
+                    prompt_seen = Some(prompt.prompt_id);
+                    on_item(FollowItem::Event(StudyEvent::prompt_pending(study_id, prompt)));
+                    if options.stop_on_prompt {
+                        outcome.prompt_pending = Some(prompt.clone());
+                        return Ok(outcome);
+                    }
+                }
                 if is_terminal_status(&snapshot.status) {
                     on_item(FollowItem::Polled {
                         status: snapshot.status.clone(),
@@ -656,7 +757,19 @@ impl CoreClient {
                             }
                             _ => None,
                         };
+                        let prompt = event.as_pending_prompt();
+                        if let Some(p) = &prompt {
+                            if prompt_seen == Some(p.prompt_id) {
+                                // Already reported from the opening poll.
+                                continue;
+                            }
+                            prompt_seen = Some(p.prompt_id);
+                        }
                         on_item(FollowItem::Event(event));
+                        if let Some(p) = prompt.filter(|_| options.stop_on_prompt) {
+                            outcome.prompt_pending = Some(p);
+                            return Ok(outcome);
+                        }
                         if let Some((status, reason)) = terminal {
                             outcome.terminal_status = Some(status);
                             outcome.reason = reason;
@@ -711,6 +824,14 @@ impl CoreClient {
             let snapshot = self.get_study_status(study_id).await.with_context(|| {
                 format!("polling GET /study/{study_id} failed after the event stream ended")
             })?;
+            if let Some(prompt) = snapshot.pending_prompt.as_ref().filter(|p| prompt_seen != Some(p.prompt_id)) {
+                prompt_seen = Some(prompt.prompt_id);
+                on_item(FollowItem::Event(StudyEvent::prompt_pending(study_id, prompt)));
+                if options.stop_on_prompt {
+                    outcome.prompt_pending = Some(prompt.clone());
+                    return Ok(outcome);
+                }
+            }
             let key = (snapshot.status.clone(), snapshot.current_step);
             if last.as_ref() != Some(&key) {
                 on_item(FollowItem::Polled {

@@ -137,6 +137,8 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         Commands::InstrumentExchange { name, line, query, timeout_ms, port_wait_ms } => {
             instrument_exchange(&core, &name, line, query, timeout_ms, port_wait_ms, json).await
         }
+        Commands::RunHostStudy { study_file } => run_host_study(&core, &study_file, json).await,
+        Commands::AnswerPrompt { study_id, prompt_id, answer } => answer_prompt(&core, &study_id, prompt_id, &answer, json).await,
         Commands::SerialLog {
             project,
             signal,
@@ -851,6 +853,39 @@ async fn remove_instrument(core: &CoreClient, name: &str, json: bool) -> i32 {
             if removed { format!("removed instrument {name}") } else { format!("no instrument was declared as {name}") },
         ),
         Err(e) => error_result(json, format!("remove-instrument failed: {e:#}")),
+    }
+}
+
+async fn run_host_study(core: &CoreClient, study_file: &Path, json: bool) -> i32 {
+    let study = match crate::host_study::read_host_study(study_file) {
+        Ok(s) => s,
+        Err(e) => return error_result(json, format!("run-host-study failed: {e:#}")),
+    };
+    match core.post_host_study(&study).await {
+        Ok(accepted) => finish(
+            json,
+            true,
+            serde_json::json!({ "success": true, "study_id": accepted.study_id }),
+            format!("{} (follow with: embarch-api study-status {} --follow)", accepted.study_id, accepted.study_id),
+        ),
+        Err(e) => error_result(json, format!("run-host-study failed: {e:#}")),
+    }
+}
+
+async fn answer_prompt(core: &CoreClient, study_id: &str, prompt_id: u32, answer: &str, json: bool) -> i32 {
+    let answer = match crate::host_study::parse_answer(answer) {
+        Ok(a) => a,
+        Err(e) => return error_result(json, format!("answer-prompt failed: {e:#}")),
+    };
+    let req = embarch_core_client::PromptAnswerRequest { prompt_id, answer: answer.to_string(), answered_by: "cli".to_string() };
+    match core.answer_prompt(study_id, &req).await {
+        Ok(r) => finish(
+            json,
+            true,
+            serde_json::json!({ "success": true, "answer": r }),
+            format!("prompt {prompt_id} of {study_id}: {answer}, recorded"),
+        ),
+        Err(e) => error_result(json, format!("answer-prompt failed: {e:#}")),
     }
 }
 
@@ -2115,6 +2150,19 @@ fn render_follow_item(item: &FollowItem) -> String {
             value,
             ..
         }) => format!("[chart] {stream_name}: {field_name} = {value}"),
+        FollowItem::Event(StudyEvent::HostStepCompleted { list, step_index, result, detail, .. }) => format!(
+            "[host step] {list:?}[{step_index}] '{}' {:?} ({detail}){}",
+            result.step_name,
+            result.outcome,
+            result.answered_by.as_deref().map(|by| format!(" answered by {by}")).unwrap_or_default()
+        ),
+        FollowItem::Event(StudyEvent::PromptPending { prompt_id, step_name, text, deadline_utc_ms, .. }) => format!(
+            "[prompt {prompt_id}] waiting for a person — '{step_name}': {text} (deadline {deadline_utc_ms} ms UTC; answer with answer-prompt)"
+        ),
+        FollowItem::Event(StudyEvent::PromptResolved { prompt_id, answer, answered_by, .. }) => format!(
+            "[prompt {prompt_id}] {answer}{}",
+            answered_by.as_deref().map(|by| format!(" (from {by})")).unwrap_or_default()
+        ),
     }
 }
 
@@ -2447,7 +2495,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 54,
+            arms, 56,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."

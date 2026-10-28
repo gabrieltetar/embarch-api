@@ -50,6 +50,8 @@ const EVERY_SUBCOMMAND: &[&[&str]] = &[
     &["build-and-bootload", "no-such-project"],
     &["declare-bootload-ports", "--bootloader", "2fe3:000c"],
     &["show-bootload-ports"],
+    &["run-host-study", "--study-file", "no-such-host-study.json"],
+    &["answer-prompt", "no-such-study", "1", "confirmed"],
     &["ledger-add", "some-test", "pass", "--project", "no-such-project"],
     &["ledger-show", "--project", "no-such-project"],
     &["ledger-pending", "--project", "no-such-project"],

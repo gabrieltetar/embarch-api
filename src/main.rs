@@ -4,6 +4,7 @@ mod build_info;
 mod capacity;
 mod cli;
 mod dev_bench;
+mod host_study;
 mod instrument;
 mod lease;
 mod ledger;
@@ -232,6 +233,23 @@ pub enum Commands {
     /// Retract a declared instrument. Reports removed=false, not an error,
     /// when nothing was declared under the name.
     RemoveInstrument { name: String },
+    /// Run a host study: Core runs its Exchange, Instrument, Wait and Prompt
+    /// steps itself, with no dev bench (embarch-core decisions 95, 105).
+    /// Prints the study id; follow it with `study-status <id> --follow`.
+    RunHostStudy {
+        /// A `HostStudy` as JSON.
+        #[arg(long)]
+        study_file: PathBuf,
+    },
+    /// Relay a person's answer to a host study's waiting Prompt. Only what
+    /// the person said: never answer a prompt on your own judgement.
+    AnswerPrompt {
+        study_id: String,
+        /// The id the prompt was published under (study-status shows it).
+        prompt_id: u32,
+        /// confirmed or cancelled.
+        answer: String,
+    },
     /// Send one command to a declared instrument and print its reply, raw.
     InstrumentExchange {
         name: String,

@@ -15,7 +15,11 @@ license = "MIT"
 [dependencies]
 anyhow = "1.0.103"
 bytes = "1"
-embarch-study-designer = { path = "../../../embarch-study-designer" }
+# `alloc` for the host-study types (`HostList`, `HostStepResult`, `HostStudy`)
+# that `POST /host-studies` and its events carry (`embarch-core` decision 105).
+# Every consumer already turned it on by unification; this crate built alone
+# did not.
+embarch-study-designer = { path = "../../../embarch-study-designer", features = ["alloc"] }
 # `wire` alongside `software` since 2026-09-12 (`suite/035`), spelled out
 # rather than left to `default` so the absence of `hardware` is visible at the
 # one place a future edit would add it. `software` is what

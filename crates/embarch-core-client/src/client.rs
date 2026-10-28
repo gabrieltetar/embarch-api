@@ -1747,6 +1747,61 @@ pub struct StudyStatusResponse {
     pub total_steps: Option<u32>,
     pub result: Option<StudyResult>,
     pub reason: Option<String>,
+    /// A host study's record (`events.json` with `kind: "host"`), which is
+    /// not a bench `StudyResult` and is carried as Core wrote it. Moved here
+    /// out of `result` by [`CoreClient::get_study_status`].
+    #[serde(default)]
+    pub host_result: Option<serde_json::Value>,
+    /// A running host study's unanswered `Prompt` (`embarch-core` decision
+    /// 105). Absent from an older Core, and whenever nothing is waiting.
+    #[serde(default)]
+    pub pending_prompt: Option<PendingPrompt>,
+}
+
+/// A host study's `Prompt` waiting for a person, as `GET /study/{id}` and
+/// `PromptPending` carry it (`embarch-core` decision 105).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct PendingPrompt {
+    /// What an answer must name: an answer to a prompt that already ended is
+    /// refused rather than taken for the next one.
+    pub prompt_id: u32,
+    pub list: embarch_study_designer::HostList,
+    pub step_index: u32,
+    pub step_name: String,
+    pub text: String,
+    pub opened_utc_ms: u64,
+    pub deadline_utc_ms: u64,
+}
+
+/// A person's answer to a prompt, as `POST /study/{id}/prompt` takes it.
+#[derive(Debug, Clone, Serialize)]
+pub struct PromptAnswerRequest {
+    pub prompt_id: u32,
+    /// `confirmed` or `cancelled`.
+    pub answer: String,
+    /// The surface relaying it: `ui`, `mcp` or `cli`.
+    pub answered_by: String,
+}
+
+/// `POST /study/{id}/prompt`'s `200` body.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PromptAnswered {
+    pub study_id: String,
+    pub prompt_id: u32,
+    pub answer: String,
+    pub answered_by: String,
+    pub status: String,
+}
+
+/// `GET /study/{id}`'s body as a [`StudyStatusResponse`]. A host study's
+/// `result` is its own record (`kind: "host"`), not a bench `StudyResult`, so
+/// it moves to `host_result` before the typed parse rather than failing it.
+pub fn study_status_from_json(mut body: serde_json::Value) -> Result<StudyStatusResponse> {
+    if body.pointer("/result/kind").and_then(|k| k.as_str()) == Some("host") {
+        let record = body["result"].take();
+        body["host_result"] = record;
+    }
+    serde_json::from_value(body).context("failed to parse embarch-core's response as JSON")
 }
 
 /// Core's structured non-2xx error body (`embarch-core` decision 12): `{"code": "...", "message": "...", "cause": "..."}`. Not
@@ -2767,10 +2822,11 @@ impl CoreClient {
 
         let status = response.status();
         if status.is_success() {
-            return response
-                .json::<StudyStatusResponse>()
+            let body: serde_json::Value = response
+                .json()
                 .await
-                .context("failed to parse embarch-core's response as JSON");
+                .context("failed to parse embarch-core's response as JSON")?;
+            return study_status_from_json(body);
         }
 
         let body = response
@@ -2785,6 +2841,58 @@ impl CoreClient {
         }
 
         Err(anyhow!(Self::format_study_error(status, &body)))
+    }
+
+    /// `POST /host-studies` — a study Core runs itself, with no dev bench
+    /// (`embarch-core` decisions 95, 105). Same schema gate as
+    /// [`CoreClient::post_study`]: `HostStudy` is a study-designer host type.
+    pub async fn post_host_study(&self, study: &embarch_study_designer::HostStudy) -> Result<PostStudyResponse> {
+        let core_version = self.status().await?.study_designer_schema_version;
+        if core_version != Some(embarch_study_designer::HOST_TYPE_SCHEMA_VERSION) {
+            return Err(anyhow::Error::new(SchemaVersionMismatch {
+                api_version: embarch_study_designer::HOST_TYPE_SCHEMA_VERSION,
+                core_version,
+            }));
+        }
+        let url = format!("{}/host-studies", self.base_url().await?);
+        let response = self.dispatch(self.client.post(url).json(study), Some(self.study_timeout)).await?;
+        let status = response.status();
+        if status.is_success() {
+            return response.json::<PostStudyResponse>().await.context("failed to parse embarch-core's response as JSON");
+        }
+        let body = response.text().await.unwrap_or_else(|_| "<no response body>".to_string());
+        if let Some(held) = lease_refusal(status, &body) {
+            return Err(held);
+        }
+        if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::METHOD_NOT_ALLOWED {
+            return Err(anyhow!(
+                "embarch-core returned {status} for POST /host-studies: it predates host-run studies (embarch-core decision 95); update Core"
+            ));
+        }
+        Err(anyhow!(Self::format_study_error(status, &body)))
+    }
+
+    /// `POST /study/{id}/prompt` — relay a person's answer to a host study's
+    /// pending `Prompt` (`embarch-core` decision 105). A `409` (the prompt is
+    /// not the one waiting, was already answered, or nothing waits) comes back
+    /// as Core's own text.
+    pub async fn answer_prompt(&self, study_id: &str, req: &PromptAnswerRequest) -> Result<PromptAnswered> {
+        let url = format!("{}/study/{}/prompt", self.base_url().await?, urlencode(study_id));
+        let response = self.dispatch(self.client.post(url).json(req), Some(self.status_timeout)).await?;
+        let status = response.status();
+        if status.is_success() {
+            return response.json::<PromptAnswered>().await.context("failed to parse embarch-core's response as JSON");
+        }
+        let body = response.text().await.unwrap_or_else(|_| "<no response body>".to_string());
+        if status == reqwest::StatusCode::NOT_FOUND && body.contains(study_id) {
+            return Err(anyhow::Error::new(UnknownStudyError { study_id: study_id.to_string() }));
+        }
+        if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::METHOD_NOT_ALLOWED {
+            return Err(anyhow!(
+                "embarch-core returned {status} for POST /study/{{id}}/prompt: it predates prompts (embarch-core decision 105); update Core"
+            ));
+        }
+        Err(anyhow!("embarch-core returned {status}: {body}"))
     }
 
     /// Shared by every "fetch a study's captured bytes" call — since the three

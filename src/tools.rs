@@ -387,6 +387,22 @@ pub struct RemoveInstrumentParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RunHostStudyParams {
+    /// Path to a HostStudy JSON file (embarch-study-designer's host-study
+    /// model: name, steps, teardown, streams, line_counts).
+    pub study_file: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AnswerPromptParams {
+    pub study_id: String,
+    /// The prompt_id study_watch or study_status showed for the waiting prompt.
+    pub prompt_id: u32,
+    /// confirmed or cancelled: exactly what the person said.
+    pub answer: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct InstrumentExchangeParams {
     /// A declared instrument's name (see `list_instruments`).
     pub name: String,
@@ -1482,6 +1498,31 @@ impl EmbarchApi {
         }
     }
 
+    #[tool(description = "Run a host study via embarch-core's POST /host-studies (embarch-core decisions 95, 105): Core runs its Exchange (a line to a declared signal), Instrument (one SCPI command), Wait and Prompt steps itself, with no dev bench, then always its teardown. study_file is a HostStudy as JSON, checked here before Core sees it. Returns study_id at once; the study runs on. Watch it with study_watch, which returns early when a Prompt is waiting for a person (see answer_prompt). Refused 409 while any study holds the bench. A step can switch a supply or a load, so run only a study the person you are working for asked for.")]
+    async fn run_host_study(&self, Parameters(p): Parameters<RunHostStudyParams>) -> Result<CallToolResult, McpError> {
+        let study = match crate::host_study::read_host_study(std::path::Path::new(&p.study_file)) {
+            Ok(s) => s,
+            Err(e) => return Self::err_text(format!("run_host_study failed: {e:#}")),
+        };
+        match self.core.post_host_study(&study).await {
+            Ok(accepted) => Self::ok_json(serde_json::json!({ "study_id": accepted.study_id })),
+            Err(e) => Self::err_text(format!("run_host_study failed: {e:#}")),
+        }
+    }
+
+    #[tool(description = "Relay a person's answer to a host study's waiting Prompt via embarch-core's POST /study/{id}/prompt (embarch-core decision 105). This tool RELAYS A PERSON'S ANSWER and nothing else: call it only with what the person you are working for told you, after showing them the prompt's text, and NEVER answer a prompt on your own judgement, even when the answer looks obvious, because a prompt asks for a physical action (plug a cable, switch a supply) that only a person at the bench can confirm happened. answer is confirmed or cancelled; cancelled fails the step and the study runs its teardown. prompt_id is the one study_watch or study_status showed; an answer naming a prompt that already ended (timed out, answered from the UI) is refused 409 with the prompt now waiting, so ask again rather than retrying with the new id. Recorded as answered_by mcp.")]
+    async fn answer_prompt(&self, Parameters(p): Parameters<AnswerPromptParams>) -> Result<CallToolResult, McpError> {
+        let answer = match crate::host_study::parse_answer(&p.answer) {
+            Ok(a) => a,
+            Err(e) => return Self::err_text(format!("answer_prompt failed: {e:#}")),
+        };
+        let req = embarch_core_client::PromptAnswerRequest { prompt_id: p.prompt_id, answer: answer.to_string(), answered_by: "mcp".to_string() };
+        match self.core.answer_prompt(&p.study_id, &req).await {
+            Ok(r) => Self::ok_json(serde_json::json!({ "answer": r })),
+            Err(e) => Self::err_text(format!("answer_prompt failed: {e:#}")),
+        }
+    }
+
     #[tool(description = "Build embarch-dev-bench's own firmware by running west build. No project param — dev-bench isn't a configured project, it's EmbArch's own test rig, one board at a time. Which board that is comes from [dev_bench] config (source_path, west_binary, board, chip, flash_format, artifact_path), not from a constant: this bench has been an nRF54L15DK and an ESP32-C5 and is an nRF54L15DK again, and the two disagree about every one of those. Does not touch hardware — use build_and_flash_dev_bench to build and then flash in one call.")]
     async fn build_dev_bench(&self) -> Result<CallToolResult, McpError> {
         let dev_bench = match self.dev_bench_config() {
@@ -2182,7 +2223,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Watch a running study live via embarch-core's SSE event stream (GET /study/{id}/events) instead of polling: returns every step completion, status change and (optionally) sample batch that happened while watching, in order, as they were pushed. Bounded by wait_secs (default 60) — this is a request/response call, so it returns what happened in that window and you call it again to keep watching; `complete: true` means the study reached a terminal status (completed, failed, or interrupted) and there is nothing left to watch; for `interrupted`, `status` says so and `note` explains, it is neither completed nor failed. A study_id embarch-core has no record of returns an error naming it right away rather than watching until wait_secs.\n\nThis is an addition to study_status, not a replacement: study_status is still the way to get one snapshot or the finished StudyResult, and this tool falls back to polling it automatically if the live stream will not open or drops mid-study (`transport` says which happened).\n\nTwo different kinds of incompleteness are reported separately and must not be confused. `lagged` is embarch-core telling you IT dropped events because this subscriber could not keep up — the study is unaffected and its own record on disk is complete, so re-read it with study_status. `events_omitted` is this tool's own max_events cap. Neither is an error.")]
+    #[tool(description = "Watch a running study live via embarch-core's SSE event stream (GET /study/{id}/events) instead of polling: returns every step completion, status change and (optionally) sample batch that happened while watching, in order, as they were pushed. Bounded by wait_secs (default 60) — this is a request/response call, so it returns what happened in that window and you call it again to keep watching; `complete: true` means the study reached a terminal status (completed, failed, or interrupted) and there is nothing left to watch; for `interrupted`, `status` says so and `note` explains, it is neither completed nor failed. A study_id embarch-core has no record of returns an error naming it right away rather than watching until wait_secs.\n\nThis is an addition to study_status, not a replacement: study_status is still the way to get one snapshot or the finished StudyResult, and this tool falls back to polling it automatically if the live stream will not open or drops mid-study (`transport` says which happened).\n\nTwo different kinds of incompleteness are reported separately and must not be confused. `lagged` is embarch-core telling you IT dropped events because this subscriber could not keep up — the study is unaffected and its own record on disk is complete, so re-read it with study_status. `events_omitted` is this tool's own max_events cap. Neither is an error.\n\nA host study (run_host_study) can stop at a Prompt step until a person answers. study_watch returns EARLY when one is waiting: `prompt_pending` then carries its prompt_id, text and deadline_utc_ms. Show the text to the person you are working for, ask them, and relay exactly what they said with answer_prompt. Never answer it yourself.")]
     async fn study_watch(
         &self,
         Parameters(StudyWatchParams {
@@ -2198,6 +2239,7 @@ impl EmbarchApi {
 
         let options = FollowOptions {
             deadline: Some(Duration::from_secs(wait)),
+            stop_on_prompt: true,
             ..FollowOptions::default()
         };
 
@@ -2285,6 +2327,7 @@ impl EmbarchApi {
             } else {
                 serde_json::Value::Null
             },
+            "prompt_pending": outcome.prompt_pending,
             "timed_out": outcome.timed_out,
             "watched_secs": wait,
             "transport": transport,

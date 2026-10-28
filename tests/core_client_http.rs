@@ -163,6 +163,14 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.remove_instrument("eload").await;
     let idn = embarch_core_client::InstrumentExchange { line: "*IDN?".into(), query: true, timeout_ms: 500, port_wait_ms: 0 };
     let _ = client.instrument_exchange("eload", &idn).await;
+    let host: embarch_study_designer::HostStudy = serde_json::from_value(serde_json::json!({
+        "name": "sweep",
+        "steps": [{ "name": "w", "action": { "Wait": { "ms": 1 } }, "timeout_ms": 1, "continue_on_fail": false, "delay_before_ms": 0 }],
+    }))
+    .expect("a one-step host study");
+    let _ = client.post_host_study(&host).await;
+    let answer = embarch_core_client::PromptAnswerRequest { prompt_id: 1, answer: "confirmed".into(), answered_by: "cli".into() };
+    let _ = client.answer_prompt("study-1", &answer).await;
     let _ = client.lease_take("sweep", Some("sweep"), 60).await;
     let _ = client.lease_renew(None).await;
     let _ = client.lease_release().await;
@@ -268,6 +276,8 @@ async fn every_outbound_call_carries_the_bearer_token() {
         ("GET", "/study/study-1/stream/ppg/load"),
         ("POST", "/flash"),
         ("POST", "/study"),
+        ("POST", "/host-studies"),
+        ("POST", "/study/study-1/prompt"),
         ("GET", "/study/study-1/events"),
     ]
     .into_iter()
