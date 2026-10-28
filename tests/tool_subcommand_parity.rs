@@ -38,6 +38,7 @@ enum Asymmetry {
 
 const DOCUMENTED_ASYMMETRIES: &[Asymmetry] = &[
     Asymmetry::CliOnly("versions"),
+    Asymmetry::CliOnly("patches"),
     Asymmetry::ToolReachedAs("study_watch", "study-status"),
 ];
 

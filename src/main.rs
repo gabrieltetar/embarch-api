@@ -6,6 +6,7 @@ mod dev_bench;
 mod lease;
 mod logging;
 mod open_desk;
+mod patches;
 mod reflash;
 mod study;
 mod tools;
@@ -718,6 +719,12 @@ pub enum Commands {
     /// diagnosing a machine where the config or Core may be exactly what is
     /// broken. `--json` is the surface to read: `host_type_schema_version`.
     Versions,
+    /// Round-trip a west manifest's module patch series through one scratch
+    /// checkout (export, import, regroup). Needs only `git`: no config, no Core.
+    Patches {
+        #[command(subcommand)]
+        action: patches::PatchesAction,
+    },
 }
 
 /// Walks up from `start` looking for `embarch/embarch.toml` at each level —
@@ -815,6 +822,10 @@ async fn async_main() -> Result<()> {
     // matching arm so the surface is exhaustive from either entry point.
     if matches!(cli.command, Some(Commands::Versions)) {
         std::process::exit(cli::versions(cli.json));
+    }
+    // `patches` is host-side git work only (decision 92): same early dispatch.
+    if let Some(Commands::Patches { action }) = cli.command {
+        std::process::exit(patches::run(action, cli.json));
     }
     // Grouped into one fallible step so a CLI run can report a startup
     // failure *through the surface it was asked for*. Returning these

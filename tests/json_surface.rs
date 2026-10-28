@@ -97,6 +97,7 @@ const EVERY_SUBCOMMAND: &[&[&str]] = &[
     &["core-state", "--halt"],
     &["dev-bench-link", "--interface", "2"],
     &["versions"],
+    &["patches", "import", "--scratch", "no-such-scratch-dir"],
 ];
 
 struct TempDir(PathBuf);
