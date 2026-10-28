@@ -64,10 +64,12 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         Commands::ClearBootloadPorts => clear_bootload_ports(&core, json).await,
         Commands::SerialLog {
             project,
+            signal,
+            port_wait_ms,
             port,
             baud,
             duration_ms,
-        } => serial_log(&config, &core, &project, port, baud, duration_ms, json).await,
+        } => serial_log(&config, &core, project.as_deref(), signal, port_wait_ms, port, baud, duration_ms, json).await,
         Commands::RunStudy {
             study_file,
             reflash,
@@ -1547,33 +1549,40 @@ async fn dev_bench_link(core: &CoreClient, serial: Option<String>, interface: Op
 async fn serial_log(
     config: &Config,
     core: &CoreClient,
-    project_name: &str,
+    project_name: Option<&str>,
+    signal: Option<String>,
+    port_wait_ms: Option<u64>,
     port: Option<String>,
     baud: Option<u32>,
     duration_ms: Option<u64>,
     json: bool,
 ) -> i32 {
-    let project = match lookup_project(config, project_name) {
-        Ok(p) => p,
-        Err(e) => return error_result(json, e),
+    let (result, label) = if let Some(signal) = signal {
+        let r = core.serial_log_signal(&signal, baud, duration_ms.unwrap_or(2_000), port_wait_ms).await;
+        (r, format!("signal '{signal}'"))
+    } else {
+        let project = match lookup_project(config, project_name.unwrap_or("")) {
+            Ok(p) => p,
+            Err(e) => return error_result(json, e),
+        };
+        let port = match port.or_else(|| project.serial_port.clone()) {
+            Some(port) => port,
+            None => {
+                return error_result(
+                    json,
+                    format!(
+                        "no serial port given and project '{}' has no configured serial_port",
+                        project.name
+                    ),
+                )
+            }
+        };
+        let baud = baud.or(project.serial_baud).unwrap_or(115_200);
+        let r = core.serial_log(&port, baud, duration_ms.unwrap_or(2_000)).await;
+        (r, format!("'{}'", project.name))
     };
 
-    let port = match port.or_else(|| project.serial_port.clone()) {
-        Some(port) => port,
-        None => {
-            return error_result(
-                json,
-                format!(
-                    "no serial port given and project '{}' has no configured serial_port",
-                    project.name
-                ),
-            )
-        }
-    };
-    let baud = baud.or(project.serial_baud).unwrap_or(115_200);
-    let duration_ms = duration_ms.unwrap_or(2_000);
-
-    match core.serial_log(&port, baud, duration_ms).await {
+    match result {
         Ok(resp) => {
             let mut human = if resp.lines.is_empty() {
                 format!("serial-log on {}: no lines captured", resp.port)
@@ -1588,7 +1597,7 @@ async fn serial_log(
             value["success"] = true.into();
             finish(json, true, value, human)
         }
-        Err(e) => error_result(json, format!("serial-log failed for '{}': {e:#}", project.name)),
+        Err(e) => error_result(json, format!("serial-log failed for {label}: {e:#}")),
     }
 }
 

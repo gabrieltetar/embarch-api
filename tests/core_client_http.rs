@@ -126,6 +126,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.set_role_board("dut", "nrf54l15dk", "nRF54L15").await;
     let _ = client.resolve_chip("nrf52840").await;
     let _ = client.serial_log("COM7", 115_200, 250).await;
+    let _ = client.serial_log_signal("console", None, 250, Some(1000)).await;
     let _ = client.declare_signal(&signal).await;
     let _ = client.remove_signal("outpost").await;
     let _ = client.signal_exchange_with("console", "help\n", Some("uart:~$ "), Some(500), Some(1000), Some(false)).await;

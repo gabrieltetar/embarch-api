@@ -2499,6 +2499,32 @@ impl CoreClient {
         self.send(request, self.serial_timeout).await
     }
 
+    /// `GET /serial-log?signal=<name>` (`embarch-api` decision 94): Core
+    /// resolves the declared signal's USB serial to the port's current name
+    /// and reads at the signal's baud, waiting up to `port_wait_ms` for a
+    /// re-enumerating port, exactly as `signal_exchange` does. `baud` is sent
+    /// only when the caller gave one (an explicit override); otherwise the
+    /// signal's own baud is Core's to use. This client never resolves a signal
+    /// itself: one resolver, Core's.
+    pub async fn serial_log_signal(
+        &self,
+        signal: &str,
+        baud: Option<u32>,
+        duration_ms: u64,
+        port_wait_ms: Option<u64>,
+    ) -> Result<SerialLogResponse> {
+        let url = format!("{}/serial-log", self.base_url().await?);
+        let mut q: Vec<(&str, String)> = vec![("signal", signal.to_string()), ("duration_ms", duration_ms.to_string())];
+        if let Some(b) = baud {
+            q.push(("baud", b.to_string()));
+        }
+        if let Some(w) = port_wait_ms {
+            q.push(("port_wait_ms", w.to_string()));
+        }
+        let request = self.client.get(url).query(&q);
+        self.send(request, self.serial_timeout).await
+    }
+
     /// Resolve a Zephyr SoC name to a probe-rs chip target string via
     /// Core's `POST /resolve-chip` (`embarch-core` decision 8) —
     /// used by a `discovery = "zephyr-west"` project's per-call target

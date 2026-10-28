@@ -306,14 +306,22 @@ pub struct DeclareBootloadPortsParams {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SerialLogParams {
+    /// PREFERRED: a declared signal's name (see `list_signals`). Core resolves
+    /// its USB serial to the port's current name, reads at the signal's baud and
+    /// waits `port_wait_ms` for a re-enumerating port. Needs no project or port.
+    pub signal: Option<String>,
+    /// With `signal`: wait up to this many ms (max 10000) for a USB console
+    /// that is re-enumerating, e.g. right after a reset. Ignored without it.
+    pub port_wait_ms: Option<u64>,
     /// Name of a project from embarch-api's config file (see `list_projects`). Omit it, or
     /// say "desk", to use the open desk's firmware repo.
     #[serde(default)]
     pub project: String,
-    /// Serial port to read from. Defaults to the project's configured
-    /// serial_port if omitted.
+    /// Fallback for a port nobody declared: serial port to read from.
+    /// Defaults to the project's configured serial_port if omitted.
     pub port: Option<String>,
-    /// Baud rate. Defaults to the project's configured serial_baud, or 115200.
+    /// Baud rate. Defaults to the project's configured serial_baud, or 115200;
+    /// with `signal`, the signal's baud unless given here.
     pub baud: Option<u32>,
     /// How long to read for, in milliseconds. Defaults to 2000.
     pub duration_ms: Option<u64>,
@@ -1774,16 +1782,25 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Read the serial console log for a project via embarch-core, opening the named port on CORE'S OWN MACHINE — not the machine this MCP server or its caller runs on. Falls back to the project's configured serial_port/serial_baud if not overridden; if neither gives a port, call list_serial_ports to discover a value Core's machine actually recognises (e.g. a Windows COM name when Core runs on Windows and the caller is WSL2 — a guess from the caller's own /dev/ttyACM0-style name will not resolve there). duration_ms is bounded by embarch-core's own cap on this route — see /serial-log in embarch-core's interface docs for the current number. The result's truncated is true when Core's byte cap cut the capture short (lines is then only a prefix — do not treat it as the whole log), false when complete, and null with a truncation_note when this Core did not report it.")]
+    #[tool(description = "PREFERRED FORM: pass `signal`, the name of a declared signal (list_signals): Core resolves its USB serial to the port's current name, reads at the signal's baud, and waits up to port_wait_ms (max 10000) for a console that is re-enumerating after a reset; no project or port needed, and it survives an adapter being replugged. Needs an embarch-core that resolves `signal` on /serial-log (embarch-api decision 94); an older Core refuses it. The project/port form below is the fallback for a port nobody declared.\n\nFallback: read the serial console log for a project via embarch-core, opening the named port on CORE'S OWN MACHINE — not the machine this MCP server or its caller runs on. Falls back to the project's configured serial_port/serial_baud if not overridden; if neither gives a port, call list_serial_ports to discover a value Core's machine actually recognises (e.g. a Windows COM name when Core runs on Windows and the caller is WSL2 — a guess from the caller's own /dev/ttyACM0-style name will not resolve there). duration_ms is bounded by embarch-core's own cap on this route — see /serial-log in embarch-core's interface docs for the current number. The result's truncated is true when Core's byte cap cut the capture short (lines is then only a prefix — do not treat it as the whole log), false when complete, and null with a truncation_note when this Core did not report it.")]
     async fn serial_log(
         &self,
         Parameters(SerialLogParams {
+            signal,
+            port_wait_ms,
             project,
             port,
             baud,
             duration_ms,
         }): Parameters<SerialLogParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(signal) = signal {
+            let duration_ms = duration_ms.unwrap_or(2_000);
+            return match self.core.serial_log_signal(&signal, baud, duration_ms, port_wait_ms).await {
+                Ok(resp) => Self::ok_json(resp.to_json()),
+                Err(e) => Self::err_text(format!("serial-log failed for signal '{signal}': {e:#}")),
+            };
+        }
         let project = match self.project(&project) {
             Ok(p) => p,
             Err(e) => return Err(e),

@@ -226,11 +226,23 @@ pub enum Commands {
     },
     /// Read the serial console log for a project via embarch-core.
     SerialLog {
-        project: String,
-        /// Serial port to read from. Defaults to the project's configured serial_port.
+        /// Project name; not needed with --signal.
+        #[arg(required_unless_present = "signal")]
+        project: Option<String>,
+        /// PREFERRED: a declared signal's name. Core resolves its USB serial to
+        /// the port's current name and reads at the signal's baud.
+        #[arg(long)]
+        signal: Option<String>,
+        /// With --signal: wait up to this many ms (max 10000) for a USB console
+        /// that is re-enumerating, e.g. right after a reset.
+        #[arg(long = "port-wait-ms")]
+        port_wait_ms: Option<u64>,
+        /// Fallback for an undeclared port: serial port to read from. Defaults
+        /// to the project's configured serial_port.
         #[arg(long)]
         port: Option<String>,
-        /// Baud rate. Defaults to the project's configured serial_baud, or 115200.
+        /// Baud rate. Defaults to the project's configured serial_baud, or
+        /// 115200; with --signal, the signal's baud unless given here.
         #[arg(long)]
         baud: Option<u32>,
         /// How long to read for, in milliseconds. Defaults to 2000.

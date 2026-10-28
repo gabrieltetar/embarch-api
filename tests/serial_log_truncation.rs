@@ -93,3 +93,29 @@ async fn the_client_parses_the_flag_and_the_mcp_json_carries_it() {
     assert_eq!(r.truncated, None);
     assert!(r.to_json()["truncated"].is_null());
 }
+
+/// `tasks/api/125`: the signal form sends `signal` (and `port_wait_ms`) to
+/// Core's `/serial-log`, never a `port`, and sends `baud` only when given.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_signal_form_asks_core_to_resolve_and_sends_no_port() {
+    let mock = MockCore::start(Behavior::json_ok(json!({"port":"COM9","lines":["a"],"truncated":false}))).await;
+    let r = client_for(&mock).serial_log_signal("dut-console", None, 500, Some(3000)).await.unwrap();
+    assert_eq!(r.port, "COM9");
+    let t = mock.requests().last().unwrap().target.clone();
+    assert!(t.starts_with("/serial-log?"), "{t}");
+    assert!(t.contains("signal=dut-console") && t.contains("port_wait_ms=3000") && t.contains("duration_ms=500"), "{t}");
+    assert!(!t.contains("port=") || t.contains("port_wait_ms="), "{t}");
+    assert!(!t.contains("&port=") && !t.contains("?port=") && !t.contains("baud="), "{t}");
+    client_for(&mock).serial_log_signal("dut-console", Some(921600), 500, None).await.unwrap();
+    let t = mock.requests().last().unwrap().target.clone();
+    assert!(t.contains("baud=921600") && !t.contains("port_wait_ms"), "{t}");
+}
+
+#[test]
+fn the_cli_takes_signal_without_a_project() {
+    let o = Command::new(env!("CARGO_BIN_EXE_embarch-api")).args(["serial-log", "--help"]).output().unwrap();
+    let s = String::from_utf8_lossy(&o.stdout);
+    assert!(s.contains("--signal") && s.contains("--port-wait-ms"), "{s}");
+    let o = Command::new(env!("CARGO_BIN_EXE_embarch-api")).args(["serial-log"]).output().unwrap();
+    assert!(!o.status.success(), "neither project nor signal must be refused");
+}
