@@ -248,16 +248,50 @@ pub fn attached_from(boards: &[EnrolledBoard], instruments: &[Instrument]) -> BT
     set
 }
 
+/// Names that more than one attached thing answers to, lowercased. A bench
+/// board is told apart only by its name, but nothing in `embarch-topology`
+/// makes names unique (rows are keyed by probe), so two boards can share one,
+/// or a board name can equal an instrument's. A need by such a name is
+/// satisfied by whichever is attached; the view says it cannot tell which.
+pub fn ambiguous_from(boards: &[EnrolledBoard], instruments: &[Instrument]) -> BTreeSet<String> {
+    let mut count: BTreeMap<String, usize> = BTreeMap::new();
+    for b in boards {
+        let keys: BTreeSet<String> =
+            [b.role.as_str(), b.name.as_str()].iter().filter(|s| !s.trim().is_empty()).map(|s| s.trim().to_ascii_lowercase()).collect();
+        for k in keys {
+            *count.entry(k).or_default() += 1;
+        }
+    }
+    for i in instruments {
+        *count.entry(i.name.trim().to_ascii_lowercase()).or_default() += 1;
+    }
+    count.into_iter().filter(|(_, n)| *n > 1).map(|(k, _)| k).collect()
+}
+
+/// What `attached_now` read: the set, where it came from, why Core was not
+/// used (if so), and the names that are ambiguous (Core only).
+struct Attached {
+    set: BTreeSet<String>,
+    source: &'static str,
+    why: Option<String>,
+    ambiguous: BTreeSet<String>,
+}
+
 /// Where the attached set came from, so a view never presents a fallback as
 /// a measurement.
-async fn attached_now(core: &CoreClient, bench: &Bench) -> (BTreeSet<String>, &'static str, Option<String>) {
+async fn attached_now(core: &CoreClient, bench: &Bench) -> Attached {
     let boards = core.list_enrolled().await;
     let instruments = core.instruments().await;
     match (boards, instruments) {
-        (Ok(b), Ok(i)) => (attached_from(&b, &i), "core", None),
+        (Ok(b), Ok(i)) => Attached { set: attached_from(&b, &i), source: "core", why: None, ambiguous: ambiguous_from(&b, &i) },
         (b, i) => {
             let why = b.err().or(i.err()).map(|e| format!("{e:#}")).unwrap_or_default();
-            (bench.attached.iter().map(|s| s.to_ascii_lowercase()).collect(), "bench.json", Some(why))
+            Attached {
+                set: bench.attached.iter().map(|s| s.to_ascii_lowercase()).collect(),
+                source: "bench.json",
+                why: Some(why),
+                ambiguous: BTreeSet::new(),
+            }
         }
     }
 }
@@ -452,7 +486,7 @@ pub async fn add(source_path: &Path, core: &CoreClient, a: AddArgs<'_>) -> Repor
         }
         let roles: Vec<String> = match a.roles.clone() {
             Some(r) => r,
-            None => attached_now(core, &bench).await.0.into_iter().collect(),
+            None => attached_now(core, &bench).await.set.into_iter().collect(),
         };
         let (b, c) = head(source_path);
         let row = Row {
@@ -498,7 +532,7 @@ pub async fn record_submission(
             branch,
             commit,
             image_hash: image_hash(None, image_path)?,
-            roles: attached_now(core, &bench).await.0.into_iter().collect(),
+            roles: attached_now(core, &bench).await.set.into_iter().collect(),
             test: test.map(str::to_string),
             result: SUBMITTED.to_string(),
             study_id: Some(study_id.to_string()),
@@ -519,7 +553,7 @@ pub async fn show(source_path: &Path, core: &CoreClient, test: Option<&str>, lim
         let d = dir(source_path);
         let settled = settle(&d, core).await.unwrap_or(0);
         let bench = load_bench(&d)?;
-        let (attached, source, why) = attached_now(core, &bench).await;
+        let Attached { set: attached, source, why, .. } = attached_now(core, &bench).await;
         let rows = load_rows(&d)?;
         let mut rows: Vec<Row> = rows.into_iter().filter(|r| test.is_none() || r.test.as_deref() == test).collect();
         let skip = rows.len().saturating_sub(limit);
@@ -574,17 +608,29 @@ pub async fn pending_view(
         let d = dir(source_path);
         let settled = settle(&d, core).await.unwrap_or(0);
         let bench = load_bench(&d)?;
-        let (set, source, why) = match attached {
-            Some(a) => (a.iter().map(|s| s.to_ascii_lowercase()).collect(), "the attached argument", None),
+        let Attached { set, source, why, ambiguous } = match attached {
+            Some(a) => Attached {
+                set: a.iter().map(|s| s.to_ascii_lowercase()).collect(),
+                source: "the attached argument",
+                why: None,
+                ambiguous: BTreeSet::new(),
+            },
             None => attached_now(core, &bench).await,
         };
         let current = image_hash(image_hash_arg, image_path)?;
-        let p = pending(&load_tests(&d)?, &load_rows(&d)?, &set, &bench.broken, current.as_deref(), &GitReach(source_path));
-        Ok::<_, anyhow::Error>((p, source, why, settled))
+        let tests = load_tests(&d)?;
+        let p = pending(&tests, &load_rows(&d)?, &set, &bench.broken, current.as_deref(), &GitReach(source_path));
+        // Only the ambiguous names a test actually needs are worth saying.
+        let ambiguous: Vec<String> =
+            ambiguous.into_iter().filter(|a| tests.iter().any(|t| t.needs.iter().any(|n| n.trim().eq_ignore_ascii_case(a)))).collect();
+        Ok::<_, anyhow::Error>((p, source, why, settled, ambiguous))
     };
     match go.await {
-        Ok((p, source, why, settled)) => {
-            let human = render_pending(&p, source);
+        Ok((p, source, why, settled, ambiguous)) => {
+            let mut human = render_pending(&p, source);
+            if !ambiguous.is_empty() {
+                human += &format!("\nambiguous (more than one attached thing has this name, so a need by it cannot say which): {}", ambiguous.join(", "));
+            }
             Report {
                 success: true,
                 value: serde_json::json!({
@@ -594,6 +640,7 @@ pub async fn pending_view(
                     "runnable_now": p.runnable_now,
                     "by_missing_role": p.by_missing_role,
                     "settled": settled,
+                    "ambiguous_needs": ambiguous,
                 }),
                 human,
             }
@@ -648,6 +695,49 @@ mod tests {
         assert_eq!(p.runnable_now.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), ["a", "c"]);
         assert!(!p.by_missing_role.contains_key("partner"));
         assert_eq!(p.by_missing_role["eload"][0].missing, ["eload"]);
+    }
+
+    fn board(role: &str, name: &str, probe: Option<&str>) -> EnrolledBoard {
+        let mut b: EnrolledBoard = serde_json::from_value(serde_json::json!({"role": role, "chip": "", "name": name})).unwrap();
+        b.probe_serial = probe.map(str::to_string);
+        b
+    }
+
+    #[test]
+    fn a_role_less_board_is_needed_by_the_name_it_was_enrolled_under() {
+        // Topology decision 41: role "" (NO_ROLE), told apart by `name`.
+        let boards = [board("dut", "nrf54l15dk", Some("A")), board("", "pd-nucleo", Some("B"))];
+        let attached = attached_from(&boards, &[]);
+        assert!(attached.contains("pd-nucleo") && attached.contains("dut"));
+        assert!(!attached.contains(""), "the empty role names no one board");
+        let tests = [def("pd", &["PD-Nucleo"])];
+        let p = pending(&tests, &[], &attached, &[], None, &Fake(vec![]));
+        assert_eq!(p.runnable_now[0].id, "pd");
+
+        // Absent: grouped under the need, lowercased.
+        let attached = attached_from(&boards[..1], &[]);
+        let p = pending(&tests, &[], &attached, &[], None, &Fake(vec![]));
+        assert!(p.runnable_now.is_empty());
+        assert_eq!(p.by_missing_role["pd-nucleo"][0].id, "pd");
+    }
+
+    #[test]
+    fn an_instrument_need_matches_the_instruments_table() {
+        let inst: Instrument = serde_json::from_value(serde_json::json!({"name": "EL-1", "port": {"vid": 1, "pid": 2}, "baud": 9600})).unwrap();
+        let tests = [def("load", &["el-1"])];
+        let p = pending(&tests, &[], &attached_from(&[], &[inst]), &[], None, &Fake(vec![]));
+        assert_eq!(p.runnable_now[0].id, "load");
+        let p = pending(&tests, &[], &attached_from(&[], &[]), &[], None, &Fake(vec![]));
+        assert_eq!(p.by_missing_role["el-1"][0].id, "load");
+    }
+
+    #[test]
+    fn two_boards_sharing_a_name_are_reported_ambiguous() {
+        let boards = [board("", "pd-nucleo", Some("A")), board("", "PD-Nucleo", Some("B")), board("dut", "other", Some("C"))];
+        let amb = ambiguous_from(&boards, &[]);
+        assert_eq!(amb.into_iter().collect::<Vec<_>>(), ["pd-nucleo"]);
+        // A board whose role equals its name is one board, not two.
+        assert!(ambiguous_from(&[board("dut", "dut", Some("A"))], &[]).is_empty());
     }
 
     #[test]
