@@ -2156,8 +2156,9 @@ fn render_follow_item(item: &FollowItem) -> String {
             result.outcome,
             result.answered_by.as_deref().map(|by| format!(" answered by {by}")).unwrap_or_default()
         ),
-        FollowItem::Event(StudyEvent::PromptPending { prompt_id, step_name, text, deadline_utc_ms, .. }) => format!(
-            "[prompt {prompt_id}] waiting for a person — '{step_name}': {text} (deadline {deadline_utc_ms} ms UTC; answer with answer-prompt)"
+        FollowItem::Event(StudyEvent::PromptPending { prompt_id, step_name, text, bench_config, deadline_utc_ms, .. }) => format!(
+            "[prompt {prompt_id}] waiting for a person — '{step_name}': {text}{} (deadline {deadline_utc_ms} ms UTC; answer with answer-prompt)",
+            bench_config.as_deref().map(|c| format!(" [bench config '{c}']")).unwrap_or_default()
         ),
         FollowItem::Event(StudyEvent::PromptResolved { prompt_id, answer, answered_by, .. }) => format!(
             "[prompt {prompt_id}] {answer}{}",
@@ -2368,6 +2369,22 @@ fn erased_note(erased: Option<&[String]>) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_prompt_line_names_its_bench_config_only_when_the_step_names_one() {
+        let event = |bench_config: Option<&str>| -> embarch_core_client::FollowItem {
+            let mut v = serde_json::json!({"kind":"PromptPending","study_id":"h1","prompt_id":2,"list":"Steps",
+                "step_index":0,"step_name":"swap","text":"move the analyzer in line","opened_utc_ms":1,"deadline_utc_ms":9});
+            if let Some(c) = bench_config {
+                v["bench_config"] = serde_json::json!(c);
+            }
+            embarch_core_client::FollowItem::Event(serde_json::from_value(v).unwrap())
+        };
+        let named = super::render_follow_item(&event(Some("analyzer in line")));
+        assert!(named.contains("move the analyzer in line [bench config 'analyzer in line'] (deadline"), "{named}");
+        let plain = super::render_follow_item(&event(None));
+        assert!(!plain.contains("bench config") && plain.contains("move the analyzer in line (deadline"), "{plain}");
+    }
+
     #[test]
     fn a_zero_record_report_says_no_records_found_not_damage() {
         let mk = |total: u32, verified: u32, leading: u32| -> embarch_study_designer::RecordReport {

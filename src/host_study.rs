@@ -54,6 +54,25 @@ mod tests {
         .unwrap();
         let s = read_host_study(&good).unwrap();
         assert_eq!(s.steps.len(), 1);
+        // An agent authors a bench configuration in the same file: no tool parameter of its own.
+        let named = dir.join("named.json");
+        std::fs::write(
+            &named,
+            r#"{"name":"pd","steps":[{"name":"swap","action":{"Prompt":{"text":"move the analyzer in line","bench_config":"analyzer in line"}},"timeout_ms":60000}]}"#,
+        )
+        .unwrap();
+        let s = read_host_study(&named).unwrap();
+        assert!(matches!(
+            &s.steps[0].action,
+            embarch_study_designer::HostAction::Prompt { bench_config: Some(c), .. } if c == "analyzer in line"
+        ));
+        let blank = dir.join("blank.json");
+        std::fs::write(
+            &blank,
+            r#"{"name":"pd","steps":[{"name":"swap","action":{"Prompt":{"text":"t","bench_config":" "}},"timeout_ms":60000}]}"#,
+        )
+        .unwrap();
+        assert!(read_host_study(&blank).unwrap_err().to_string().contains("not a valid host study"));
         let empty = dir.join("empty.json");
         std::fs::write(&empty, r#"{"name":"pd","steps":[],"teardown":[],"streams":[],"line_counts":[]}"#).unwrap();
         assert!(read_host_study(&empty).unwrap_err().to_string().contains("not a valid host study"));

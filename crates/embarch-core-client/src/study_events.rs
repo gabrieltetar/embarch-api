@@ -204,6 +204,10 @@ pub enum StudyEvent {
         step_index: u32,
         step_name: String,
         text: String,
+        /// The bench configuration the step names, unresolved (`embarch-core`
+        /// decision 107); absent when it names none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bench_config: Option<String>,
         opened_utc_ms: u64,
         deadline_utc_ms: u64,
     },
@@ -224,13 +228,24 @@ impl StudyEvent {
     /// The prompt this event announces, as `GET /study/{id}` would show it.
     pub fn as_pending_prompt(&self) -> Option<PendingPrompt> {
         match self {
-            StudyEvent::PromptPending { prompt_id, list, step_index, step_name, text, opened_utc_ms, deadline_utc_ms, .. } => {
+            StudyEvent::PromptPending {
+                prompt_id,
+                list,
+                step_index,
+                step_name,
+                text,
+                bench_config,
+                opened_utc_ms,
+                deadline_utc_ms,
+                ..
+            } => {
                 Some(PendingPrompt {
                     prompt_id: *prompt_id,
                     list: *list,
                     step_index: *step_index,
                     step_name: step_name.clone(),
                     text: text.clone(),
+                    bench_config: bench_config.clone(),
                     opened_utc_ms: *opened_utc_ms,
                     deadline_utc_ms: *deadline_utc_ms,
                 })
@@ -248,6 +263,7 @@ impl StudyEvent {
             step_index: prompt.step_index,
             step_name: prompt.step_name.clone(),
             text: prompt.text.clone(),
+            bench_config: prompt.bench_config.clone(),
             opened_utc_ms: prompt.opened_utc_ms,
             deadline_utc_ms: prompt.deadline_utc_ms,
         }

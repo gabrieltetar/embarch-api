@@ -928,6 +928,37 @@ async fn a_prompt_already_waiting_is_found_by_the_opening_poll() {
     assert!(outcome.timed_out && outcome.prompt_pending.is_none());
 }
 
+/// A prompt that names a bench configuration carries it, unresolved, through the live event and
+/// the opening poll alike; one that names none decodes as before and re-emits no such key.
+#[tokio::test]
+async fn a_prompt_naming_a_bench_config_carries_it_through_the_stream_and_the_poll() {
+    let named = |prompt_id: u32| {
+        let mut v: serde_json::Value = serde_json::from_str(&prompt_pending(prompt_id)).unwrap();
+        v["bench_config"] = json!("analyzer in line");
+        v.to_string()
+    };
+    let mock = MockCore::start(routed(stream(vec![sse_frame(None, &named(1))], StreamTail::Hold), host_poll(None))).await;
+    let core = CoreClient::new(&config(mock.base_url())).expect("client");
+    let outcome = core.follow_study(STUDY, &opts(true, 5_000), |_| {}).await.expect("follow");
+    let p = outcome.prompt_pending.expect("the follow stops for the prompt");
+    assert_eq!(p.bench_config.as_deref(), Some("analyzer in line"));
+    assert_eq!(serde_json::to_value(&p).unwrap()["bench_config"], "analyzer in line");
+
+    let mut body = json!({ "status": "running", "current_step": 1, "total_steps": 3, "result": null, "reason": null });
+    body["pending_prompt"] = prompt_fields(3);
+    body["pending_prompt"]["bench_config"] = json!("direct");
+    let mock = MockCore::start(routed(stream(vec![sse_keep_alive()], StreamTail::Hold), Behavior::json_ok(body))).await;
+    let core = CoreClient::new(&config(mock.base_url())).expect("client");
+    let outcome = core.follow_study(STUDY, &opts(true, 5_000), |_| {}).await.expect("follow");
+    assert_eq!(outcome.prompt_pending.and_then(|p| p.bench_config), Some("direct".to_string()));
+
+    let e: StudyEvent = serde_json::from_str(&named(4)).unwrap();
+    assert_eq!(serde_json::to_value(&e).unwrap()["bench_config"], "analyzer in line");
+    let e: StudyEvent = serde_json::from_str(&prompt_pending(4)).unwrap();
+    assert_eq!(e.as_pending_prompt().and_then(|p| p.bench_config), None);
+    assert!(serde_json::to_value(&e).unwrap().get("bench_config").is_none());
+}
+
 /// Prompt events and a host study's record decode, and `GET /study/{id}` with a host record still
 /// parses: the record moves to `host_result` instead of failing the bench `StudyResult` parse.
 #[test]

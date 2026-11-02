@@ -1769,6 +1769,12 @@ pub struct PendingPrompt {
     pub step_index: u32,
     pub step_name: String,
     pub text: String,
+    /// The bench configuration the step names (`embarch-study-designer`
+    /// decision 88), forwarded by Core unresolved (`embarch-core` decision
+    /// 107): the surface showing the prompt looks it up in its own live
+    /// bench. Absent from an older Core, and when the step names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bench_config: Option<String>,
     pub opened_utc_ms: u64,
     pub deadline_utc_ms: u64,
 }

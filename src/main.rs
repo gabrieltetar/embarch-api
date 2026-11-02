@@ -237,7 +237,8 @@ pub enum Commands {
     /// steps itself, with no dev bench (embarch-core decisions 95, 105).
     /// Prints the study id; follow it with `study-status <id> --follow`.
     RunHostStudy {
-        /// A `HostStudy` as JSON.
+        /// A `HostStudy` as JSON. A Prompt may name the bench configuration
+        /// it asks for (`bench_config`); the surface showing it resolves it.
         #[arg(long)]
         study_file: PathBuf,
     },
