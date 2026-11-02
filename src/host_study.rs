@@ -6,6 +6,7 @@
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
+use embarch_core_client::StudyStatusResponse;
 use embarch_study_designer::HostStudy;
 
 /// A `HostStudy` from a JSON file, checked by its own rules before Core sees
@@ -18,6 +19,22 @@ pub fn read_host_study(path: &Path) -> Result<HostStudy> {
         bail!("{} is not a valid host study: {e:?}", path.display());
     }
     Ok(study)
+}
+
+/// `study_status`'s and `study-status`'s body, so the two cannot disagree: Core's own fields
+/// verbatim, plus a host study's record once it has one (`host_result`) and the `Prompt` waiting
+/// for a person (`pending_prompt`, with `bench_config` when the step names one). Both are null
+/// when absent, which for a bench study is always.
+pub fn study_status_json(resp: &StudyStatusResponse) -> serde_json::Value {
+    serde_json::json!({
+        "status": resp.status,
+        "current_step": resp.current_step,
+        "total_steps": resp.total_steps,
+        "result": resp.result,
+        "reason": resp.reason,
+        "host_result": resp.host_result,
+        "pending_prompt": resp.pending_prompt,
+    })
 }
 
 /// The two answers a person can give, as Core spells them.
@@ -40,6 +57,29 @@ mod tests {
         assert_eq!(parse_answer("canceled").unwrap(), "cancelled");
         assert!(parse_answer("yes").is_err());
         assert!(parse_answer("").is_err());
+    }
+
+    #[test]
+    fn study_status_carries_a_host_record_and_a_waiting_prompt() {
+        let body = serde_json::json!({
+            "status": "running", "current_step": 1, "total_steps": 2, "result": null, "reason": null,
+            "pending_prompt": { "prompt_id": 2, "list": "Steps", "step_index": 1, "step_name": "swap",
+                "text": "move the analyzer in line", "bench_config": "analyzer in line",
+                "opened_utc_ms": 1, "deadline_utc_ms": 9 },
+        });
+        let v = study_status_json(&embarch_core_client::study_status_from_json(body).unwrap());
+        assert_eq!(v["pending_prompt"]["prompt_id"], 2);
+        assert_eq!(v["pending_prompt"]["bench_config"], "analyzer in line");
+        assert!(v["host_result"].is_null() && v["result"].is_null());
+
+        let body = serde_json::json!({
+            "status": "completed", "current_step": 1, "total_steps": 2, "reason": null,
+            "result": { "kind": "host", "study_name": "pd", "completed": false, "stopped_reason": "step 'b' failed", "steps": [] },
+        });
+        let v = study_status_json(&embarch_core_client::study_status_from_json(body).unwrap());
+        assert_eq!((v["host_result"]["study_name"].as_str(), v["host_result"]["completed"].as_bool()), (Some("pd"), Some(false)));
+        assert!(v["pending_prompt"].is_null() && v["result"].is_null());
+        assert_eq!(v["status"], "completed");
     }
 
     #[test]

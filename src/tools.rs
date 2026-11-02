@@ -2206,19 +2206,13 @@ impl EmbarchApi {
         Self::lease_result(report)
     }
 
-    #[tool(description = "Get a submitted study's status via embarch-core: status (\"pending\"|\"running\"|\"completed\"|\"failed\"|\"interrupted\" — a partial record with no job behind it, which Core will not move off by itself), current_step, total_steps, result (once completed), and reason (once failed) — returned verbatim.")]
+    #[tool(description = "Get a submitted study's status via embarch-core: status (\"pending\"|\"running\"|\"completed\"|\"failed\"|\"interrupted\" — a partial record with no job behind it, which Core will not move off by itself), current_step, total_steps, result (once completed), and reason (once failed) — returned verbatim. A host study (run_host_study) puts its record in host_result instead of result, and while a Prompt waits for a person, pending_prompt carries its prompt_id, text, deadline_utc_ms and any bench_config: show it to the person you are working for and relay exactly what they said with answer_prompt. Both are null otherwise.")]
     async fn study_status(
         &self,
         Parameters(StudyIdParams { study_id }): Parameters<StudyIdParams>,
     ) -> Result<CallToolResult, McpError> {
         match self.core.get_study_status(&study_id).await {
-            Ok(resp) => Self::ok_json(serde_json::json!({
-                "status": resp.status,
-                "current_step": resp.current_step,
-                "total_steps": resp.total_steps,
-                "result": resp.result,
-                "reason": resp.reason,
-            })),
+            Ok(resp) => Self::ok_json(crate::host_study::study_status_json(&resp)),
             Err(e) => Self::err_text(format!("study_status failed for '{study_id}': {e:#}")),
         }
     }

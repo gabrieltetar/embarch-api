@@ -1913,26 +1913,34 @@ async fn run_study(
 async fn study_status(core: &CoreClient, study_id: &str, json: bool) -> i32 {
     match core.get_study_status(study_id).await {
         Ok(resp) => {
-            let human = format!(
-                "study {study_id}: status={} current_step={:?} total_steps={:?} reason={:?}",
-                resp.status, resp.current_step, resp.total_steps, resp.reason
-            );
-            finish(
-                json,
-                true,
-                serde_json::json!({
-                    "success": true,
-                    "status": resp.status,
-                    "current_step": resp.current_step,
-                    "total_steps": resp.total_steps,
-                    "result": resp.result,
-                    "reason": resp.reason,
-                }),
-                human,
-            )
+            let mut value = crate::host_study::study_status_json(&resp);
+            value["success"] = serde_json::json!(true);
+            finish(json, true, value, study_status_human(study_id, &resp))
         }
         Err(e) => error_result(json, format!("study-status failed for '{study_id}': {e:#}")),
     }
+}
+
+/// `study-status`'s human line, plus a host study's record summary and its waiting prompt, each
+/// on a line of its own when there is one. The prompt line is the one `--follow` prints.
+fn study_status_human(study_id: &str, resp: &embarch_core_client::StudyStatusResponse) -> String {
+    let mut human = format!(
+        "study {study_id}: status={} current_step={:?} total_steps={:?} reason={:?}",
+        resp.status, resp.current_step, resp.total_steps, resp.reason
+    );
+    if let Some(record) = &resp.host_result {
+        human.push_str(&format!(
+            "\n  host record: completed={} steps={} stopped_reason={:?}",
+            record["completed"],
+            record["steps"].as_array().map_or(0, Vec::len),
+            record["stopped_reason"].as_str()
+        ));
+    }
+    if let Some(prompt) = &resp.pending_prompt {
+        let event = StudyEvent::prompt_pending(study_id, prompt);
+        human.push_str(&format!("\n  {}", render_follow_item(&FollowItem::Event(event))));
+    }
+    human
 }
 
 /// `study-status --follow`: watch a study live.
@@ -2369,6 +2377,29 @@ fn erased_note(erased: Option<&[String]>) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn study_status_prints_a_host_record_and_a_waiting_prompt_on_lines_of_their_own() {
+        let status = |body: serde_json::Value| embarch_core_client::study_status_from_json(body).unwrap();
+        let waiting = status(serde_json::json!({
+            "status": "running", "current_step": 1, "total_steps": 2, "result": null, "reason": null,
+            "pending_prompt": { "prompt_id": 2, "list": "Steps", "step_index": 1, "step_name": "swap",
+                "text": "move the analyzer in line", "bench_config": "analyzer in line",
+                "opened_utc_ms": 1, "deadline_utc_ms": 9 },
+        }));
+        let h = super::study_status_human("h1", &waiting);
+        assert!(h.starts_with("study h1: status=running"), "{h}");
+        assert!(h.contains("\n  [prompt 2] waiting for a person — 'swap': move the analyzer in line [bench config 'analyzer in line']"), "{h}");
+        let done = status(serde_json::json!({
+            "status": "completed", "current_step": 1, "total_steps": 2, "reason": null,
+            "result": { "kind": "host", "study_name": "pd", "completed": false, "stopped_reason": "step 'b' failed", "steps": [{}, {}] },
+        }));
+        let h = super::study_status_human("h1", &done);
+        assert!(h.contains("\n  host record: completed=false steps=2 stopped_reason=Some(\"step 'b' failed\")"), "{h}");
+        assert!(!h.contains("[prompt"), "{h}");
+        let bench = status(serde_json::json!({ "status": "running", "current_step": 0, "total_steps": 3, "result": null, "reason": null }));
+        assert!(!super::study_status_human("b1", &bench).contains('\n'));
+    }
+
     #[test]
     fn a_prompt_line_names_its_bench_config_only_when_the_step_names_one() {
         let event = |bench_config: Option<&str>| -> embarch_core_client::FollowItem {
