@@ -41,6 +41,10 @@ pub struct CoreClient {
     /// `X-Embarch-Lease` on every request; when empty it falls back to
     /// `EMBARCH_LEASE_TOKEN`, which is how a second process inherits one.
     lease: Arc<Mutex<HeldLease>>,
+    /// Refuse a hardware route while no lease is live (`embarch-api` decision
+    /// 101). Set by [`CoreClient::with_lease_required`], off everywhere else,
+    /// which leaves `embarch-ui` and the other users of this crate unchanged.
+    lease_required: bool,
     client: reqwest::Client,
     status_timeout: Duration,
     reset_timeout: Duration,
@@ -147,6 +151,25 @@ impl std::fmt::Display for LeaseHeldError {
 }
 
 impl std::error::Error for LeaseHeldError {}
+
+/// A session made to hold the bench lease tried a hardware route while no
+/// lease was live (`embarch-api` decision 101). Never reached Core's route.
+#[derive(Debug)]
+pub struct LeaseRequiredError;
+
+impl std::fmt::Display for LeaseRequiredError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "no bench lease is live, and this session must hold one for hardware ({} is set): take one with \
+             the lease_take tool or `embarch-api lease-take`; a token taken in another process reaches this \
+             one through {LEASE_TOKEN_ENV}",
+            crate::lease_gate::REQUIRE_LEASE_ENV
+        )
+    }
+}
+
+impl std::error::Error for LeaseRequiredError {}
 
 /// Core's `409` body for a request without the live lease's token starts
 /// with this (`embarch-core` `lease.rs`, `LeaseView::refusal`). The only
@@ -1842,6 +1865,7 @@ impl CoreClient {
             resolved: Arc::new(OnceCell::new()),
             token,
             lease: Arc::new(Mutex::new(HeldLease::default())),
+            lease_required: false,
             client,
             status_timeout: Duration::from_secs(config.status_timeout_secs),
             reset_timeout: Duration::from_secs(config.reset_timeout_secs),
@@ -1961,6 +1985,7 @@ impl CoreClient {
         request: reqwest::RequestBuilder,
         timeout: Option<Duration>,
     ) -> Result<reqwest::Response> {
+        let request = if self.lease_required { self.refuse_without_a_live_lease(request).await? } else { request };
         let request = request.bearer_auth(&self.token);
         let request = match self.effective_lease_token() {
             Some(token) => {
@@ -1998,6 +2023,22 @@ impl CoreClient {
                 Err(anyhow::Error::new(err).context(context))
             }
         }
+    }
+
+    /// The check [`CoreClient::with_lease_required`] turns on: a hardware
+    /// route with no lease live is refused here. With one live, the request
+    /// goes on and Core decides by its token, so a refusal still names the
+    /// holder. Asking Core rather than looking for a token is what catches a
+    /// token left over from an expired lease or a Core restart. `lease_show`
+    /// comes back through `dispatch`, and `/lease` is not gated, so this ends
+    /// after one level; the box is what lets the two call each other.
+    async fn refuse_without_a_live_lease(&self, request: reqwest::RequestBuilder) -> Result<reqwest::RequestBuilder> {
+        let (client, built) = request.build_split();
+        let built = built.context("request to embarch-core failed")?;
+        if crate::lease_gate::is_gated(built.method().as_str(), built.url().path()) && Box::pin(self.lease_show()).await?.is_none() {
+            return Err(anyhow::Error::new(LeaseRequiredError));
+        }
+        Ok(reqwest::RequestBuilder::from_parts(client, built))
     }
 
     /// The winning topology class — `Local` for a declared address (no
@@ -2079,6 +2120,19 @@ impl CoreClient {
             }
             _ => format!("embarch-core returned {status}: {body}"),
         }
+    }
+
+    /// Refuse a hardware route while no lease is live (`embarch-api` decision
+    /// 101). `embarch-api` turns this on from `EMBARCH_REQUIRE_LEASE`; this
+    /// crate's other users do not.
+    pub fn with_lease_required(mut self, required: bool) -> Self {
+        self.lease_required = required;
+        self
+    }
+
+    /// Whether [`CoreClient::with_lease_required`] turned the check on.
+    pub fn lease_required(&self) -> bool {
+        self.lease_required
     }
 
     /// The token `dispatch` sends: the one this process took or was given

@@ -1031,7 +1031,9 @@ async fn async_main() -> Result<()> {
 
         let config = Config::load_from_path(&config_path)
             .with_context(|| format!("failed to load config from {}", config_path.display()))?;
-        let core = CoreClient::new(&config.core).context("failed to build embarch-core client")?;
+        let core = CoreClient::new(&config.core)
+            .context("failed to build embarch-core client")?
+            .with_lease_required(embarch_core_client::lease_gate::required_by_env());
         Ok((config_path, config, core))
     })();
 

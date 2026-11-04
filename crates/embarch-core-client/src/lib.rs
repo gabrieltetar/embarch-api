@@ -10,6 +10,7 @@ use serde::Deserialize;
 
 pub mod api_log;
 pub mod client;
+pub mod lease_gate;
 pub mod sse;
 pub mod study_events;
 pub mod token_discovery;

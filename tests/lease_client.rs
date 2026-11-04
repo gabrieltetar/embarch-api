@@ -35,6 +35,11 @@ fn lease_header(r: &RecordedRequest) -> Option<&str> {
 /// Runs the real binary against `mock`, optionally with the token in the
 /// environment: the way `embarch-atlas` reaches Core.
 fn cli(mock: &MockCore, env_token: Option<&str>, args: &[&str]) -> Output {
+    cli_in_session(mock, env_token, None, args)
+}
+
+/// [`cli`], with `EMBARCH_REQUIRE_LEASE` set to `require` when given.
+fn cli_in_session(mock: &MockCore, env_token: Option<&str>, require: Option<&str>, args: &[&str]) -> Output {
     let dir = std::env::temp_dir().join(format!(
         "embarch-api-lease-{}-{}",
         std::process::id(),
@@ -50,9 +55,13 @@ fn cli(mock: &MockCore, env_token: Option<&str>, args: &[&str]) -> Output {
         .args(args)
         .env("XDG_DATA_HOME", dir.join("data"))
         .env("LOCALAPPDATA", dir.join("data"))
-        .env_remove("EMBARCH_LEASE_TOKEN");
+        .env_remove("EMBARCH_LEASE_TOKEN")
+        .env_remove("EMBARCH_REQUIRE_LEASE");
     if let Some(token) = env_token {
         command.env("EMBARCH_LEASE_TOKEN", token);
+    }
+    if let Some(value) = require {
+        command.env("EMBARCH_REQUIRE_LEASE", value);
     }
     let out = command.output().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
@@ -239,4 +248,139 @@ async fn the_keepalive_adopts_and_renews_a_token_it_was_handed() {
     let renews: Vec<_> = mock.requests().into_iter().filter(|r| r.method == "PUT").collect();
     assert_eq!(renews.len(), 1, "unknown ttl renews once at once, then learns 3600 s: {renews:?}");
     assert_eq!(lease_header(&renews[0]), Some("handed-token"));
+}
+
+// ---------------------------------------------------------------- a session made to hold the lease (decision 101)
+
+const MUST_HOLD: &str = "this session must hold one for hardware";
+
+fn live_lease() -> Behavior {
+    Behavior::json_ok(json!({
+        "holder": "sess-a", "purpose": "charger bring-up",
+        "started_at": "2026-10-26T12:00:00Z", "expires_at": "2026-10-26T13:00:00Z", "ttl_s": 3600,
+    }))
+}
+
+fn no_lease() -> Behavior {
+    Behavior::plain_text_error(404, "Not Found", "no lease is live")
+}
+
+/// A Core whose `/lease` answers `lease`, and whose every other route answers `rest`.
+fn core_with(rt: &tokio::runtime::Runtime, lease: Behavior, rest: Behavior) -> MockCore {
+    rt.block_on(MockCore::start(Behavior::Router {
+        routes: vec![("/lease".to_string(), lease)],
+        otherwise: Box::new(rest),
+    }))
+}
+
+fn asked(mock: &MockCore, path: &str) -> usize {
+    mock.requests().iter().filter(|r| r.path() == path).count()
+}
+
+#[test]
+fn a_required_lease_refuses_a_hardware_call_when_none_is_live() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mock = core_with(&rt, no_lease(), Behavior::json_ok(json!({})));
+    let out = cli_in_session(&mock, None, Some("1"), &["dev-bench-hello"]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains(MUST_HOLD) && err.contains("lease_take") && err.contains("lease-take"), "{err}");
+    assert_eq!(asked(&mock, "/dev-bench/hello"), 0, "the hardware route must never be reached");
+}
+
+#[test]
+fn a_required_lease_refuses_a_token_left_over_from_a_dead_lease() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mock = core_with(&rt, no_lease(), Behavior::json_ok(json!({})));
+    let out = cli_in_session(&mock, Some("stale-token"), Some("1"), &["dev-bench-hello"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains(MUST_HOLD));
+    assert_eq!(asked(&mock, "/dev-bench/hello"), 0, "Core would have admitted this, with no lease live");
+}
+
+#[test]
+fn a_required_lease_passes_with_the_token_of_a_live_lease() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mock = core_with(&rt, live_lease(), Behavior::json_ok(json!({})));
+    let out = cli_in_session(&mock, Some("live-token"), Some("1"), &["dev-bench-hello"]);
+    assert!(!String::from_utf8_lossy(&out.stderr).contains(MUST_HOLD));
+    let requests = mock.requests();
+    let hello = requests.iter().find(|r| r.path() == "/dev-bench/hello").expect("the call must reach Core");
+    assert_eq!(lease_header(hello), Some("live-token"));
+}
+
+#[test]
+fn a_required_lease_leaves_someone_elses_lease_to_cores_refusal() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mock = core_with(&rt, live_lease(), Behavior::plain_text_error(409, "Conflict", REFUSAL));
+    let out = cli_in_session(&mock, None, Some("1"), &["dev-bench-hello"]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains(REFUSAL), "the holder's name comes from Core: {err}");
+    assert!(!err.contains(MUST_HOLD), "{err}");
+}
+
+#[test]
+fn without_the_variable_a_session_behaves_as_before() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    for require in [None, Some(""), Some("0")] {
+        let mock = core_with(&rt, no_lease(), Behavior::json_ok(json!({})));
+        let out = cli_in_session(&mock, None, require, &["dev-bench-hello"]);
+        assert!(!String::from_utf8_lossy(&out.stderr).contains(MUST_HOLD), "{require:?}");
+        assert_eq!(asked(&mock, "/dev-bench/hello"), 1, "{require:?}");
+        assert_eq!(asked(&mock, "/lease"), 0, "no extra request, {require:?}");
+    }
+}
+
+#[test]
+fn a_required_lease_leaves_open_routes_alone_so_a_session_can_take_one() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    let mock = core_with(&rt, no_lease(), Behavior::json_ok(json!({ "probes": [], "signals": [] })));
+    let _ = cli_in_session(&mock, None, Some("1"), &["status"]);
+    assert_eq!(asked(&mock, "/status"), 1);
+    assert_eq!(asked(&mock, "/lease"), 0, "an open route costs no extra request");
+
+    let mock = rt.block_on(MockCore::start(Behavior::json_ok(grant())));
+    let out = cli_in_session(&mock, None, Some("1"), &["--json", "lease-take"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn lease_show_says_when_a_session_must_hold_one() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mock = rt.block_on(MockCore::start(no_lease()));
+
+    let on = cli_in_session(&mock, None, Some("1"), &["lease-show"]);
+    assert!(String::from_utf8_lossy(&on.stdout).contains(MUST_HOLD));
+    let on: serde_json::Value =
+        serde_json::from_slice(&cli_in_session(&mock, None, Some("1"), &["--json", "lease-show"]).stdout).unwrap();
+    assert_eq!(on["this_process_requires_a_lease"], true);
+
+    let off: serde_json::Value = serde_json::from_slice(&cli(&mock, None, &["--json", "lease-show"]).stdout).unwrap();
+    assert_eq!(off["this_process_requires_a_lease"], false);
+}
+
+/// The check takes the request apart to read its route and rebuilds it, so the
+/// one route with a multipart body proves the body survives that.
+#[tokio::test]
+async fn a_required_lease_carries_an_upload_through_the_check() {
+    let mock = MockCore::start(Behavior::Router {
+        routes: vec![("/lease".to_string(), live_lease())],
+        otherwise: Box::new(Behavior::json_ok(json!({}))),
+    })
+    .await;
+    let dir = std::env::temp_dir().join(format!("embarch-api-lease-upload-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let image = dir.join("zephyr.signed.bin");
+    std::fs::write(&image, b"signed-image-bytes").unwrap();
+
+    let c = client(&mock).with_lease_required(true);
+    let _ = c.bootload(&image, &Default::default()).await;
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let requests = mock.requests();
+    let upload = requests.iter().find(|r| r.path() == "/bootload").expect("the upload must reach Core");
+    assert!(upload.body_text().contains("signed-image-bytes"), "{}", upload.body_text());
+    assert!(upload.header("authorization").is_some());
 }

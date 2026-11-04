@@ -1,0 +1,5 @@
+[env]
+# A session may be made to hold the bench lease (embarch-api decision 101). The
+# tests run the real binary against a mock Core and must not inherit that from
+# the session running them; a test of the check sets the variable itself.
+EMBARCH_REQUIRE_LEASE = { value = "", force = true }

@@ -1422,7 +1422,7 @@ impl EmbarchApi {
         Self::lease_result(crate::lease::release(&self.core).await)
     }
 
-    #[tool(description = "Show the live bench lease (embarch-api decision 90): holder, purpose, start, expiry, never the token; lease is null when none is live. this_process_sends_a_token says whether this server sends one on its calls. Not refused by a lease, so it works for a session that does not hold it.")]
+    #[tool(description = "Show the live bench lease (embarch-api decision 90): holder, purpose, start, expiry, never the token; lease is null when none is live. this_process_sends_a_token says whether this server sends one on its calls. this_process_requires_a_lease says whether this server refuses hardware calls while no lease is live (EMBARCH_REQUIRE_LEASE, decision 101). Not refused by a lease, so it works for a session that does not hold it.")]
     async fn lease_show(&self) -> Result<CallToolResult, McpError> {
         Self::lease_result(crate::lease::show(&self.core).await)
     }

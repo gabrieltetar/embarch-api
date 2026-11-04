@@ -4,7 +4,9 @@
 //! the functions here, so the wording is written once.
 //!
 //! A refusal is Core's own text, verbatim, so a session reads who holds the
-//! bench and until when; it is never paraphrased or wrapped in a guess.
+//! bench and until when; it is never paraphrased or wrapped in a guess. The one
+//! refusal written here is `LeaseRequiredError` (decision 101), for a session
+//! that must hold a lease when none is live and Core would admit the call.
 
 use embarch_core_client::{CoreClient, LEASE_TOKEN_ENV};
 
@@ -71,6 +73,7 @@ pub async fn show(core: &CoreClient) -> Report {
     match core.lease_show().await {
         Ok(view) => {
             let holding = core.effective_lease_token().is_some();
+            let required = core.lease_required();
             let human = match &view {
                 Some(v) => format!(
                     "bench leased by '{}' for '{}' (started {}, expires {}); {}",
@@ -80,11 +83,17 @@ pub async fn show(core: &CoreClient) -> Report {
                     v.expires_at,
                     if holding { "this process sends a token" } else { "this process sends no token" }
                 ),
+                None if required => "no bench lease is live, and this session must hold one for hardware".to_string(),
                 None => "no bench lease is live".to_string(),
             };
             Report {
                 success: true,
-                value: serde_json::json!({ "success": true, "lease": view, "this_process_sends_a_token": holding }),
+                value: serde_json::json!({
+                    "success": true,
+                    "lease": view,
+                    "this_process_sends_a_token": holding,
+                    "this_process_requires_a_lease": required,
+                }),
                 human,
             }
         }
