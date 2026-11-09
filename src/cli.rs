@@ -268,9 +268,9 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
     }
 }
 
-/// `desk` names the open desk's firmware repo (`embarch-open-desk-proposal.md`).
+/// `desk` names this session's desk's firmware repo (EMB-94).
 fn lookup_project<'a>(config: &'a Config, name: &str) -> Result<&'a ProjectConfig, String> {
-    let (own, name) = crate::open_desk::resolve(config, name).map_err(|e| format!("{e:#}"))?;
+    let (own, name) = crate::session_desk::resolve(config, name).map_err(|e| format!("{e:#}"))?;
     own.unwrap_or(config).project(&name).map_err(|e| e.to_string())
 }
 
@@ -1872,7 +1872,7 @@ async fn run_study(
             let mut value = outcome.to_json();
             value["success"] = serde_json::Value::Bool(true);
             // The ledger row (decision 98): the project the run names, else
-            // the open desk's; with neither, nothing is written and it says so.
+            // this session's desk's; with neither, nothing is written and it says so.
             value["ledger"] = match lookup_project(config, project.unwrap_or("desk")) {
                 Ok(p) => {
                     crate::ledger::record_submission(

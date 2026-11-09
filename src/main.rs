@@ -9,7 +9,7 @@ mod instrument;
 mod lease;
 mod ledger;
 mod logging;
-mod open_desk;
+mod session_desk;
 mod patches;
 mod reflash;
 mod stack;

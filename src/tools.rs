@@ -38,10 +38,10 @@ impl EmbarchApi {
         }
     }
 
-    /// An empty project or `desk` means the open desk's firmware repo
-    /// (`embarch-open-desk-proposal.md`).
+    /// An empty project or `desk` means this session's desk's firmware repo
+    /// (EMB-94).
     fn project(&self, name: &str) -> Result<&ProjectConfig, McpError> {
-        let (own, name) = crate::open_desk::resolve(&self.config, name)
+        let (own, name) = crate::session_desk::resolve(&self.config, name)
             .map_err(|e| McpError::invalid_params(format!("{e:#}"), None))?;
         own.unwrap_or(&self.config)
             .project(&name)
@@ -104,7 +104,7 @@ impl EmbarchApi {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct LedgerAddParams {
-    /// A project name, or omit for the open desk's firmware repo.
+    /// A project name, or omit for this session's desk's firmware repo.
     #[serde(default)]
     pub project: String,
     /// A test id from the project's embarch/ledger/tests.toml.
@@ -129,7 +129,7 @@ pub struct LedgerAddParams {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct LedgerShowParams {
-    /// A project name, or omit for the open desk's firmware repo.
+    /// A project name, or omit for this session's desk's firmware repo.
     #[serde(default)]
     pub project: String,
     /// Only this test's rows.
@@ -140,7 +140,7 @@ pub struct LedgerShowParams {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct LedgerPendingParams {
-    /// A project name, or omit for the open desk's firmware repo.
+    /// A project name, or omit for this session's desk's firmware repo.
     #[serde(default)]
     pub project: String,
     /// Roles to treat as attached, instead of reading them from Core.
@@ -171,7 +171,7 @@ pub struct LeaseRenewParams {
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ProjectParams {
     /// Name of a project from embarch-api's config file (see `list_projects`). Omit it, or
-    /// say "desk", to use the open desk's firmware repo.
+    /// say "desk", to use this session's desk's firmware repo.
     #[serde(default)]
     pub project: String,
 }
@@ -184,7 +184,7 @@ pub struct ProjectParams {
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct TargetParams {
     /// Name of a project from embarch-api's config file (see `list_projects`). Omit it, or
-    /// say "desk", to use the open desk's firmware repo.
+    /// say "desk", to use this session's desk's firmware repo.
     #[serde(default)]
     pub project: String,
     /// Zephyr board name. Only for a discovery = "zephyr-west" project — a
@@ -240,7 +240,7 @@ impl TargetParams {
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct FlashParams {
     /// Name of a project from embarch-api's config file (see `list_projects`). Omit it, or
-    /// say "desk", to use the open desk's firmware repo.
+    /// say "desk", to use this session's desk's firmware repo.
     #[serde(default)]
     pub project: String,
     /// Zephyr board name. Only for a discovery = "zephyr-west" project — a
@@ -300,7 +300,7 @@ impl FlashParams {
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct BootloadParams {
     /// Name of a project from embarch-api's config file (see `list_projects`). Omit it, or
-    /// say "desk", to use the open desk's firmware repo.
+    /// say "desk", to use this session's desk's firmware repo.
     #[serde(default)]
     pub project: String,
     /// Zephyr board name. Only for a discovery = "zephyr-west" project — a
@@ -428,7 +428,7 @@ pub struct SerialLogParams {
     /// that is re-enumerating, e.g. right after a reset. Ignored without it.
     pub port_wait_ms: Option<u64>,
     /// Name of a project from embarch-api's config file (see `list_projects`). Omit it, or
-    /// say "desk", to use the open desk's firmware repo.
+    /// say "desk", to use this session's desk's firmware repo.
     #[serde(default)]
     pub project: String,
     /// Fallback for a port nobody declared: serial port to read from.
@@ -2135,7 +2135,7 @@ impl EmbarchApi {
         {
             Ok(outcome) => {
                 let mut value = outcome.to_json();
-                // The ledger row (decision 98): the named project, else the open desk's.
+                // The ledger row (decision 98): the named project, else this session's desk's.
                 value["ledger"] = match self.project(params.project.as_deref().unwrap_or("")) {
                     Ok(p) => {
                         crate::ledger::record_submission(
@@ -2162,7 +2162,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Append one row to the project's hardware test ledger (embarch-api decision 98): which test (an id from embarch/ledger/tests.toml) ran, its result (pass, fail or skipped), on which branch and commit (default: the tree's), with which image (image_path is hashed) and which roles attached (default: what Core reports, by role, board name and instrument). broken replaces the bench header's known-broken list. Project omitted means the open desk's firmware repo.")]
+    #[tool(description = "Append one row to the project's hardware test ledger (embarch-api decision 98): which test (an id from embarch/ledger/tests.toml) ran, its result (pass, fail or skipped), on which branch and commit (default: the tree's), with which image (image_path is hashed) and which roles attached (default: what Core reports, by role, board name and instrument). broken replaces the bench header's known-broken list. Project omitted means this session's desk's firmware repo.")]
     async fn ledger_add(&self, Parameters(p): Parameters<LedgerAddParams>) -> Result<CallToolResult, McpError> {
         let project = self.project(&p.project)?;
         let report = crate::ledger::add(
