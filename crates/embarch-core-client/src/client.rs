@@ -1522,23 +1522,24 @@ fn urlencode(raw: &str) -> String {
 /// actually serializes this route and this crate can't link
 /// `embarch-topology`'s `hardware` feature to check the two agree (see
 /// `SignalLink`'s own doc comment above for the same constraint on a
-/// different type). `firmware_version` is what the bench currently running
+/// different type). `dev_bench_version` is what the bench currently running
 /// actually reports, which is the only version in this suite that is
 /// genuinely read back off the thing it describes.
 ///
-/// **It is the *bench's* build, and the `Study` field it corresponds to is
-/// `requires.dev_bench_version` — not the identically named
-/// `requires.firmware_version`, which is the DUT's**
-/// (`embarch-study-designer` decision 74). Writing this value into
-/// `requires.firmware_version` is accepted silently, because that
-/// requirement is only compared when a run supplies
-/// `flashed_firmware_version`; `reflash.rs` does the correct crossing by
-/// hand. Whether this route should rename the field — as `embarch-core`
-/// decision 47 did with `hardware_id` on this same route — is open as
-/// `tasks/suite/036`, and the cost that keeps it open is this client:
-/// `firmware_version` is a plain `String` here, so a renamed Core would
-/// need the same `Option` tolerance decision 60 gave the identity fields
-/// under decision 58's general rule.
+/// **It is the *bench's* build, named for the `Study` field it is compared
+/// against, `requires.dev_bench_version`.** Core served it as
+/// `firmware_version` until `embarch-core` decision 108 renamed it — the
+/// name that, on a `Study`, is the DUT's (`embarch-study-designer` decision
+/// 74), so a caller matching name to name pinned a DUT requirement to the
+/// bench's build. The wire `HelloAck` keeps `firmware_version`; only this
+/// route's JSON moved.
+///
+/// **`Option<String>` with `#[serde(default)]`, per `embarch-api` decision
+/// 58, and deliberately not aliased to `firmware_version`** (decision 105),
+/// the same way the identity fields below are not aliased to `hardware_id`.
+/// A Core older than the rename sends no `dev_bench_version`, and `None`
+/// says so: a fact about the Core, never an empty version, and never
+/// satisfied by any requirement but `any` (`reflash.rs`'s gate refuses it).
 ///
 /// **`link_identity` is the whole point of this route being served at
 /// all** — `self_reported_hardware_id` compared against `probe_hardware_id`
@@ -1582,7 +1583,8 @@ fn urlencode(raw: &str) -> String {
 pub struct HelloAckResponse {
     pub schema_version: u32,
     pub compatible: bool,
-    pub firmware_version: String,
+    #[serde(default)]
+    pub dev_bench_version: Option<String>,
     #[serde(default)]
     pub self_reported_hardware_id: Option<String>,
     #[serde(default)]
@@ -1620,6 +1622,10 @@ pub struct HelloAckResponse {
 /// actually matters — **never `"not-reported"`**, a different fact with a
 /// different cause (the *board* declining to state an identity, versus
 /// *this Core* not having the field at all).
+///
+/// `dev_bench_version` is not one of the three: its absence (a Core older
+/// than `embarch-core` decision 108) is the same kind of sentence on its own
+/// line, and never moves the complete/unavailable verdict (decision 105).
 pub fn render_hello_ack(info: &HelloAckResponse) -> String {
     fn field_line(label: &str, value: &Option<String>) -> String {
         match value {
@@ -1637,9 +1643,18 @@ pub fn render_hello_ack(info: &HelloAckResponse) -> String {
     .filter_map(|(name, is_missing)| is_missing.then_some(name))
     .collect();
 
+    // Not part of the identity cross-check, so its absence never moves the
+    // complete/unavailable verdict below; it is said on its own line.
+    let dev_bench_version = match &info.dev_bench_version {
+        Some(v) => format!("dev_bench_version: {v}"),
+        None => "dev_bench_version: this Core did not send this field, so the bench's build is \
+                 unknown (a Core older than embarch-core decision 108 serves it as \
+                 firmware_version, which this client does not read)."
+            .to_string(),
+    };
     let core_fields = format!(
-        "schema_version: {}\ncompatible: {}\nfirmware_version: {}",
-        info.schema_version, info.compatible, info.firmware_version
+        "schema_version: {}\ncompatible: {}\n{dev_bench_version}",
+        info.schema_version, info.compatible
     );
     let identity_fields = format!(
         "{}\n{}\n{}",
@@ -3887,7 +3902,7 @@ mod tests {
     /// counterpart test that pins `HelloAckInfo` against this exact string
     /// does not exist yet — this only pins the client's own read of it.
     const HELLO_ACK_RESPONSE_JSON: &str = concat!(
-        r#"{"schema_version":10,"compatible":true,"firmware_version":"g1a2b3c",""#,
+        r#"{"schema_version":10,"compatible":true,"dev_bench_version":"g1a2b3c",""#,
         r#"self_reported_hardware_id":"AAAABBBB","link_identity":"undeclared",""#,
         r#"probe_hardware_id":"BBBBAAAA"}"#
     );
@@ -3896,7 +3911,7 @@ mod tests {
         HelloAckResponse {
             schema_version: 10,
             compatible: true,
-            firmware_version: "g1a2b3c".to_string(),
+            dev_bench_version: Some("g1a2b3c".to_string()),
             self_reported_hardware_id: Some("AAAABBBB".to_string()),
             link_identity: Some("undeclared".to_string()),
             probe_hardware_id: Some("BBBBAAAA".to_string()),
@@ -3938,14 +3953,38 @@ mod tests {
     /// is exactly the defect `api/036` was refused at the merge for.
     #[test]
     fn an_older_core_missing_all_three_identity_fields_still_deserializes() {
-        let json = r#"{"schema_version":9,"compatible":true,"firmware_version":"g0f0f0f"}"#;
+        let json = r#"{"schema_version":9,"compatible":true,"dev_bench_version":"g0f0f0f"}"#;
         let ack: HelloAckResponse = serde_json::from_str(json).unwrap();
         assert_eq!(ack.schema_version, 9);
         assert!(ack.compatible);
-        assert_eq!(ack.firmware_version, "g0f0f0f");
+        assert_eq!(ack.dev_bench_version.as_deref(), Some("g0f0f0f"));
         assert_eq!(ack.self_reported_hardware_id, None);
         assert_eq!(ack.link_identity, None);
         assert_eq!(ack.probe_hardware_id, None);
+    }
+
+    /// **Decision 105, pinned at this struct.** A Core older than
+    /// `embarch-core` decision 108 serves the bench's build as
+    /// `firmware_version` and sends no `dev_bench_version`. That body still
+    /// deserializes (decision 58), the field is `None` rather than the old
+    /// key read through an alias, and the render says the build is unknown
+    /// instead of printing a blank where a version belongs.
+    #[test]
+    fn a_core_older_than_the_rename_leaves_dev_bench_version_none_and_says_so() {
+        let json = concat!(
+            r#"{"schema_version":15,"compatible":true,"firmware_version":"g0f0f0f","#,
+            r#""self_reported_hardware_id":"AAAABBBB","link_identity":"undeclared","#,
+            r#""probe_hardware_id":"BBBBAAAA"}"#
+        );
+        let ack: HelloAckResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(ack.dev_bench_version, None);
+
+        let rendered = render_hello_ack(&ack);
+        // The identity verdict is its own question and is untouched by this.
+        assert!(rendered.starts_with("Identity cross-check: complete"), "{rendered}");
+        assert!(rendered.contains("dev_bench_version: this Core did not send this field"), "{rendered}");
+        assert!(rendered.contains("embarch-core decision 108"), "{rendered}");
+        assert!(!rendered.contains("g0f0f0f"), "the old key must not be read: {rendered}");
     }
 
     /// The refused unit's whole reason for coming back, written as a test:
@@ -3956,7 +3995,7 @@ mod tests {
     #[test]
     fn an_incomplete_response_renders_the_unavailable_line_first() {
         let json = concat!(
-            r#"{"schema_version":9,"compatible":true,"firmware_version":"g0f0f0f","#,
+            r#"{"schema_version":9,"compatible":true,"dev_bench_version":"g0f0f0f","#,
             r#""link_identity":"undeclared","probe_hardware_id":"BBBBAAAA"}"#
         );
         let ack: HelloAckResponse = serde_json::from_str(json).unwrap();

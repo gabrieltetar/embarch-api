@@ -116,6 +116,25 @@ pub fn mismatch_message(what: &str, required: &str, actual: &str, remedy: &str) 
     )
 }
 
+/// The message the dev-bench gate fails with when Core's `GET
+/// /dev-bench/hello` answered without `dev_bench_version` — a Core older
+/// than `embarch-core` decision 108, which serves the bench's build as
+/// `firmware_version` (decision 105).
+///
+/// An unreported version satisfies no requirement but `any`, so this is a
+/// refusal with the same override as a mismatch; it names the cause, because
+/// the fix is the Core, not the bench or the checkout.
+pub fn unreported_bench_message(required: &str) -> String {
+    format!(
+        "dev-bench version unknown: this study requires '{required}', but Core's \
+         GET /dev-bench/hello did not report dev_bench_version, so nothing could be compared. A \
+         Core older than embarch-core decision 108 serves the bench's build as firmware_version, \
+         which this client does not read: deploy a current Core (embarch-dev-workflow.md §4a). \
+         Re-run with allow_version_mismatch to proceed anyway; Core still checks the bench itself \
+         on submit and records any override in StudyResult.provenance.overrides."
+    )
+}
+
 /// Which configured project a run will reflash as the DUT, if any.
 ///
 /// `run_study` deliberately has no `project` parameter for the ordinary case
@@ -262,18 +281,28 @@ pub async fn run_study(
             .dev_bench_hello()
             .await
             .context("couldn't ask dev-bench what firmware it is running")?;
-        outcome.dev_bench_version = Some(hello.firmware_version.clone());
-        if !requirement_satisfied(required_bench, &hello.firmware_version)
-            && !request.allow_version_mismatch
-        {
-            let remedy = if request.reflash.includes_dev_bench() {
-                "The bench was just reflashed from the local checkout and still reports something \
-                 else, so the checkout isn't at the revision this study wants."
-            } else {
-                "Re-run with reflash = dev-bench to rebuild and reflash the bench from the local \
-                 checkout as it stands."
-            };
-            anyhow::bail!(mismatch_message("dev-bench", required_bench, &hello.firmware_version, remedy));
+        outcome.dev_bench_version = hello.dev_bench_version.clone();
+        match hello.dev_bench_version.as_deref() {
+            // Decision 105: a Core that did not report the bench's build has
+            // not shown that it satisfies anything, so a pinned requirement
+            // is refused exactly as a mismatch is — never waved through as
+            // though the unknown version matched.
+            None if !request.allow_version_mismatch => {
+                anyhow::bail!(unreported_bench_message(required_bench))
+            }
+            Some(reported)
+                if !requirement_satisfied(required_bench, reported) && !request.allow_version_mismatch =>
+            {
+                let remedy = if request.reflash.includes_dev_bench() {
+                    "The bench was just reflashed from the local checkout and still reports something \
+                     else, so the checkout isn't at the revision this study wants."
+                } else {
+                    "Re-run with reflash = dev-bench to rebuild and reflash the bench from the local \
+                     checkout as it stands."
+                };
+                anyhow::bail!(mismatch_message("dev-bench", required_bench, reported, remedy));
+            }
+            _ => {}
         }
     }
 
@@ -501,6 +530,17 @@ mod tests {
         assert!(msg.contains("g1a2b3c"), "{msg}");
         assert!(msg.contains("gdeadbee"), "{msg}");
         assert!(msg.contains("will not check out"), "{msg}");
+        assert!(msg.contains("allow_version_mismatch"), "{msg}");
+    }
+
+    /// Decision 105: an unreported bench version is refused, says it was
+    /// unknown rather than mismatched, and names the Core as the cause.
+    #[test]
+    fn an_unreported_bench_version_is_refused_naming_the_core_as_the_cause() {
+        let msg = unreported_bench_message("g1a2b3c");
+        assert!(msg.starts_with("dev-bench version unknown"), "{msg}");
+        assert!(msg.contains("g1a2b3c"), "{msg}");
+        assert!(msg.contains("embarch-core decision 108"), "{msg}");
         assert!(msg.contains("allow_version_mismatch"), "{msg}");
     }
 }

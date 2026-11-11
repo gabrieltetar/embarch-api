@@ -1208,7 +1208,7 @@ async fn dev_bench_hello(core: &CoreClient, json: bool) -> i32 {
                     "success": true,
                     "dev_bench_schema_version": info.schema_version,
                     "compatible": info.compatible,
-                    "firmware_version": info.firmware_version,
+                    "dev_bench_version": info.dev_bench_version,
                     "self_reported_hardware_id": info.self_reported_hardware_id,
                     "probe_hardware_id": info.probe_hardware_id,
                     "link_identity": info.link_identity,

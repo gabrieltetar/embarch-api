@@ -93,7 +93,7 @@ async fn dev_bench_hello_json_carries_the_real_dev_bench_schema_version_not_the_
     let mock = MockCore::start(Behavior::json_ok(json!({
         "schema_version": DEV_BENCH_SCHEMA_VERSION,
         "compatible": true,
-        "firmware_version": "1.2.3",
+        "dev_bench_version": "1.2.3",
         "self_reported_hardware_id": "abc123",
         "link_identity": "match",
         "probe_hardware_id": "abc123",
@@ -142,6 +142,12 @@ async fn dev_bench_hello_json_carries_the_real_dev_bench_schema_version_not_the_
         "dev-bench-hello's success object did not carry the dev-bench handshake's own \
          schema_version under its renamed key: {value}"
     );
+
+    // The bench's build under the name `embarch-core` decision 108 gave it,
+    // and no `firmware_version` key beside it: on a `Study` that name is the
+    // DUT's (decision 105).
+    assert_eq!(value["dev_bench_version"], json!("1.2.3"), "{value}");
+    assert!(value.get("firmware_version").is_none(), "{value}");
 
     // The envelope stamp is still present, and still its own constant — the
     // two numbers must never be read off the same key.
