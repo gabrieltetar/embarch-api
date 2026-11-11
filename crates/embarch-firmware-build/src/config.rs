@@ -150,6 +150,112 @@ impl SnapshotConfig {
 /// What `imgtool` writes beside `zephyr.bin` when a build has MCUboot.
 pub const DEFAULT_BOOTLOAD_ARTIFACT: &str = "zephyr.signed.bin";
 
+/// The name a call uses for a project's build with no variant, as in
+/// `vs = "default"`. Reserved: no `[projects.build_variants.<name>]` may
+/// take it.
+pub const DEFAULT_BUILD_VARIANT: &str = "default";
+
+/// The longest build variant name; it becomes part of a directory name.
+const MAX_BUILD_VARIANT_NAME: usize = 40;
+
+/// `[projects.build_variants.<name>]`: one named build of the project's
+/// image, with Kconfig fragments, devicetree overlays and CMake defines on
+/// top of the default, built in a directory of its own (decision 103).
+/// Unknown keys are refused, so a misspelt list fails at load instead of
+/// building the default image under the variant's name.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BuildVariant {
+    /// Kconfig fragments, `EXTRA_CONF_FILE`. Zephyr resolves a relative path
+    /// against the application directory.
+    #[serde(default)]
+    pub extra_conf_files: Vec<String>,
+    /// Devicetree overlays, `EXTRA_DTC_OVERLAY_FILE`, resolved the same way.
+    #[serde(default)]
+    pub overlays: Vec<String>,
+    /// `NAME=VALUE` pairs, each passed as `-DNAME=VALUE`.
+    #[serde(default)]
+    pub defines: Vec<String>,
+}
+
+impl BuildVariant {
+    /// The CMake arguments this variant adds after `west build`'s `--`.
+    pub fn cmake_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        if !self.extra_conf_files.is_empty() {
+            args.push(format!("-DEXTRA_CONF_FILE={}", self.extra_conf_files.join(";")));
+        }
+        if !self.overlays.is_empty() {
+            args.push(format!("-DEXTRA_DTC_OVERLAY_FILE={}", self.overlays.join(";")));
+        }
+        args.extend(self.defines.iter().map(|d| format!("-D{d}")));
+        args
+    }
+
+    fn validate(&self, project: &str, name: &str) -> Result<()> {
+        let at = format!("project '{project}' [projects.build_variants.{name}]");
+        if name == DEFAULT_BUILD_VARIANT {
+            bail!("{at}: \"{DEFAULT_BUILD_VARIANT}\" is reserved for the build with no variant; rename it");
+        }
+        let name_ok = !name.is_empty()
+            && name.len() <= MAX_BUILD_VARIANT_NAME
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        if !name_ok {
+            bail!(
+                "{at}: a build variant name is 1 to {MAX_BUILD_VARIANT_NAME} letters, digits, '-' or '_', \
+                 because it names a build directory"
+            );
+        }
+        if self.extra_conf_files.is_empty() && self.overlays.is_empty() && self.defines.is_empty() {
+            bail!(
+                "{at} sets none of extra_conf_files, overlays or defines, so it would build the default \
+                 image in a second directory; give it one or remove it"
+            );
+        }
+        let items = self.extra_conf_files.iter().chain(&self.overlays).chain(&self.defines);
+        if let Some(bad) = items.clone().find(|v| v.trim().is_empty() || v.contains(';')) {
+            bail!("{at} has the entry \"{bad}\"; an entry is one non-empty path or define, and ';' would split it in CMake's list");
+        }
+        if let Some(bad) = self.defines.iter().find(|d| d.starts_with('-') || d.split_once('=').is_none_or(|(n, _)| n.is_empty())) {
+            bail!("{at} has the define \"{bad}\"; write NAME=VALUE, without the -D");
+        }
+        Ok(())
+    }
+}
+
+/// A `static` project can carry build variants only when its command is a
+/// plain `west build` this crate can append a build directory and CMake
+/// arguments to, and its artifact sits under west's default `build/`, so
+/// the same relative path finds it inside the variant's own directory.
+fn static_variants_honourable(project: &ProjectConfig) -> Result<()> {
+    let command = project.build_command.as_deref().unwrap_or_default();
+    let is_west = command.first().is_some_and(|p| {
+        Path::new(p)
+            .file_stem()
+            .is_some_and(|s| s.eq_ignore_ascii_case("west"))
+    }) && command.get(1).map(String::as_str) == Some("build");
+    let claims_dir = command
+        .iter()
+        .any(|a| a == "-d" || a == "--" || a == "--build-dir" || a.starts_with("--build-dir=") || (a.starts_with("-d") && a.len() > 2));
+    let under_build = project
+        .artifact_path
+        .as_deref()
+        .and_then(|p| p.components().next())
+        .is_some_and(|c| c.as_os_str() == "build");
+    if is_west && !claims_dir && under_build {
+        return Ok(());
+    }
+    bail!(
+        "project '{}' (discovery = \"static\") declares build_variants, which need a build_command that \
+         runs `west build` directly (program west, first argument build) with no -d/--build-dir and no \
+         `--`, and an artifact_path under build/: each variant builds with its own `-d` and its own \
+         CMake arguments, and finds its artifact at the same path inside its own directory. A command \
+         wrapped in a shell, or one that already names its build directory, cannot be extended without \
+         guessing; set discovery = \"zephyr-west\" instead, or remove build_variants",
+        project.name
+    )
+}
+
 impl BootloadConfig {
     pub fn artifact(&self) -> &str {
         self.artifact.as_deref().unwrap_or(DEFAULT_BOOTLOAD_ARTIFACT)
@@ -345,6 +451,10 @@ pub struct ProjectConfig {
     /// `bench_exchange`'s `snapshot` param (decision 89).
     #[serde(default)]
     pub snapshots: HashMap<String, SnapshotConfig>,
+    /// `[projects.build_variants.<name>]`, for both discovery kinds
+    /// (decision 103). Sorted, so a listing is stable.
+    #[serde(default)]
+    pub build_variants: std::collections::BTreeMap<String, BuildVariant>,
 }
 
 impl ProjectConfig {
@@ -551,6 +661,12 @@ impl Config {
             }
             for (name, snap) in &project.snapshots {
                 snap.validate(&project.name, name)?;
+            }
+            for (name, variant) in &project.build_variants {
+                variant.validate(&project.name, name)?;
+            }
+            if !project.build_variants.is_empty() && project.discovery == Discovery::Static {
+                static_variants_honourable(project)?;
             }
 
             // Decision 53: `[[projects.targets]]` is retired, and a config
@@ -1666,5 +1782,83 @@ flash_format = "hex"
         assert!(!raw.contains("artifact_path_for_core"));
         // dev_bench is fully commented out in the example.
         assert!(config.dev_bench.is_none());
+    }
+
+    // --- build variants (decision 103) ---
+
+    fn variant_project_with(dir: &Path, command: &str, variants: &str) -> Result<Config> {
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            format!(
+                r#"
+[core]
+base_url = "auto"
+token_env = "EMBARCH_TOKEN"
+
+[[projects]]
+name = "p"
+source_path = "{}"
+build_command = {command}
+chip = "nRF54L15"
+artifact_path = "build/zephyr/zephyr.hex"
+flash_format = "hex"
+{variants}
+"#,
+                toml_path(dir)
+            ),
+        )
+        .unwrap();
+        Config::load_from_path(&path)
+    }
+
+    const WEST: &str = r#"["west", "build", "-b", "b", "app"]"#;
+
+    #[test]
+    fn a_static_west_build_takes_variants_and_renders_their_cmake_args() {
+        let dir = tempdir();
+        let config = variant_project_with(
+            dir.path(),
+            WEST,
+            "[projects.build_variants.bench]\nextra_conf_files = [\"a.conf\", \"b.conf\"]\ndefines = [\"X=1\"]\n",
+        )
+        .unwrap();
+        let v = &config.projects[0].build_variants["bench"];
+        assert_eq!(v.cmake_args(), ["-DEXTRA_CONF_FILE=a.conf;b.conf", "-DX=1"]);
+    }
+
+    #[test]
+    fn variants_on_a_static_command_this_crate_cannot_extend_are_refused() {
+        let dir = tempdir();
+        let bench = "[projects.build_variants.bench]\ndefines = [\"X=1\"]\n";
+        for command in [
+            r#"["bash", "-lc", "west build -b b app"]"#,
+            r#"["west", "build", "-b", "b", "-d", "out", "app"]"#,
+            r#"["west", "build", "-b", "b", "app", "--", "-DX=2"]"#,
+        ] {
+            let err = variant_project_with(dir.path(), command, bench).err().unwrap();
+            assert!(format!("{err:#}").contains("declares build_variants"), "{command}: {err:#}");
+        }
+    }
+
+    #[test]
+    fn a_variant_must_be_named_well_set_something_and_write_defines_bare() {
+        let dir = tempdir();
+        for (table, expect) in [
+            ("[projects.build_variants.default]\ndefines = [\"X=1\"]\n", "reserved"),
+            ("[projects.build_variants.\"a b\"]\ndefines = [\"X=1\"]\n", "names a build directory"),
+            ("[projects.build_variants.bench]\n", "sets none of"),
+            ("[projects.build_variants.bench]\ndefines = [\"-DX=1\"]\n", "without the -D"),
+            ("[projects.build_variants.bench]\ndefines = [\"X\"]\n", "NAME=VALUE"),
+            ("[projects.build_variants.bench]\noverlays = [\"a;b\"]\n", "';' would split"),
+        ] {
+            let err = variant_project_with(dir.path(), WEST, table).err().unwrap();
+            assert!(format!("{err:#}").contains(expect), "{table}: {err:#}");
+        }
+        // A misspelt key is refused, not built as the default image.
+        let err = variant_project_with(dir.path(), WEST, "[projects.build_variants.bench]\ndefine = [\"X=1\"]\n")
+            .err()
+            .unwrap();
+        assert!(format!("{err:#}").contains("unknown field"), "{err:#}");
     }
 }

@@ -8,6 +8,8 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Mutex as AsyncMutex;
 
+use crate::verdict::{self, Record, Verdict};
+
 /// Cap on captured stdout/stderr text handed back through MCP, so a runaway
 /// build log doesn't blow up the tool response.
 ///
@@ -91,6 +93,17 @@ pub struct BuildOutcome {
     pub stderr: String,
     pub artifact_path: PathBuf,
     pub artifact_fresh: bool,
+    /// Wall-clock time from spawn to exit (or to the kill).
+    pub seconds: f64,
+    /// The whole log, both pipes in the order they were read, untruncated;
+    /// `None` only if it could not be written (decision 102).
+    pub log_path: Option<PathBuf>,
+    /// What the log says, read out of it: warnings, the first error, the
+    /// linker's memory table, test results (decision 102).
+    pub verdict: Verdict,
+    /// `true` when this log printed no memory table (nothing relinked) and
+    /// `verdict.memory` is the previous build's, read from its record.
+    pub memory_from_previous_build: bool,
 }
 
 impl BuildOutcome {
@@ -202,22 +215,7 @@ impl BuildLocks {
             .lock_dir
             .clone()
             .unwrap_or_else(|| std::env::temp_dir().join("embarch-build-locks"));
-        // A readable prefix for a person looking in the directory, plus a
-        // hash of the whole key so two keys that sanitize alike stay apart.
-        // FNV-1a by hand: `DefaultHasher` is not promised stable across
-        // compiler versions, and `embarch-ui` and `embarch-api` may be built
-        // by different ones yet must agree on the file.
-        let mut hash: u64 = 0xcbf29ce484222325;
-        for b in key.bytes() {
-            hash ^= u64::from(b);
-            hash = hash.wrapping_mul(0x100000001b3);
-        }
-        let readable: String = key
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
-            .take(48)
-            .collect();
-        dir.join(format!("{readable}-{hash:016x}.lock"))
+        dir.join(format!("{}.lock", key_file_stem(key)))
     }
 
     /// Takes the in-process mutex, then the OS advisory lock on the key's
@@ -334,6 +332,47 @@ pub enum BuildStream {
 /// by value would not be.
 pub type LineSink = Arc<dyn Fn(BuildStream, &str) + Send + Sync>;
 
+/// A file name for a build key: a readable prefix for a person looking in
+/// the directory, plus a hash of the whole key so two keys that sanitize
+/// alike stay apart. FNV-1a by hand: `DefaultHasher` is not promised stable
+/// across compiler versions, and `embarch-ui` and `embarch-api` may be built
+/// by different ones yet must agree on the file.
+fn key_file_stem(key: &str) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in key.bytes() {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    let readable: String = key
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .take(48)
+        .collect();
+    format!("{readable}-{hash:016x}")
+}
+
+/// What a build's whole log is called inside its build directory.
+pub const LOG_NAME: &str = "embarch-build.log";
+/// What its [`Record`] is called beside it.
+pub const RECORD_NAME: &str = "embarch-build.json";
+
+/// Where a plan's log and record go (decision 102): inside its build
+/// directory, beside `target.json`, when the plan names one and it exists;
+/// otherwise a per-key file under `<temp dir>/embarch-build-logs/`, because
+/// a `static` project's default build directory is its own command's
+/// business and a directory no build produced is not created to hold a log.
+/// `pub` so a `vs` comparison finds another build's record the same way.
+pub fn log_location(plan: &BuildPlan) -> (PathBuf, PathBuf) {
+    match plan.manifest.as_ref().map(|m| &m.dir).filter(|d| d.is_dir()) {
+        Some(dir) => (dir.join(LOG_NAME), dir.join(RECORD_NAME)),
+        None => {
+            let dir = std::env::temp_dir().join("embarch-build-logs");
+            let stem = key_file_stem(&plan.lock_key);
+            (dir.join(format!("{stem}.log")), dir.join(format!("{stem}.json")))
+        }
+    }
+}
+
 /// Keeps the first [`OUTPUT_HEAD_BYTES`] and the last
 /// `OUTPUT_CAP_BYTES - OUTPUT_HEAD_BYTES` of a captured stream, dropping the
 /// middle behind a marker that says how much went and what was kept. Under
@@ -412,6 +451,7 @@ fn ceil_char_boundary(s: &str, i: usize) -> usize {
 async fn drain_stream<R: tokio::io::AsyncRead + Unpin>(
     reader: R,
     sink: Option<(LineSink, BuildStream)>,
+    combined: Arc<StdMutex<String>>,
 ) -> String {
     let mut reader = BufReader::new(reader);
     let mut out = String::new();
@@ -444,6 +484,11 @@ async fn drain_stream<R: tokio::io::AsyncRead + Unpin>(
                 if let Some((sink, stream)) = &sink {
                     sink(*stream, &line);
                 }
+                {
+                    let mut all = combined.lock().expect("combined log poisoned");
+                    all.push_str(&line);
+                    all.push('\n');
+                }
                 out.push_str(&line);
                 out.push('\n');
             }
@@ -473,6 +518,7 @@ async fn run_build_locked(plan: &BuildPlan, sink: Option<LineSink>) -> Result<Bu
     let artifact_path = plan.artifact_path.clone();
     let artifact_existed_before = artifact_path.exists();
     let build_start = SystemTime::now();
+    let started = std::time::Instant::now();
 
     let (program, args) = plan
         .command
@@ -510,11 +556,17 @@ async fn run_build_locked(plan: &BuildPlan, sink: Option<LineSink>) -> Result<Bu
 
     let stdout = child.stdout.take().expect("stdout was piped");
     let stderr = child.stderr.take().expect("stderr was piped");
+    let combined = Arc::new(StdMutex::new(String::new()));
     let stdout_task = tokio::spawn(drain_stream(
         stdout,
         sink.clone().map(|s| (s, BuildStream::Stdout)),
+        combined.clone(),
     ));
-    let stderr_task = tokio::spawn(drain_stream(stderr, sink.map(|s| (s, BuildStream::Stderr))));
+    let stderr_task = tokio::spawn(drain_stream(
+        stderr,
+        sink.map(|s| (s, BuildStream::Stderr)),
+        combined.clone(),
+    ));
 
     let timeout = Duration::from_secs(plan.timeout_secs);
     let wait_result = tokio::time::timeout(timeout, child.wait()).await;
@@ -534,6 +586,8 @@ async fn run_build_locked(plan: &BuildPlan, sink: Option<LineSink>) -> Result<Bu
 
     let stdout_text = truncate_log(stdout_task.await.unwrap_or_default());
     let stderr_text = truncate_log(stderr_task.await.unwrap_or_default());
+    let seconds = started.elapsed().as_secs_f64();
+    let full_log = std::mem::take(&mut *combined.lock().expect("combined log poisoned"));
 
     let artifact_fresh = !timed_out
         && exit_code == Some(0)
@@ -554,6 +608,33 @@ async fn run_build_locked(plan: &BuildPlan, sink: Option<LineSink>) -> Result<Bu
         }
     }
 
+    // After `target.json`, so a build that just created its directory keeps
+    // its log in it rather than in the temp fallback.
+    let (log_path, record_path) = log_location(plan);
+    let mut verdict = verdict::parse(&full_log, Some(&plan.cwd));
+    let previous = verdict::read_record(&record_path);
+    let memory_from_previous_build = verdict.memory.is_empty()
+        && exit_code == Some(0)
+        && previous.as_ref().is_some_and(|r| !r.memory.is_empty());
+    if memory_from_previous_build {
+        verdict.memory = previous.map(|r| r.memory).unwrap_or_default();
+    }
+    let record = Record {
+        success: !timed_out && exit_code == Some(0),
+        memory: verdict.memory.clone(),
+        finished_at: SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+    };
+    let log_path = match write_log(&log_path, &record_path, &full_log, &record) {
+        Ok(()) => Some(log_path),
+        Err(e) => {
+            tracing::warn!("build {} kept no log: {e:#}", plan.lock_key);
+            None
+        }
+    };
+
     Ok(BuildOutcome {
         timed_out,
         exit_code,
@@ -561,7 +642,27 @@ async fn run_build_locked(plan: &BuildPlan, sink: Option<LineSink>) -> Result<Bu
         stderr: stderr_text,
         artifact_path,
         artifact_fresh,
+        seconds,
+        log_path,
+        verdict,
+        memory_from_previous_build,
     })
+}
+
+/// Writes the whole log and the build's [`Record`]. The record is written
+/// only when it has memory figures or none were there before, so a failed
+/// build does not erase the figures a later `vs` compares against.
+fn write_log(log_path: &Path, record_path: &Path, log: &str, record: &Record) -> Result<()> {
+    if let Some(dir) = log_path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
+    }
+    std::fs::write(log_path, log).with_context(|| format!("failed to write {}", log_path.display()))?;
+    if record.success || !record_path.exists() {
+        let json = serde_json::to_string_pretty(record).context("failed to serialize the build record")?;
+        std::fs::write(record_path, json)
+            .with_context(|| format!("failed to write {}", record_path.display()))?;
+    }
+    Ok(())
 }
 
 /// Writes the resolved selection to `<build_dir>/target.json`, so a human
@@ -746,6 +847,10 @@ mod failure_reason_tests {
             stderr: stderr.to_string(),
             artifact_path: PathBuf::from("/nonexistent"),
             artifact_fresh: false,
+            seconds: 0.0,
+            log_path: None,
+            verdict: Verdict::default(),
+            memory_from_previous_build: false,
         }
     }
 

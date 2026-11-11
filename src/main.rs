@@ -31,7 +31,7 @@ pub(crate) use embarch_api::build;
 // move. `zephyr` is not re-imported because nothing outside `resolve`/
 // `config` ever named it — the scan is reached through the resolution that
 // consumes it, not directly.
-pub(crate) use embarch_firmware_build::{config, resolve};
+pub(crate) use embarch_firmware_build::{config, resolve, verdict};
 use embarch_core_client::CoreClient;
 use rmcp::ServiceExt;
 use std::path::{Path, PathBuf};
@@ -101,6 +101,36 @@ pub struct TargetSelection {
     pub extra_arg: Vec<String>,
 }
 
+/// What `build` and `build-and-flash` take beyond the target (decisions
+/// 102, 103).
+#[derive(clap::Args, Debug)]
+pub struct BuildOptions {
+    /// A named build variant from the project's [projects.build_variants]
+    /// (Kconfig fragments, overlays, CMake defines), built in its own
+    /// directory so switching variant is incremental. "default" is the build
+    /// with none.
+    #[arg(long)]
+    pub build_variant: Option<String>,
+    /// Also print FLASH/RAM change against another build variant's last
+    /// recorded build ("default" for the build with none).
+    #[arg(long)]
+    pub vs: Option<String>,
+    /// Start from an empty build directory (west build -p always). A static
+    /// project's default build refuses it.
+    #[arg(long)]
+    pub pristine: bool,
+    /// Print the full stdout/stderr (up to 64 KB each) instead of the
+    /// verdict. The whole log is on disk either way.
+    #[arg(long)]
+    pub verbose: bool,
+}
+
+impl BuildOptions {
+    pub fn choice(&self) -> crate::resolve::BuildChoice<'_> {
+        crate::resolve::BuildChoice { build_variant: self.build_variant.as_deref(), pristine: self.pristine }
+    }
+}
+
 /// CLI subcommand surface (decisions 3, 10) — mirrors embarch-api's MCP
 /// tools in `tools.rs` one-for-one, so a human with no MCP client can invoke
 /// the identical operations directly.
@@ -115,10 +145,14 @@ pub enum Commands {
     /// Get embarch-core's status: reachability and connected debug probes.
     Status,
     /// Build a configured project by running its configured build command.
+    /// Prints the verdict (warnings, first error, FLASH/RAM, log path), not
+    /// the log; --verbose prints the log.
     Build {
         project: String,
         #[command(flatten)]
         target: TargetSelection,
+        #[command(flatten)]
+        options: BuildOptions,
     },
     /// Flash a firmware artifact via embarch-core.
     Flash {
@@ -128,6 +162,10 @@ pub enum Commands {
         /// Flash this file instead of the project's configured artifact_path.
         #[arg(long)]
         firmware_path: Option<String>,
+        /// Flash this build variant's artifact rather than the default
+        /// build's.
+        #[arg(long)]
+        build_variant: Option<String>,
         /// Erase every writable flash region before writing, rather than
         /// only the sectors the new image covers. Without it, flash regions
         /// the new image doesn't cover (a Zephyr settings/NVS partition, and
@@ -143,6 +181,8 @@ pub enum Commands {
         project: String,
         #[command(flatten)]
         target: TargetSelection,
+        #[command(flatten)]
+        options: BuildOptions,
         /// Erase every writable flash region before writing, rather than
         /// only the sectors the new image covers. Without it, flash regions
         /// the new image doesn't cover (a Zephyr settings/NVS partition, and

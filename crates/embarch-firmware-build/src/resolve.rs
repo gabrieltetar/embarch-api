@@ -8,8 +8,8 @@
 
 use anyhow::{Context, Result};
 
-use crate::build::{BuildPlan, TargetManifest};
-use crate::config::{DefaultTarget, Discovery, ProjectConfig};
+use crate::build::{BuildPlan, TargetManifest, TARGET_MANIFEST_NAME};
+use crate::config::{BuildVariant, DefaultTarget, Discovery, ProjectConfig, DEFAULT_BUILD_VARIANT};
 use embarch_core_client::CoreClient;
 use crate::zephyr;
 
@@ -85,13 +85,38 @@ pub struct Resolved {
     /// dev-bench's) is new as of that pipeline.
     pub probe_serial: Option<String>,
     pub descriptor: serde_json::Value,
+    /// Why this build starts from an empty directory (`-p always`), when it
+    /// does: the caller asked, or a build variant's directory last built
+    /// other settings (decision 103). `None` is an incremental build.
+    pub pristine: Option<String>,
+}
+
+/// Which named build variant to build, and whether to start it pristine
+/// (decision 103). Separate from [`Selection`], which narrows *which
+/// target* and is built by callers outside this crate field by field.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct BuildChoice<'a> {
+    /// A `[projects.build_variants.<name>]` key; `None` or
+    /// [`DEFAULT_BUILD_VARIANT`] is the build with no variant.
+    pub build_variant: Option<&'a str>,
+    pub pristine: bool,
 }
 
 pub async fn resolve(project: &ProjectConfig, selection: Selection<'_>, core: &CoreClient) -> Result<Resolved> {
+    resolve_with(project, selection, BuildChoice::default(), core).await
+}
+
+/// [`resolve`], building a named variant or starting pristine.
+pub async fn resolve_with(
+    project: &ProjectConfig,
+    selection: Selection<'_>,
+    choice: BuildChoice<'_>,
+    core: &CoreClient,
+) -> Result<Resolved> {
     match project.discovery {
-        Discovery::Static => resolve_static(project, selection),
+        Discovery::Static => resolve_static(project, selection, choice),
         Discovery::ZephyrWest => {
-            let (build, soc) = resolve_zephyr_build(project, selection)?;
+            let (build, soc) = resolve_zephyr_build(project, selection, choice)?;
             let chip = core
                 .resolve_chip(&soc)
                 .await
@@ -103,6 +128,7 @@ pub async fn resolve(project: &ProjectConfig, selection: Selection<'_>, core: &C
                 base_address: format_base_address(project.base_address),
                 probe_serial: project.probe_serial.clone(),
                 descriptor: build.descriptor,
+                pristine: build.pristine,
             })
         }
     }
@@ -114,15 +140,91 @@ pub async fn resolve(project: &ProjectConfig, selection: Selection<'_>, core: &C
 pub struct ResolvedBuild {
     pub plan: BuildPlan,
     pub descriptor: serde_json::Value,
+    pub pristine: Option<String>,
 }
 
 pub fn resolve_build(project: &ProjectConfig, selection: Selection<'_>) -> Result<ResolvedBuild> {
+    resolve_build_with(project, selection, BuildChoice::default())
+}
+
+/// [`resolve_build`], building a named variant or starting pristine. Also
+/// how a `vs` comparison finds the other variant's directory without
+/// building it.
+pub fn resolve_build_with(
+    project: &ProjectConfig,
+    selection: Selection<'_>,
+    choice: BuildChoice<'_>,
+) -> Result<ResolvedBuild> {
     match project.discovery {
-        Discovery::Static => {
-            resolve_static(project, selection).map(|r| ResolvedBuild { plan: r.plan, descriptor: r.descriptor })
-        }
-        Discovery::ZephyrWest => resolve_zephyr_build(project, selection).map(|(build, _soc)| build),
+        Discovery::Static => resolve_static(project, selection, choice).map(|r| ResolvedBuild {
+            plan: r.plan,
+            descriptor: r.descriptor,
+            pristine: r.pristine,
+        }),
+        Discovery::ZephyrWest => resolve_zephyr_build(project, selection, choice).map(|(build, _soc)| build),
     }
+}
+
+/// The variant a choice names, or `None` for the default build. An unknown
+/// name is an error listing the configured ones.
+fn chosen_variant<'p>(project: &'p ProjectConfig, choice: BuildChoice<'_>) -> Result<Option<(&'p str, &'p BuildVariant)>> {
+    let Some(name) = choice.build_variant.filter(|n| *n != DEFAULT_BUILD_VARIANT) else {
+        return Ok(None);
+    };
+    match project.build_variants.get_key_value(name) {
+        Some((key, variant)) => Ok(Some((key.as_str(), variant))),
+        None => {
+            let known: Vec<&str> = project.build_variants.keys().map(String::as_str).collect();
+            anyhow::bail!(
+                "project '{}' has no build variant '{name}' (configured: {}; \"{DEFAULT_BUILD_VARIANT}\" is the \
+                 build with none)",
+                project.name,
+                if known.is_empty() { "none".to_string() } else { known.join(", ") },
+            )
+        }
+    }
+}
+
+/// What a variant contributes to the descriptor and `target.json`.
+fn variant_descriptor(name: &str, variant: &BuildVariant) -> serde_json::Value {
+    serde_json::json!({ "name": name, "cmake_args": variant.cmake_args() })
+}
+
+/// Whether a build starts pristine, and why. A variant's directory is
+/// reused across builds so switching variant is incremental; it is wiped
+/// only when the caller asks or when its `target.json` shows it last built
+/// other variant settings — CMake keeps a `-D` value in its cache after the
+/// argument is dropped, so a stale directory would build the old settings.
+fn pristine_reason(dir: &std::path::Path, variant: Option<&serde_json::Value>, asked: bool) -> Option<String> {
+    if asked {
+        return Some("asked".to_string());
+    }
+    let variant = variant?;
+    if !dir.is_dir() {
+        return None;
+    }
+    let previous = std::fs::read_to_string(dir.join(TARGET_MANIFEST_NAME))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok());
+    match previous {
+        Some(prev) if prev.get("build_variant") == Some(variant) => None,
+        Some(_) => Some("this directory last built other variant settings".to_string()),
+        None => Some(format!("this directory has no readable {TARGET_MANIFEST_NAME}, so its CMake cache is of unknown origin")),
+    }
+}
+
+/// `west build`'s pristine flag, inserted right after `build` the way a
+/// hand-typed `west build -p always …` has it.
+const PRISTINE_ARGS: [&str; 2] = ["-p", "always"];
+
+/// Whether a variant's CMake arguments go on the command line. `west build`
+/// re-runs CMake whenever it is given any, which costs most of a pristine
+/// build [measured 2026-11-10: 4.7 s of 7.6 s for a small app]; a directory
+/// that is not being wiped and already has a cache whose `target.json`
+/// matches the variant ([`pristine_reason`] returned `None`) holds them, so
+/// they are left off and the build is ninja alone.
+fn needs_configure(dir: &std::path::Path, pristine: Option<&str>) -> bool {
+    pristine.is_some() || !dir.join("CMakeCache.txt").is_file()
 }
 
 /// Which of `Selection`'s fields the caller actually gave, in the order a
@@ -154,7 +256,7 @@ fn fields_given(selection: &Selection<'_>) -> Vec<&'static str> {
     given
 }
 
-fn resolve_static(project: &ProjectConfig, selection: Selection<'_>) -> Result<Resolved> {
+fn resolve_static(project: &ProjectConfig, selection: Selection<'_>, choice: BuildChoice<'_>) -> Result<Resolved> {
     // decision 51. A static project builds by running its
     // configured `build_command` verbatim, so there is no scan to narrow and
     // no `-S` to append to an argv this crate did not assemble — the only
@@ -180,21 +282,68 @@ fn resolve_static(project: &ProjectConfig, selection: Selection<'_>) -> Result<R
         );
     }
 
+    let mut command = project
+        .build_command
+        .clone()
+        .expect("validate() enforces build_command for a static project");
+    let (lock_key, artifact_path, manifest, descriptor, pristine) = match chosen_variant(project, choice)? {
+        None => {
+            if choice.pristine {
+                anyhow::bail!(
+                    "project '{}' is discovery = \"static\": its default build runs build_command verbatim, \
+                     so there is no `-p always` to add to it. Put the flag in build_command, or ask for \
+                     pristine on a build variant, whose argv this crate assembles",
+                    project.name
+                );
+            }
+            // A `static` project's default build resolves no selection
+            // (decision 51) and builds wherever its own `build_command`
+            // says, so there is nothing a `target.json` beside it could
+            // record.
+            (
+                project.name.clone(),
+                project.resolved_artifact_path(),
+                None,
+                serde_json::json!({ "project": project.name }),
+                None,
+            )
+        }
+        Some((name, variant)) => {
+            // Load validation (`static_variants_honourable`) guarantees a
+            // plain `west build` argv and an artifact under `build/`.
+            let dir = project.build_dir().join(format!("build-{name}"));
+            let configured = project.artifact_path.as_deref().expect("validate() enforces artifact_path");
+            let artifact_path = dir.join(configured.strip_prefix("build").unwrap_or(configured));
+            let variant_json = variant_descriptor(name, variant);
+            let pristine = pristine_reason(&dir, Some(&variant_json), choice.pristine);
+            if pristine.is_some() {
+                command.extend(PRISTINE_ARGS.iter().map(|a| a.to_string()));
+            }
+            command.extend(["-d".to_string(), dir.display().to_string()]);
+            if needs_configure(&dir, pristine.as_deref()) {
+                command.push("--".to_string());
+                command.extend(variant.cmake_args());
+            }
+            let descriptor = serde_json::json!({ "project": project.name, "build_variant": variant_json });
+            (
+                format!("{}::build-{name}", project.name),
+                artifact_path,
+                Some(TargetManifest { dir, target: descriptor.clone() }),
+                descriptor,
+                pristine,
+            )
+        }
+    };
+
     Ok(Resolved {
         plan: BuildPlan {
-            lock_key: project.name.clone(),
+            lock_key,
             cwd: project.build_dir(),
-            command: project
-                .build_command
-                .clone()
-                .expect("validate() enforces build_command for a static project"),
-            artifact_path: project.resolved_artifact_path(),
+            command,
+            artifact_path,
             timeout_secs: project.build_timeout_secs,
             env: project.env.clone(),
-            // A `static` project resolves no selection (decision 51) and
-            // builds wherever its own `build_command` says, so there is
-            // nothing a `target.json` beside it could record.
-            manifest: None,
+            manifest,
         },
         chip: project
             .chip
@@ -203,7 +352,8 @@ fn resolve_static(project: &ProjectConfig, selection: Selection<'_>) -> Result<R
         flash_format: project.flash_format.clone(),
         base_address: format_base_address(project.base_address),
         probe_serial: project.probe_serial.clone(),
-        descriptor: serde_json::json!({ "project": project.name }),
+        descriptor,
+        pristine,
     })
 }
 
@@ -401,7 +551,11 @@ fn resolve_snippets(
 }
 
 /// A `zephyr-west` target's build, and the SoC [`resolve`] maps to a chip.
-fn resolve_zephyr_build(project: &ProjectConfig, selection: Selection<'_>) -> Result<(ResolvedBuild, String)> {
+fn resolve_zephyr_build(
+    project: &ProjectConfig,
+    selection: Selection<'_>,
+    choice: BuildChoice<'_>,
+) -> Result<(ResolvedBuild, String)> {
     let targets = zephyr::scan_or_err(&project.source_path)?;
 
     let effective = effective_selection(project.default_target.as_ref(), &selection);
@@ -460,16 +614,30 @@ fn resolve_zephyr_build(project: &ProjectConfig, selection: Selection<'_>) -> Re
         selection.extra_args.to_vec()
     };
 
-    let build_dir = build_dir_root.join(target.build_dir_name(&snippets, &extra_args));
+    let variant = chosen_variant(project, choice)?;
+    if variant.is_some() && extra_args.iter().any(|a| a == "--") {
+        anyhow::bail!(
+            "project '{}': a build variant appends its own `--` and CMake arguments, and these extra_args \
+             already contain `--`; move those CMake arguments into a build variant's defines",
+            project.name
+        );
+    }
+    let dir_name = match variant {
+        // `.` cannot appear in a board, app or snippet name, so the
+        // variant's directory never collides with another target's.
+        Some((name, _)) => format!("{}.{name}", target.build_dir_name(&snippets, &extra_args)),
+        None => target.build_dir_name(&snippets, &extra_args),
+    };
+    let build_dir = build_dir_root.join(&dir_name);
     let app_path = zephyr::app_path(&project.source_path, &target.app);
-    let command = zephyr::build_command(&west_binary, &target, &snippets, &extra_args, &build_dir, &app_path);
+    let mut command = zephyr::build_command(&west_binary, &target, &snippets, &extra_args, &build_dir, &app_path);
     let artifact_path = zephyr::artifact_path(&build_dir, &project.flash_format);
 
     // Built once and used twice on purpose: this is both what the tool
     // response echoes back and what `build.rs` writes into the build
     // directory as `target.json` (decision 19), so the directory's
     // provenance is the caller's answer rather than a restatement of it.
-    let descriptor = serde_json::json!({
+    let mut descriptor = serde_json::json!({
         "project": project.name,
         "board": target.board,
         "soc": target.soc,
@@ -480,10 +648,23 @@ fn resolve_zephyr_build(project: &ProjectConfig, selection: Selection<'_>) -> Re
         "snippets": snippets,
         "extra_args": extra_args,
     });
+    let variant_json = variant.map(|(name, v)| variant_descriptor(name, v));
+    let pristine = pristine_reason(&build_dir, variant_json.as_ref(), choice.pristine);
+    if pristine.is_some() {
+        // Right after `build`, where `zephyr::build_command` puts extra_args.
+        command.splice(2..2, PRISTINE_ARGS.iter().map(|a| a.to_string()));
+    }
+    if let (Some((_, v)), Some(json)) = (variant, variant_json) {
+        if needs_configure(&build_dir, pristine.as_deref()) {
+            command.push("--".to_string());
+            command.extend(v.cmake_args());
+        }
+        descriptor["build_variant"] = json;
+    }
 
     let build = ResolvedBuild {
         plan: BuildPlan {
-            lock_key: format!("{}::{}", project.name, target.build_dir_name(&snippets, &extra_args)),
+            lock_key: format!("{}::{dir_name}", project.name),
             // west build's -d/app-path args are absolute, so the actual cwd
             // doesn't affect what gets built — source_path just needs to
             // exist, which config validation already guarantees.
@@ -498,6 +679,7 @@ fn resolve_zephyr_build(project: &ProjectConfig, selection: Selection<'_>) -> Re
             }),
         },
         descriptor,
+        pristine,
     };
     Ok((build, target.soc))
 }
@@ -669,13 +851,13 @@ flash_format = "bin"
     #[test]
     fn resolve_static_passes_the_configured_base_address_through() {
         let resolved =
-            resolve_static(&static_project("base_address = 0x2000"), Selection::default()).unwrap();
+            resolve_static(&static_project("base_address = 0x2000"), Selection::default(), BuildChoice::default()).unwrap();
         assert_eq!(resolved.base_address.as_deref(), Some("0x2000"));
     }
 
     #[test]
     fn resolve_static_leaves_base_address_unset_when_the_project_omits_it() {
-        let resolved = resolve_static(&static_project(""), Selection::default()).unwrap();
+        let resolved = resolve_static(&static_project(""), Selection::default(), BuildChoice::default()).unwrap();
         assert_eq!(resolved.base_address, None);
     }
 
@@ -684,7 +866,7 @@ flash_format = "bin"
     /// error path, because "unchanged" is the claim the new check makes.
     #[test]
     fn resolve_static_with_no_selection_resolves_exactly_as_before() {
-        let resolved = resolve_static(&static_project(""), Selection::default()).unwrap();
+        let resolved = resolve_static(&static_project(""), Selection::default(), BuildChoice::default()).unwrap();
         assert_eq!(resolved.plan.lock_key, "p");
         assert_eq!(resolved.plan.command, vec!["true".to_string()]);
         assert_eq!(resolved.chip, "esp32c5");
@@ -701,7 +883,7 @@ flash_format = "bin"
             snippets: &[],
             extra_args: &[],
         };
-        assert!(resolve_static(&static_project(""), explicit).is_ok());
+        assert!(resolve_static(&static_project(""), explicit, BuildChoice::default()).is_ok());
     }
 
     #[test]
@@ -713,6 +895,7 @@ flash_format = "bin"
                 snippets: &snippets,
                 ..Selection::default()
             },
+            BuildChoice::default(),
         )
         .map(|_| ())
         .expect_err("a static project cannot honour snippets and must say so");
@@ -738,6 +921,7 @@ flash_format = "bin"
                 snippets: &[],
                 extra_args: &extra_args,
             },
+            BuildChoice::default(),
         )
         .map(|_| ())
         .expect_err("every unhonourable field must be refused, not just snippets");
@@ -763,7 +947,7 @@ flash_format = "bin"
         assert_eq!(targets[0]["chip"], serde_json::json!("esp32c5"));
         // The resolved path, not the configured relative one — the same
         // string a flash of this project would send.
-        let resolved = resolve_static(&project, Selection::default()).unwrap();
+        let resolved = resolve_static(&project, Selection::default(), BuildChoice::default()).unwrap();
         assert_eq!(
             targets[0]["artifact_path"],
             serde_json::json!(resolved.plan.artifact_path.display().to_string())
@@ -1121,5 +1305,116 @@ flash_format = "hex"
         let message = format!("{err:#}");
         assert!(message.contains("unknown snippet"), "{message}");
         assert!(message.contains("ble-shell"), "{message}");
+    }
+
+    // --- build variants (decision 103) ---
+
+    const VARIANTS: &str = r#"
+[build_variants.bench]
+extra_conf_files = ["bench.conf"]
+overlays = ["bench.overlay"]
+defines = ["CONFIG_FOO=y"]
+"#;
+
+    fn west_static(extra: &str) -> ProjectConfig {
+        static_project(&format!("{extra}\n")).with_command(&["west", "build", "-b", "b", "app"], "build/zephyr/zephyr.hex")
+    }
+
+    impl ProjectConfig {
+        fn with_command(mut self, argv: &[&str], artifact: &str) -> ProjectConfig {
+            self.build_command = Some(argv.iter().map(|s| s.to_string()).collect());
+            self.artifact_path = Some(artifact.into());
+            self
+        }
+    }
+
+    fn bench() -> BuildChoice<'static> {
+        BuildChoice { build_variant: Some("bench"), pristine: false }
+    }
+
+    #[test]
+    fn a_static_variant_builds_west_into_its_own_directory_with_its_cmake_args() {
+        let r = resolve_static(&west_static(VARIANTS), Selection::default(), bench()).unwrap();
+        let dir = std::path::Path::new("/nonexistent/build-bench");
+        assert_eq!(
+            r.plan.command,
+            [
+                "west", "build", "-b", "b", "app", "-d", "/nonexistent/build-bench", "--",
+                "-DEXTRA_CONF_FILE=bench.conf", "-DEXTRA_DTC_OVERLAY_FILE=bench.overlay", "-DCONFIG_FOO=y",
+            ]
+        );
+        assert_eq!(r.plan.artifact_path, dir.join("zephyr/zephyr.hex"));
+        assert_eq!(r.plan.lock_key, "p::build-bench");
+        assert_eq!(r.plan.manifest.as_ref().unwrap().dir, dir);
+        assert_eq!(r.descriptor["build_variant"]["name"], "bench");
+        // A directory that does not exist yet needs no wiping.
+        assert_eq!(r.pristine, None);
+    }
+
+    #[test]
+    fn the_default_variant_name_is_the_build_with_none() {
+        let choice = BuildChoice { build_variant: Some(DEFAULT_BUILD_VARIANT), pristine: false };
+        let r = resolve_static(&west_static(VARIANTS), Selection::default(), choice).unwrap();
+        assert_eq!(r.plan.command, ["west", "build", "-b", "b", "app"]);
+        assert!(r.plan.manifest.is_none());
+    }
+
+    #[test]
+    fn an_unknown_variant_is_refused_naming_the_configured_ones() {
+        let choice = BuildChoice { build_variant: Some("nope"), pristine: false };
+        let err = resolve_static(&west_static(VARIANTS), Selection::default(), choice).err().unwrap();
+        let message = format!("{err:#}");
+        assert!(message.contains("no build variant 'nope'") && message.contains("bench"), "{message}");
+    }
+
+    #[test]
+    fn pristine_on_a_static_default_build_is_refused_and_on_a_variant_is_added() {
+        let asked = BuildChoice { build_variant: None, pristine: true };
+        let err = resolve_static(&west_static(VARIANTS), Selection::default(), asked).err().unwrap();
+        assert!(format!("{err:#}").contains("no `-p always` to add"), "{err:#}");
+
+        let asked = BuildChoice { build_variant: Some("bench"), pristine: true };
+        let r = resolve_static(&west_static(VARIANTS), Selection::default(), asked).unwrap();
+        assert_eq!(r.pristine.as_deref(), Some("asked"));
+        assert_eq!(&r.plan.command[5..9], ["-p", "always", "-d", "/nonexistent/build-bench"]);
+    }
+
+    #[test]
+    fn a_variant_directory_that_last_built_other_settings_is_rebuilt_pristine() {
+        let fixture = write_zephyr_fixture(false);
+        let project = zephyr_project(
+            fixture.path(),
+            &format!("west_binary = \"west\"\nbuild_dir_root = \"{}\"\n{VARIANTS}", fixture.path().join("out").display()),
+        );
+        let first = resolve_build_with(&project, Selection::default(), bench()).unwrap();
+        let dir = first.plan.manifest.as_ref().unwrap().dir.clone();
+        assert!(dir.ends_with("single-default-none-widget.bench"), "{}", dir.display());
+        assert_eq!(first.pristine, None, "no directory yet");
+        assert_eq!(first.plan.command[1..3], ["build".to_string(), "-b".to_string()]);
+        assert_eq!(first.plan.command.last().unwrap(), "-DCONFIG_FOO=y");
+
+        // The same settings recorded: incremental.
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::build::write_target_manifest(first.plan.manifest.as_ref().unwrap()).unwrap();
+        let again = resolve_build_with(&project, Selection::default(), bench()).unwrap();
+        assert_eq!(again.pristine, None);
+        assert_eq!(again.plan.command.last().unwrap(), "-DCONFIG_FOO=y", "no cache yet: configure");
+        // …and once CMake has a cache there, the arguments it holds are left
+        // off so west does not reconfigure.
+        std::fs::write(dir.join("CMakeCache.txt"), "").unwrap();
+        let cached = resolve_build_with(&project, Selection::default(), bench()).unwrap();
+        assert!(!cached.plan.command.iter().any(|a| a == "--"), "{:?}", cached.plan.command);
+
+        // A define dropped from config: pristine, because CMake would keep it.
+        let changed = zephyr_project(
+            fixture.path(),
+            &format!(
+                "west_binary = \"west\"\nbuild_dir_root = \"{}\"\n[build_variants.bench]\nextra_conf_files = [\"bench.conf\"]\n",
+                fixture.path().join("out").display()
+            ),
+        );
+        let after = resolve_build_with(&changed, Selection::default(), bench()).unwrap();
+        assert_eq!(after.pristine.as_deref(), Some("this directory last built other variant settings"));
+        assert_eq!(after.plan.command[2..4], ["-p".to_string(), "always".to_string()]);
     }
 }

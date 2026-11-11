@@ -43,4 +43,5 @@ pub mod build;
 pub mod config;
 pub mod json_out;
 pub mod resolve;
+pub mod verdict;
 pub mod zephyr;

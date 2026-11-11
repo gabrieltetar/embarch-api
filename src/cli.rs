@@ -18,18 +18,20 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         Commands::ListProjects => list_projects(&config, json),
         Commands::ListTargets { project } => list_targets(&config, &project, json),
         Commands::Status => status(&core, json).await,
-        Commands::Build { project, target } => build(&config, &core, &project, &target, json).await,
+        Commands::Build { project, target, options } => build(&config, &core, &project, &target, &options, json).await,
         Commands::Flash {
             project,
             target,
             firmware_path,
+            build_variant,
             erase,
-        } => flash(&config, &core, &project, &target, firmware_path, erase, json).await,
+        } => flash(&config, &core, &project, &target, firmware_path, build_variant.as_deref(), erase, json).await,
         Commands::BuildAndFlash {
             project,
             target,
+            options,
             erase,
-        } => build_and_flash(&config, &core, &project, &target, erase, json).await,
+        } => build_and_flash(&config, &core, &project, &target, &options, erase, json).await,
         Commands::Reset { project, target } => reset(&config, &core, &project, &target, json).await,
         Commands::Bootload { project, target, image_path } => {
             bootload(&config, &core, &project, &target, image_path.as_deref(), json).await
@@ -294,13 +296,73 @@ async fn resolve_or_exit(
     target: &TargetSelection,
     json: bool,
 ) -> Result<Resolved, i32> {
+    resolve_choice_or_exit(config, core, project_name, target, resolve::BuildChoice::default(), json).await
+}
+
+/// [`resolve_or_exit`] for a build variant or a pristine build.
+async fn resolve_choice_or_exit(
+    config: &Config,
+    core: &CoreClient,
+    project_name: &str,
+    target: &TargetSelection,
+    choice: resolve::BuildChoice<'_>,
+    json: bool,
+) -> Result<Resolved, i32> {
     let project = match lookup_project(config, project_name) {
         Ok(p) => p,
         Err(e) => return Err(error_result(json, e)),
     };
-    resolve::resolve(project, target.selection(), core)
+    resolve::resolve_with(project, target.selection(), choice, core)
         .await
         .map_err(|e| error_result(json, format!("{e:#}")))
+}
+
+/// `build`'s answer in both modes (decision 102): the verdict object and
+/// line by default, today's stdout/stderr with `--verbose`.
+fn build_answer(
+    project_name: &str,
+    outcome: &BuildOutcome,
+    resolved: &Resolved,
+    vs: Option<&crate::verdict::VsBaseline>,
+    verbose: bool,
+) -> (serde_json::Value, String) {
+    let vs_json = vs.map(|b| b.compare(outcome));
+    let label = match resolved.descriptor["build_variant"]["name"].as_str() {
+        Some(variant) => format!("{project_name} [{variant}]"),
+        None => project_name.to_string(),
+    };
+    let (mut value, human) = if verbose {
+        let mut v = build_outcome_json(outcome);
+        v["success"] = serde_json::Value::Bool(outcome.build_succeeded());
+        v["log_path"] = serde_json::json!(outcome.log_path.as_ref().map(|p| p.display().to_string()));
+        (v, build_human_summary(&label, outcome))
+    } else {
+        (
+            crate::verdict::verdict_json(outcome),
+            crate::verdict::verdict_text(&label, outcome, vs_json.as_ref()),
+        )
+    };
+    value["target"] = resolved.descriptor.clone();
+    if let Some(reason) = &resolved.pristine {
+        value["pristine"] = serde_json::Value::String(reason.clone());
+    }
+    if let Some(vs) = vs_json {
+        value["vs"] = vs;
+    }
+    (value, human)
+}
+
+/// The `vs` baseline, read before the build so naming the variant being
+/// built compares against its previous build.
+fn vs_baseline(
+    config: &Config,
+    project_name: &str,
+    target: &TargetSelection,
+    options: &crate::BuildOptions,
+) -> Option<crate::verdict::VsBaseline> {
+    let other = options.vs.as_deref()?;
+    let project = lookup_project(config, project_name).ok()?;
+    Some(crate::verdict::VsBaseline::read(project, target.selection(), other))
 }
 
 /// Prints `value` (in `--json` mode) or `human` (otherwise) to the right
@@ -573,36 +635,38 @@ async fn build(
     core: &CoreClient,
     project_name: &str,
     target: &TargetSelection,
+    options: &crate::BuildOptions,
     json: bool,
 ) -> i32 {
-    let resolved = match resolve_or_exit(config, core, project_name, target, json).await {
+    let resolved = match resolve_choice_or_exit(config, core, project_name, target, options.choice(), json).await {
         Ok(r) => r,
         Err(code) => return code,
     };
+    let vs = vs_baseline(config, project_name, target, options);
 
     let build_locks = crate::build::BuildLocks::new();
     match build_locks.run_build(&resolved.plan).await {
         Ok(outcome) => {
-            let mut value = build_outcome_json(&outcome);
-            value["success"] = serde_json::Value::Bool(outcome.build_succeeded());
-            value["target"] = resolved.descriptor.clone();
-            let human = build_human_summary(project_name, &outcome);
+            let (value, human) = build_answer(project_name, &outcome, &resolved, vs.as_ref(), options.verbose);
             finish(json, outcome.build_succeeded(), value, human)
         }
         Err(e) => error_result(json, format!("failed to run build for '{project_name}': {e:#}")),
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn flash(
     config: &Config,
     core: &CoreClient,
     project_name: &str,
     target: &TargetSelection,
     firmware_path: Option<String>,
+    build_variant: Option<&str>,
     erase: bool,
     json: bool,
 ) -> i32 {
-    let resolved = match resolve_or_exit(config, core, project_name, target, json).await {
+    let choice = resolve::BuildChoice { build_variant, pristine: false };
+    let resolved = match resolve_choice_or_exit(config, core, project_name, target, choice, json).await {
         Ok(r) => r,
         Err(code) => return code,
     };
@@ -638,13 +702,15 @@ async fn build_and_flash(
     core: &CoreClient,
     project_name: &str,
     target: &TargetSelection,
+    options: &crate::BuildOptions,
     erase: bool,
     json: bool,
 ) -> i32 {
-    let resolved = match resolve_or_exit(config, core, project_name, target, json).await {
+    let resolved = match resolve_choice_or_exit(config, core, project_name, target, options.choice(), json).await {
         Ok(r) => r,
         Err(code) => return code,
     };
+    let vs = vs_baseline(config, project_name, target, options);
 
     let build_locks = crate::build::BuildLocks::new();
     let outcome = match build_locks.run_build(&resolved.plan).await {
@@ -652,8 +718,7 @@ async fn build_and_flash(
         Err(e) => return error_result(json, format!("failed to run build for '{project_name}': {e:#}")),
     };
 
-    let mut build_json = build_outcome_json(&outcome);
-    build_json["target"] = resolved.descriptor.clone();
+    let (build_json, build_human) = build_answer(project_name, &outcome, &resolved, vs.as_ref(), options.verbose);
 
     if !outcome.ready_to_flash() {
         let mut value = build_json;
@@ -666,7 +731,7 @@ async fn build_and_flash(
             "build succeeded but no fresh artifact was found — refusing to flash".to_string()
         };
         value["reason"] = serde_json::Value::String(reason.clone());
-        let human = format!("{reason} for '{project_name}' — refusing to flash");
+        let human = format!("{build_human}\n{reason} for '{project_name}' — refusing to flash");
         return finish(json, false, value, human);
     }
 

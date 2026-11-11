@@ -25,13 +25,15 @@ use serde_json::{Map, Value};
 
 /// The version stamped on every object this module emits.
 ///
-/// **`1` means "the shape as of 2026-09-03"**, not "unchanged since this
+/// **`1` meant "the shape as of 2026-09-03"**, not "unchanged since this
 /// crate's first commit" — the surface moved repeatedly while unversioned,
-/// and no honest earlier number exists. Bumped **by hand only**, and only
-/// on a rename, a removal or a retype of a field (decision 24); adding a
-/// field is not a bump, since a reader that ignores unknown fields is
-/// unaffected.
-pub const SCHEMA_VERSION: u32 = 1;
+/// and no honest earlier number exists. **`2` (2026-11-10)**: `build` and
+/// `build_and_flash` answer with the verdict and no longer carry
+/// `stdout`/`stderr` unless asked for `verbose` (decision 102). Bumped **by
+/// hand only**, and only on a rename, a removal or a retype of a field
+/// (decision 24); adding a field is not a bump, since a reader that ignores
+/// unknown fields is unaffected.
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// The field name, in one place so the tests and the stamper cannot drift.
 pub const SCHEMA_VERSION_FIELD: &str = "schema_version";

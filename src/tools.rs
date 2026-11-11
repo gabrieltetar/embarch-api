@@ -13,7 +13,7 @@ use embarch_core_client::{
     CoreClient, DevBenchBusyError, DevBenchHandshakeError, FollowItem, FollowMode, FollowOptions,
     StudyConflictError, StudyEvent, TopologyMismatchError,
 };
-use crate::resolve::{self, Selection};
+use crate::resolve::{self, BuildChoice, Selection};
 
 #[derive(Clone)]
 pub struct EmbarchApi {
@@ -99,6 +99,34 @@ impl EmbarchApi {
             "stdout": outcome.stdout,
             "stderr": outcome.stderr,
         })
+    }
+
+    /// `build`'s answer, and `build_and_flash`'s `build`: the verdict by
+    /// default, today's stdout/stderr shape with `verbose` (decision 102).
+    /// Either way it names the target, the log, and why a build went
+    /// pristine.
+    fn build_answer(
+        outcome: &BuildOutcome,
+        resolved: &resolve::Resolved,
+        vs: Option<&crate::verdict::VsBaseline>,
+        verbose: Option<bool>,
+    ) -> serde_json::Value {
+        let mut value = if verbose.unwrap_or(false) {
+            let mut v = Self::build_outcome_json(outcome);
+            v["success"] = serde_json::Value::Bool(outcome.build_succeeded());
+            v["log_path"] = serde_json::json!(outcome.log_path.as_ref().map(|p| p.display().to_string()));
+            v
+        } else {
+            crate::verdict::verdict_json(outcome)
+        };
+        value["target"] = resolved.descriptor.clone();
+        if let Some(reason) = &resolved.pristine {
+            value["pristine"] = serde_json::Value::String(reason.clone());
+        }
+        if let Some(vs) = vs {
+            value["vs"] = vs.compare(outcome);
+        }
+        value
     }
 }
 
@@ -222,9 +250,34 @@ pub struct TargetParams {
     /// ranges blanked (empty when a vendor tool flashed). Defaults to false. Only meaningful for `build_and_flash` — `build` and
     /// `reset` don't write flash, and ignore it.
     pub erase: Option<bool>,
+    /// A named build variant from the project's [projects.build_variants]
+    /// (Kconfig fragments, overlays, CMake defines), built in its own
+    /// directory so switching variant is incremental. Omitted or "default"
+    /// is the build with no variant. `build`/`build_and_flash` only; `reset`
+    /// ignores it.
+    pub build_variant: Option<String>,
+    /// Another build variant name (or "default") to compare FLASH/RAM use
+    /// against: the answer gains `vs`, this build minus that variant's last
+    /// recorded build, per region. `build`/`build_and_flash` only.
+    pub vs: Option<String>,
+    /// Start from an empty build directory (`west build -p always`).
+    /// Otherwise a variant's directory is reused, and wiped only when its
+    /// settings changed since its last build. A static project's default
+    /// build refuses it. `build`/`build_and_flash` only.
+    pub pristine: Option<bool>,
+    /// true returns the full stdout/stderr (up to 64 KB each) instead of the
+    /// verdict. The whole log is always on disk at the verdict's log_path.
+    pub verbose: Option<bool>,
 }
 
 impl TargetParams {
+    fn choice(&self) -> BuildChoice<'_> {
+        BuildChoice {
+            build_variant: self.build_variant.as_deref(),
+            pristine: self.pristine.unwrap_or(false),
+        }
+    }
+
     fn selection(&self) -> Selection<'_> {
         Selection {
             board: self.board.as_deref(),
@@ -278,9 +331,16 @@ pub struct FlashParams {
     /// region has no usable flash algorithm. The result's `erased` lists the
     /// ranges blanked (empty when a vendor tool flashed). Defaults to false.
     pub erase: Option<bool>,
+    /// Flash this build variant's artifact (see `build`'s build_variant)
+    /// rather than the default build's.
+    pub build_variant: Option<String>,
 }
 
 impl FlashParams {
+    fn choice(&self) -> BuildChoice<'_> {
+        BuildChoice { build_variant: self.build_variant.as_deref(), pristine: false }
+    }
+
     fn selection(&self) -> Selection<'_> {
         Selection {
             board: self.board.as_deref(),
@@ -1180,16 +1240,18 @@ impl EmbarchApi {
             Err(e) => return Err(e),
         };
 
-        let resolved = match resolve::resolve(project, params.selection(), &self.core).await {
+        let resolved = match resolve::resolve_with(project, params.selection(), params.choice(), &self.core).await {
             Ok(r) => r,
             Err(e) => return Self::err_text(format!("{e:#}")),
         };
+        let vs = params
+            .vs
+            .as_deref()
+            .map(|other| crate::verdict::VsBaseline::read(project, params.selection(), other));
 
         match self.build_locks.run_build(&resolved.plan).await {
             Ok(outcome) => {
-                let mut value = Self::build_outcome_json(&outcome);
-                value["success"] = serde_json::Value::Bool(outcome.build_succeeded());
-                value["target"] = resolved.descriptor.clone();
+                let mut value = Self::build_answer(&outcome, &resolved, vs.as_ref(), params.verbose);
                 if outcome.build_succeeded() && !outcome.artifact_fresh {
                     value["warning"] = serde_json::Value::String(
                         "build exited 0 but no fresh artifact was found at artifact_path".into(),
@@ -1220,7 +1282,7 @@ impl EmbarchApi {
             // which for a zephyr-west project only resolution can provide,
             // so an override still requires enough of a selection to
             // resolve one target's chip.
-            let resolved = match resolve::resolve(project, params.selection(), &self.core).await {
+            let resolved = match resolve::resolve_with(project, params.selection(), params.choice(), &self.core).await {
                 Ok(r) => r,
                 Err(e) => return Self::err_text(format!("{e:#}")),
             };
@@ -1247,7 +1309,7 @@ impl EmbarchApi {
             };
         }
 
-        let resolved = match resolve::resolve(project, params.selection(), &self.core).await {
+        let resolved = match resolve::resolve_with(project, params.selection(), params.choice(), &self.core).await {
             Ok(r) => r,
             Err(e) => return Self::err_text(format!("{e:#}")),
         };
@@ -1282,10 +1344,14 @@ impl EmbarchApi {
             Err(e) => return Err(e),
         };
 
-        let resolved = match resolve::resolve(project, params.selection(), &self.core).await {
+        let resolved = match resolve::resolve_with(project, params.selection(), params.choice(), &self.core).await {
             Ok(r) => r,
             Err(e) => return Self::err_text(format!("{e:#}")),
         };
+        let vs = params
+            .vs
+            .as_deref()
+            .map(|other| crate::verdict::VsBaseline::read(project, params.selection(), other));
 
         let outcome = match self.build_locks.run_build(&resolved.plan).await {
             Ok(outcome) => outcome,
@@ -1297,8 +1363,7 @@ impl EmbarchApi {
             }
         };
 
-        let mut build_json = Self::build_outcome_json(&outcome);
-        build_json["target"] = resolved.descriptor.clone();
+        let build_json = Self::build_answer(&outcome, &resolved, vs.as_ref(), params.verbose);
 
         if !outcome.ready_to_flash() {
             let mut value = build_json;

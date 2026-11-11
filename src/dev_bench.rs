@@ -64,6 +64,7 @@ pub fn resolve(config: &DevBenchConfig) -> Result<Resolved> {
         flash_format: config.flash_format.clone(),
         base_address: crate::resolve::format_base_address(config.base_address),
         probe_serial: config.probe_serial.clone(),
+        pristine: None,
         descriptor: serde_json::json!({
             "dev_bench": true,
             "board": config.board,
