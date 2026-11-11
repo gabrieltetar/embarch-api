@@ -40,7 +40,7 @@ pub enum Discovery {
 /// `Ambiguous` the moment a second board lands — the behaviour of an
 /// unchanged call changing because somebody else's commit grew the repo.
 /// Pinning the common case here makes that growth a non-event.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Clone)]
 pub struct DefaultTarget {
     #[serde(default)]
     pub board: Option<String>,
@@ -223,11 +223,13 @@ impl BuildVariant {
     }
 }
 
-/// A `static` project can carry build variants only when its command is a
-/// plain `west build` this crate can append a build directory and CMake
-/// arguments to, and its artifact sits under west's default `build/`, so
-/// the same relative path finds it inside the variant's own directory.
-fn static_variants_honourable(project: &ProjectConfig) -> Result<()> {
+/// Whether a `static` project's command is a plain `west build` this crate
+/// can append a build directory and CMake arguments to, with its artifact
+/// under west's default `build/`, so the same relative path finds it inside
+/// another directory. Build variants need it (decision 103), and so does
+/// `build --each`, which also adds a module override (decision 104). `needs`
+/// names which, for the error.
+pub fn require_plain_west_build(project: &ProjectConfig, needs: &str) -> Result<()> {
     let command = project.build_command.as_deref().unwrap_or_default();
     let is_west = command.first().is_some_and(|p| {
         Path::new(p)
@@ -246,12 +248,12 @@ fn static_variants_honourable(project: &ProjectConfig) -> Result<()> {
         return Ok(());
     }
     bail!(
-        "project '{}' (discovery = \"static\") declares build_variants, which need a build_command that \
+        "project '{}' (discovery = \"static\") {needs}, which needs a build_command that \
          runs `west build` directly (program west, first argument build) with no -d/--build-dir and no \
-         `--`, and an artifact_path under build/: each variant builds with its own `-d` and its own \
-         CMake arguments, and finds its artifact at the same path inside its own directory. A command \
-         wrapped in a shell, or one that already names its build directory, cannot be extended without \
-         guessing; set discovery = \"zephyr-west\" instead, or remove build_variants",
+         `--`, and an artifact_path under build/: this crate adds its own `-d` and CMake arguments, \
+         and finds the artifact at the same path inside that directory. A command wrapped in a shell, \
+         or one that already names its build directory, cannot be extended without guessing; set \
+         discovery = \"zephyr-west\" instead",
         project.name
     )
 }
@@ -288,7 +290,7 @@ impl BootloadConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ProjectConfig {
     pub name: String,
     pub source_path: PathBuf,
@@ -666,7 +668,7 @@ impl Config {
                 variant.validate(&project.name, name)?;
             }
             if !project.build_variants.is_empty() && project.discovery == Discovery::Static {
-                static_variants_honourable(project)?;
+                require_plain_west_build(project, "declares build_variants")?;
             }
 
             // Decision 53: `[[projects.targets]]` is retired, and a config

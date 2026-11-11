@@ -353,6 +353,51 @@ impl FlashParams {
     }
 }
 
+/// `build_each`'s params (decision 104): the target selection, a commit
+/// range, and what to check.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct BuildEachParams {
+    /// Name of a project from embarch-api's config file (see `list_projects`). Omit it, or
+    /// say "desk", to use this session's desk's firmware repo.
+    #[serde(default)]
+    pub project: String,
+    /// `<base>..<tip>`: every commit after base up to and including tip is built.
+    pub range: String,
+    /// Zephyr board name. Only for a discovery = "zephyr-west" project.
+    pub board: Option<String>,
+    /// Board variant. Only for a discovery = "zephyr-west" project.
+    pub variant: Option<String>,
+    /// Hardware revision. Only for a discovery = "zephyr-west" project.
+    pub revision: Option<String>,
+    /// App directory name under app/. Only for a discovery = "zephyr-west" project.
+    pub app: Option<String>,
+    /// `-S` snippets, as for `build`.
+    pub snippets: Option<Vec<String>>,
+    /// Extra `west build` flags, as for `build`.
+    pub extra_args: Option<Vec<String>>,
+    /// Build only this build variant (or "default"). Omitted builds the
+    /// default and every configured [projects.build_variants] entry.
+    pub build_variant: Option<String>,
+    /// A ref whose tree the tip must equal; also builds it and checks the two
+    /// images differ only in embedded commit ids.
+    pub same_tree_as: Option<String>,
+    /// Stop at the first build that fails. Defaults to false.
+    pub stop_at_first_failure: Option<bool>,
+}
+
+impl BuildEachParams {
+    fn selection(&self) -> Selection<'_> {
+        Selection {
+            board: self.board.as_deref(),
+            variant: self.variant.as_deref(),
+            revision: self.revision.as_deref(),
+            app: self.app.as_deref(),
+            snippets: self.snippets.as_deref().unwrap_or(&[]),
+            extra_args: self.extra_args.as_deref().unwrap_or(&[]),
+        }
+    }
+}
+
 /// `bootload`/`build_and_bootload`'s params (decision 80): the same target
 /// selection as `build`, and deliberately nothing of `flash`'s — no chip,
 /// probe, format, base address or erase, since a bootloader is reached by
@@ -1331,6 +1376,24 @@ impl EmbarchApi {
                 "target": resolved.descriptor,
             })),
             Err(e) => Self::err_text(format!("flash failed for '{}': {e:#}", project.name)),
+        }
+    }
+
+    #[tool(description = "Build every commit of a range (range = \"<base>..<tip>\") in the default build and every configured build variant (or only build_variant), each commit from its own module sources: a detached checkout of the project's repository at that commit, kept inside the west workspace and given to Zephyr as the module in place of the workspace's own checkout, so a commit's boards and drivers are the ones built. The engineer's working tree is never touched. Answers one row per commit and variant: success, warnings and the ones new against the previous commit, FLASH/RAM with the change from the previous commit, FLASH headroom, first error, log path. same_tree_as = <ref> also asserts the tip's tree equals that ref's (naming the differing paths if not) and builds the ref to check the two images differ only in embedded commit ids. Does not touch hardware.")]
+    async fn build_each(&self, Parameters(params): Parameters<BuildEachParams>) -> Result<CallToolResult, McpError> {
+        let project = self.project(&params.project)?;
+        let request = crate::build_each::Request {
+            project,
+            selection: params.selection(),
+            range: &params.range,
+            build_variant: params.build_variant.as_deref(),
+            same_tree_as: params.same_tree_as.as_deref(),
+            stop_at_first_failure: params.stop_at_first_failure.unwrap_or(false),
+        };
+        match crate::build_each::run(request, &self.build_locks).await {
+            Ok((value, _)) if value["success"] == true => Self::ok_json(value),
+            Ok((value, _)) => Self::err_json(value),
+            Err(e) => Self::err_text(format!("build_each failed for '{}': {e:#}", project.name)),
         }
     }
 

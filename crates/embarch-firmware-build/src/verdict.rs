@@ -40,6 +40,9 @@ pub struct Verdict {
     /// The first [`MAX_WARNINGS_LISTED`] distinct warnings, as
     /// `file:line: message`.
     pub first_warnings: Vec<String>,
+    /// Every distinct warning, in the order printed; what `build --each`
+    /// compares between commits (decision 104). Not in the JSON answer.
+    pub all_warnings: Vec<String>,
     /// The first error and the lines that belong to it, with everything the
     /// build printed after it (the cascade) dropped.
     pub first_error: Option<String>,
@@ -78,8 +81,11 @@ pub fn parse(log: &str, source: Option<&Path>) -> Verdict {
         let line = lines[i];
         if let Some(w) = warning(line, lines.get(i + 1).copied()) {
             let w = shorten(&w);
-            if seen_warnings.insert(w.clone()) && verdict.first_warnings.len() < MAX_WARNINGS_LISTED {
-                verdict.first_warnings.push(w);
+            if seen_warnings.insert(w.clone()) {
+                if verdict.first_warnings.len() < MAX_WARNINGS_LISTED {
+                    verdict.first_warnings.push(w.clone());
+                }
+                verdict.all_warnings.push(w);
             }
         }
         if verdict.first_error.is_none() && is_error_start(line) {

@@ -43,6 +43,7 @@ const EVERY_SUBCOMMAND: &[&[&str]] = &[
     &["list-targets", "demo"],
     &["status"],
     &["build", "no-such-project"],
+    &["build", "demo", "--each", "HEAD~1..HEAD"],
     &["flash", "no-such-project"],
     &["build-and-flash", "no-such-project"],
     &["reset", "no-such-project"],

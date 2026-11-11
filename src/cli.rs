@@ -18,7 +18,10 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         Commands::ListProjects => list_projects(&config, json),
         Commands::ListTargets { project } => list_targets(&config, &project, json),
         Commands::Status => status(&core, json).await,
-        Commands::Build { project, target, options } => build(&config, &core, &project, &target, &options, json).await,
+        Commands::Build { project, target, options, each: Some(range), same_tree_as, stop_at_first_failure } => {
+            build_each(&config, &project, &target, &options, &range, same_tree_as.as_deref(), stop_at_first_failure, json).await
+        }
+        Commands::Build { project, target, options, .. } => build(&config, &core, &project, &target, &options, json).await,
         Commands::Flash {
             project,
             target,
@@ -651,6 +654,48 @@ async fn build(
             finish(json, outcome.build_succeeded(), value, human)
         }
         Err(e) => error_result(json, format!("failed to run build for '{project_name}': {e:#}")),
+    }
+}
+
+/// `build --each` (decision 104): one row per commit and variant.
+#[allow(clippy::too_many_arguments)]
+async fn build_each(
+    config: &Config,
+    project_name: &str,
+    target: &TargetSelection,
+    options: &crate::BuildOptions,
+    range: &str,
+    same_tree_as: Option<&str>,
+    stop_at_first_failure: bool,
+    json: bool,
+) -> i32 {
+    if options.vs.is_some() || options.pristine || options.verbose {
+        return error_result(
+            json,
+            "build --each compares each commit with the one before it and builds incrementally; \
+             --vs, --pristine and --verbose do not apply to it"
+                .to_string(),
+        );
+    }
+    let project = match lookup_project(config, project_name) {
+        Ok(p) => p,
+        Err(e) => return error_result(json, e),
+    };
+    let request = crate::build_each::Request {
+        project,
+        selection: target.selection(),
+        range,
+        build_variant: options.build_variant.as_deref(),
+        same_tree_as,
+        stop_at_first_failure,
+    };
+    let locks = crate::build::BuildLocks::new();
+    match crate::build_each::run(request, &locks).await {
+        Ok((value, human)) => {
+            let ok = value["success"] == true;
+            finish(json, ok, value, human)
+        }
+        Err(e) => error_result(json, format!("build --each failed for '{project_name}': {e:#}")),
     }
 }
 
@@ -2608,7 +2653,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 56,
+            arms, 57,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."

@@ -337,7 +337,7 @@ pub type LineSink = Arc<dyn Fn(BuildStream, &str) + Send + Sync>;
 /// alike stay apart. FNV-1a by hand: `DefaultHasher` is not promised stable
 /// across compiler versions, and `embarch-ui` and `embarch-api` may be built
 /// by different ones yet must agree on the file.
-fn key_file_stem(key: &str) -> String {
+pub fn key_file_stem(key: &str) -> String {
     let mut hash: u64 = 0xcbf29ce484222325;
     for b in key.bytes() {
         hash ^= u64::from(b);

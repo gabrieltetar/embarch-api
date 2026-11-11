@@ -24,7 +24,8 @@ const MAIN_SRC: &str = include_str!("../src/main.rs");
 /// The suite's two documented CLI↔MCP naming asymmetries (`spec.md` §1:
 /// "a superset, `versions` having no tool"; the `study_watch`/
 /// `study-status --follow` split cited from the same section in
-/// `interfaces/tools.md` and spelled out in `interfaces/studies.md`).
+/// `interfaces/tools.md` and spelled out in `interfaces/studies.md`; the
+/// `build_each`/`build --each` split, decision 104).
 /// Every other MCP tool must have a matching kebab-case CLI subcommand, and
 /// every other CLI subcommand must have a matching MCP tool — these two are
 /// named, cited exceptions to that rule, never an inline skip.
@@ -41,6 +42,7 @@ const DOCUMENTED_ASYMMETRIES: &[Asymmetry] = &[
     Asymmetry::CliOnly("patches"),
     Asymmetry::CliOnly("stack"),
     Asymmetry::ToolReachedAs("study_watch", "study-status"),
+    Asymmetry::ToolReachedAs("build_each", "build"),
 ];
 
 /// Every `async fn` immediately preceded by a `#[tool(description = ...)]`

@@ -1,5 +1,6 @@
 mod bench_exchange;
 mod bootload;
+mod build_each;
 mod build_info;
 mod capacity;
 mod cli;
@@ -153,6 +154,18 @@ pub enum Commands {
         target: TargetSelection,
         #[command(flatten)]
         options: BuildOptions,
+        /// Build every commit of BASE..TIP in the default build and every
+        /// build variant (or only --build-variant), each from that commit's
+        /// own module sources, and print one row per commit and variant.
+        #[arg(long, value_name = "BASE..TIP")]
+        each: Option<String>,
+        /// With --each: assert the tip's tree equals this ref's, and that
+        /// their images differ only in embedded commit ids.
+        #[arg(long, requires = "each")]
+        same_tree_as: Option<String>,
+        /// With --each: stop at the first build that fails.
+        #[arg(long, requires = "each")]
+        stop_at_first_failure: bool,
     },
     /// Flash a firmware artifact via embarch-core.
     Flash {
