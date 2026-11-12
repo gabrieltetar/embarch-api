@@ -466,7 +466,8 @@ pub enum Commands {
         reflash: String,
         /// Proceed even though a version requirement isn't satisfied. The
         /// override is recorded in the result's provenance.overrides, never
-        /// silently honoured.
+        /// silently honoured. It does not cover a bench version Core did not
+        /// report, which is always refused (embarch-api decision 105).
         #[arg(long = "allow-version-mismatch")]
         allow_version_mismatch: bool,
         /// Which configured project is the DUT. Required by

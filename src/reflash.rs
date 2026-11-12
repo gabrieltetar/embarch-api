@@ -121,17 +121,18 @@ pub fn mismatch_message(what: &str, required: &str, actual: &str, remedy: &str) 
 /// than `embarch-core` decision 108, which serves the bench's build as
 /// `firmware_version` (decision 105).
 ///
-/// An unreported version satisfies no requirement but `any`, so this is a
-/// refusal with the same override as a mismatch; it names the cause, because
-/// the fix is the Core, not the bench or the checkout.
+/// An unreported version satisfies no requirement but `any`, and the refusal
+/// has no override: `allow_version_mismatch` covers a version that was read
+/// and differs, not one nobody read. It names the cause and the two ways out,
+/// because the fix is the Core, not the bench or the checkout.
 pub fn unreported_bench_message(required: &str) -> String {
     format!(
         "dev-bench version unknown: this study requires '{required}', but Core's \
          GET /dev-bench/hello did not report dev_bench_version, so nothing could be compared. A \
          Core older than embarch-core decision 108 serves the bench's build as firmware_version, \
          which this client does not read: deploy a current Core (embarch-dev-workflow.md §4a). \
-         Re-run with allow_version_mismatch to proceed anyway; Core still checks the bench itself \
-         on submit and records any override in StudyResult.provenance.overrides."
+         allow_version_mismatch does not apply to a version that was never reported; to run this \
+         study against this Core, set requires.dev_bench_version to 'any'."
     )
 }
 
@@ -285,11 +286,10 @@ pub async fn run_study(
         match hello.dev_bench_version.as_deref() {
             // Decision 105: a Core that did not report the bench's build has
             // not shown that it satisfies anything, so a pinned requirement
-            // is refused exactly as a mismatch is — never waved through as
-            // though the unknown version matched.
-            None if !request.allow_version_mismatch => {
-                anyhow::bail!(unreported_bench_message(required_bench))
-            }
+            // is always refused. `allow_version_mismatch` does not reach
+            // this arm: it waves through a version that was read and
+            // differs, and here nothing was read.
+            None => anyhow::bail!(unreported_bench_message(required_bench)),
             Some(reported)
                 if !requirement_satisfied(required_bench, reported) && !request.allow_version_mismatch =>
             {
@@ -534,13 +534,16 @@ mod tests {
     }
 
     /// Decision 105: an unreported bench version is refused, says it was
-    /// unknown rather than mismatched, and names the Core as the cause.
+    /// unknown rather than mismatched, names the Core as the cause, and does
+    /// not offer the override, which does not apply to it.
     #[test]
     fn an_unreported_bench_version_is_refused_naming_the_core_as_the_cause() {
         let msg = unreported_bench_message("g1a2b3c");
         assert!(msg.starts_with("dev-bench version unknown"), "{msg}");
         assert!(msg.contains("g1a2b3c"), "{msg}");
         assert!(msg.contains("embarch-core decision 108"), "{msg}");
-        assert!(msg.contains("allow_version_mismatch"), "{msg}");
+        assert!(msg.contains("allow_version_mismatch does not apply"), "{msg}");
+        assert!(!msg.contains("proceed anyway"), "{msg}");
+        assert!(msg.contains("'any'"), "{msg}");
     }
 }

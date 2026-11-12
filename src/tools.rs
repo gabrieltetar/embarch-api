@@ -587,7 +587,8 @@ pub struct RunStudyParams {
     /// override is **recorded** in the result's
     /// provenance.overrides — a run that was waved through is never
     /// indistinguishable from one that met its requirements. Defaults to
-    /// false.
+    /// false. Does not cover a bench version Core did not report, which is
+    /// always refused (embarch-api decision 105).
     pub allow_version_mismatch: Option<bool>,
 
     /// Which configured project is the DUT. Required by reflash = "dut" or
@@ -2205,7 +2206,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Submit a Study (embarch-study-designer's schema: name, requires, steps, streams, steps_crc, streams_crc) for embarch-core to run against whatever DUT is connected through its dev-bench serial link. All three seals (steps_crc over steps, streams_crc over streams, protocols_crc over protocols) are recomputed and overwritten regardless of what's submitted. Returns { study_id } immediately (async) — call study_status to poll progress. Errors if a study is already in-flight on Core.\n\nStudy.requires names the dev-bench and DUT firmware builds the study is meant to run against ('any' if it genuinely doesn't matter). reflash says what to do about it: 'none' (default), 'dev-bench', 'dut', or 'both' — build and flash from the working tree AS IT CURRENTLY STANDS, then verify. This never runs git checkout: if the tree isn't at the revision the study wants, the call fails naming both revisions and leaves the tree, and the board, alone. Reflashing the DUT needs project (plus the usual board/variant/revision/app/snippets/extra_args, which a discovery = \"static\" DUT project rejects rather than discards — that failure happens before anything is built or flashed), since a study isn't project-shaped but a firmware build is. allow_version_mismatch proceeds anyway and the override is recorded in the result's provenance.overrides — never silently honoured.")]
+    #[tool(description = "Submit a Study (embarch-study-designer's schema: name, requires, steps, streams, steps_crc, streams_crc) for embarch-core to run against whatever DUT is connected through its dev-bench serial link. All three seals (steps_crc over steps, streams_crc over streams, protocols_crc over protocols) are recomputed and overwritten regardless of what's submitted. Returns { study_id } immediately (async) — call study_status to poll progress. Errors if a study is already in-flight on Core.\n\nStudy.requires names the dev-bench and DUT firmware builds the study is meant to run against ('any' if it genuinely doesn't matter). reflash says what to do about it: 'none' (default), 'dev-bench', 'dut', or 'both' — build and flash from the working tree AS IT CURRENTLY STANDS, then verify. This never runs git checkout: if the tree isn't at the revision the study wants, the call fails naming both revisions and leaves the tree, and the board, alone. Reflashing the DUT needs project (plus the usual board/variant/revision/app/snippets/extra_args, which a discovery = \"static\" DUT project rejects rather than discards — that failure happens before anything is built or flashed), since a study isn't project-shaped but a firmware build is. allow_version_mismatch proceeds anyway and the override is recorded in the result's provenance.overrides — never silently honoured. It does not cover a bench version Core did not report (a Core older than embarch-core decision 108): that is always refused, and a bench requirement of any is the only way to run against such a Core (embarch-api decision 105).")]
     async fn run_study(
         &self,
         Parameters(params): Parameters<RunStudyParams>,

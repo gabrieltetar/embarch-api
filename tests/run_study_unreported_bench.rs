@@ -5,9 +5,10 @@
 //! /dev-bench/hello` with the bench's build under `firmware_version` and no
 //! `dev_bench_version`. The client reads that as `None` and does not fall
 //! back to the old key. What this pins is what the gate then does with a
-//! pinned `requires.dev_bench_version`: it refuses, exactly as it refuses a
-//! mismatch, and the override that lets a mismatch through lets this through
-//! too. It never treats the unknown version as matching.
+//! pinned `requires.dev_bench_version`: it always refuses, and
+//! `allow_version_mismatch`, which lets a mismatch through, does not let this
+//! through (the owner's call, 2026-11-11). It never treats the unknown version
+//! as matching; a requirement of `any` is the one way to run against that Core.
 
 mod support;
 
@@ -81,10 +82,10 @@ async fn older_core() -> MockCore {
     .await
 }
 
-/// The config and a study pinning `requires.dev_bench_version`. No
+/// The config and a study whose `requires.dev_bench_version` is `bench`. No
 /// `[[projects]]`: `--reflash none` builds nothing, and the run names a
 /// project that does not exist so the ledger step skips without asking a desk.
-fn write_inputs(dir: &Path, base_url: &str) -> (PathBuf, PathBuf) {
+fn write_inputs(dir: &Path, base_url: &str, bench: &str) -> (PathBuf, PathBuf) {
     let config_path = dir.join("api.toml");
     std::fs::write(
         &config_path,
@@ -94,7 +95,7 @@ fn write_inputs(dir: &Path, base_url: &str) -> (PathBuf, PathBuf) {
 
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/self_test_study.json");
     let mut study: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(fixture).unwrap()).unwrap();
-    study["requires"]["dev_bench_version"] = json!(PINNED);
+    study["requires"]["dev_bench_version"] = json!(bench);
     let study_path = dir.join("study.json");
     std::fs::write(&study_path, study.to_string()).unwrap();
     (config_path, study_path)
@@ -131,7 +132,7 @@ fn posted_a_study(mock: &MockCore) -> bool {
 async fn an_unreported_bench_version_is_refused_and_no_study_is_submitted() {
     let mock = older_core().await;
     let dir = TempDir::new();
-    let (config, study) = write_inputs(dir.path(), mock.base_url());
+    let (config, study) = write_inputs(dir.path(), mock.base_url(), PINNED);
 
     let value = run_study(dir.path(), &config, &study, &[]);
 
@@ -142,17 +143,35 @@ async fn an_unreported_bench_version_is_refused_and_no_study_is_submitted() {
     assert!(!posted_a_study(&mock), "the gate must refuse before POST /study");
 }
 
+/// The owner's call (2026-11-11): the mismatch override does not reach an
+/// unreported version. It covers a version that was read and differs; here
+/// nothing was read, so the run is refused exactly as without it.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_mismatch_override_lets_an_unreported_bench_version_through_and_records_none() {
+async fn the_mismatch_override_does_not_let_an_unreported_bench_version_through() {
     let mock = older_core().await;
     let dir = TempDir::new();
-    let (config, study) = write_inputs(dir.path(), mock.base_url());
+    let (config, study) = write_inputs(dir.path(), mock.base_url(), PINNED);
 
     let value = run_study(dir.path(), &config, &study, &["--allow-version-mismatch"]);
 
+    assert_eq!(value["success"], json!(false), "{value}");
+    let error = value.to_string();
+    assert!(error.contains("dev-bench version unknown"), "{value}");
+    assert!(error.contains("allow_version_mismatch does not apply"), "{value}");
+    assert!(!posted_a_study(&mock), "the override must not reach POST /study");
+}
+
+/// The one way to run against a Core older than the rename: a bench
+/// requirement of `any`, which the gate never opens the link to check.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bench_requirement_of_any_still_runs_against_a_core_older_than_the_rename() {
+    let mock = older_core().await;
+    let dir = TempDir::new();
+    let (config, study) = write_inputs(dir.path(), mock.base_url(), "any");
+
+    let value = run_study(dir.path(), &config, &study, &[]);
+
     assert_eq!(value["success"], json!(true), "{value}");
-    assert!(posted_a_study(&mock), "the override must reach Core's own gate");
-    // The bench's build was not reported, and the outcome says so rather than
-    // carrying the old key's value or an empty string.
+    assert!(posted_a_study(&mock), "an `any` study must reach Core");
     assert_eq!(value["dev_bench_version"], json!(null), "{value}");
 }
