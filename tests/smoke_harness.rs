@@ -67,15 +67,7 @@ impl Drop for TempDir {
     }
 }
 fn tempdir(tag: &str) -> TempDir {
-    let mut base = std::env::temp_dir();
-    base.push(format!(
-        "embarch-api-smoke-{tag}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let base = support::unique_dir(&format!("smoke-{tag}"));
     fs::create_dir_all(&base).unwrap();
     TempDir(base)
 }

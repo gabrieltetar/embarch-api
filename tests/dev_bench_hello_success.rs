@@ -39,15 +39,7 @@ struct TempDir(PathBuf);
 
 impl TempDir {
     fn new() -> TempDir {
-        let mut base = std::env::temp_dir();
-        base.push(format!(
-            "embarch-api-dev-bench-hello-success-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let base = support::unique_dir("dev-bench-hello-success");
         std::fs::create_dir_all(&base).unwrap();
         TempDir(base)
     }

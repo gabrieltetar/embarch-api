@@ -7,6 +7,8 @@
 //! Needs a POSIX shell and git, so unix only.
 #![cfg(unix)]
 
+mod support;
+
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -20,11 +22,7 @@ impl Drop for TempDir {
 }
 
 fn tempdir() -> TempDir {
-    let d = std::env::temp_dir().join(format!(
-        "embarch-api-build-each-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-    ));
+    let d = support::unique_dir("build-each");
     std::fs::create_dir_all(&d).unwrap();
     TempDir(d)
 }

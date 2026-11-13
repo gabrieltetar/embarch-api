@@ -27,15 +27,7 @@ struct TempDir(PathBuf);
 
 impl TempDir {
     fn new() -> TempDir {
-        let mut base = std::env::temp_dir();
-        base.push(format!(
-            "embarch-api-run-study-unreported-bench-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let base = support::unique_dir("run-study-unreported-bench");
         std::fs::create_dir_all(&base).unwrap();
         TempDir(base)
     }

@@ -5,6 +5,8 @@
 //! log, so no toolchain is needed. Needs a POSIX shell, so unix only.
 #![cfg(unix)]
 
+mod support;
+
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -17,11 +19,7 @@ struct TempDir(PathBuf);
 
 impl TempDir {
     fn new() -> TempDir {
-        let base = std::env::temp_dir().join(format!(
-            "embarch-api-build-verdict-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-        ));
+        let base = support::unique_dir("build-verdict");
         std::fs::create_dir_all(&base).unwrap();
         TempDir(base)
     }

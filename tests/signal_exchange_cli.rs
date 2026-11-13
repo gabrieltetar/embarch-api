@@ -23,11 +23,7 @@ async fn run(body: serde_json::Value, extra: &[&str]) -> Output {
 
 async fn run_recorded(body: serde_json::Value, extra: &[&str]) -> (Output, Vec<support::RecordedRequest>) {
     let mock = MockCore::start(Behavior::json_ok(body)).await;
-    let dir = std::env::temp_dir().join(format!(
-        "embarch-api-sigex-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-    ));
+    let dir = support::unique_dir("sigex");
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = dir.join("api.toml");
     std::fs::write(&cfg, format!("[core]\nbase_url = \"{}\"\ntoken = \"t\"\n", mock.base_url())).unwrap();

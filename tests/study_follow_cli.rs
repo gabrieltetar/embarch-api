@@ -22,14 +22,7 @@ async fn run(poll: Behavior, json_mode: bool) -> Output {
         otherwise: Box::new(poll),
     })
     .await;
-    let dir = std::env::temp_dir().join(format!(
-        "embarch-api-follow-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let dir = support::unique_dir("follow");
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = dir.join("api.toml");
     std::fs::write(

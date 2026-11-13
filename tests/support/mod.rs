@@ -427,3 +427,19 @@ pub fn api_command(exe: &str) -> std::process::Command {
     c.env_remove("EMBARCH_REQUIRE_LEASE");
     c
 }
+
+/// A scratch-directory path that is unique within this process: the process
+/// id (unique across test binaries running at once) plus a process-wide
+/// counter (unique across the threads of one binary). Not the clock: two
+/// tests reading the nanosecond clock in one tick share a directory, and the
+/// first to finish deletes it under the other (EMB-169). The directory is not
+/// created; the caller does that.
+pub fn unique_dir(tag: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    std::env::temp_dir().join(format!(
+        "embarch-api-{tag}-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ))
+}

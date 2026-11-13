@@ -1163,14 +1163,12 @@ mod tests {
         }
     }
     fn tempdir() -> TempDir {
-        let mut base = std::env::temp_dir();
-        base.push(format!(
+        // Counter, not the clock: two threads in one tick shared a directory.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let base = std::env::temp_dir().join(format!(
             "embarch-api-main-test-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         fs::create_dir_all(&base).unwrap();
         TempDir(base)

@@ -37,11 +37,7 @@ fn router(extra: Vec<(&str, Behavior)>, capture_script: Vec<Behavior>) -> Behavi
 }
 
 fn run(mock: &MockCore, config_extra: &str, args: &[&str]) -> Output {
-    let dir = std::env::temp_dir().join(format!(
-        "embarch-api-bex-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-    ));
+    let dir = support::unique_dir("bex");
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = dir.join("api.toml");
     let src = dir.join("src");

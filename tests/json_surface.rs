@@ -27,6 +27,8 @@
 //! `tests/study_events_sse.rs`'s territory, against the mock, at the client
 //! layer.
 
+mod support;
+
 use embarch_api::json_out::{SCHEMA_VERSION, SCHEMA_VERSION_FIELD};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -114,15 +116,7 @@ impl TempDir {
     /// `main.rs` already use rather than adding a `tempfile` dependency for
     /// one directory.
     fn new() -> TempDir {
-        let mut base = std::env::temp_dir();
-        base.push(format!(
-            "embarch-api-json-surface-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let base = support::unique_dir("json-surface");
         std::fs::create_dir_all(&base).unwrap();
         TempDir(base)
     }
