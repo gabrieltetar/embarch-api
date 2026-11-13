@@ -33,7 +33,7 @@ async fn cli(body: serde_json::Value, json_flag: bool) -> Output {
         ),
     )
     .unwrap();
-    let mut c = Command::new(env!("CARGO_BIN_EXE_embarch-api"));
+    let mut c = support::api_command(env!("CARGO_BIN_EXE_embarch-api"));
     c.arg("--config").arg(&cfg);
     if json_flag {
         c.arg("--json");

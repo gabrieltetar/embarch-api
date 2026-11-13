@@ -5,7 +5,7 @@
 
 mod support;
 
-use std::process::{Command, Output};
+use std::process::Output;
 
 use serde_json::json;
 use support::{Behavior, MockCore};
@@ -31,7 +31,7 @@ async fn run_recorded(body: serde_json::Value, extra: &[&str]) -> (Output, Vec<s
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = dir.join("api.toml");
     std::fs::write(&cfg, format!("[core]\nbase_url = \"{}\"\ntoken = \"t\"\n", mock.base_url())).unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_embarch-api"))
+    let out = support::api_command(env!("CARGO_BIN_EXE_embarch-api"))
         .arg("--config")
         .arg(&cfg)
         .args(if extra.contains(&"--json") { &["--json"][..] } else { &[][..] })

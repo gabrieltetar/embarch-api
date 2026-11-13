@@ -6,7 +6,7 @@
 
 mod support;
 
-use std::process::{Command, Output};
+use std::process::Output;
 
 use serde_json::{json, Value};
 use support::{Behavior, MockCore};
@@ -48,7 +48,7 @@ fn run(mock: &MockCore, config_extra: &str, args: &[&str]) -> Output {
     std::fs::create_dir_all(&src).unwrap();
     let extra = config_extra.replace("{SRC}", src.to_str().unwrap());
     std::fs::write(&cfg, format!("[core]\nbase_url = \"{}\"\ntoken = \"t\"\n{extra}", mock.base_url())).unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_embarch-api"))
+    let out = support::api_command(env!("CARGO_BIN_EXE_embarch-api"))
         .arg("--config")
         .arg(&cfg)
         .args(["--json"])

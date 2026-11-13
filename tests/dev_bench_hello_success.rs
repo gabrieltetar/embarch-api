@@ -22,7 +22,7 @@
 mod support;
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+
 
 use serde_json::json;
 use support::{Behavior, MockCore};
@@ -104,7 +104,7 @@ async fn dev_bench_hello_json_carries_the_real_dev_bench_schema_version_not_the_
     let config_path = write_config(dir.path(), mock.base_url());
     let log_dir = dir.path().join("data");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_embarch-api"))
+    let output = support::api_command(env!("CARGO_BIN_EXE_embarch-api"))
         .arg("--config")
         .arg(&config_path)
         .arg("--json")

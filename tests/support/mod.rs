@@ -411,3 +411,19 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .windows(needle.len())
         .position(|window| window == needle)
 }
+
+/// A `Command` for the `embarch-api` binary at `exe` (pass
+/// `env!("CARGO_BIN_EXE_embarch-api")`), with the session's bench-lease
+/// requirement stripped.
+///
+/// `.cargo/config.toml` blanks `EMBARCH_REQUIRE_LEASE` for the test run, but
+/// cargo finds that file from the *working directory*, not from
+/// `--manifest-path`. Run from the suite root, the file is not read, a session
+/// that exports the variable leaks it into the child, and every call to the
+/// mock Core is refused for want of a lease (EMB-158). Removing it here makes
+/// the result independent of where `cargo test` was started.
+pub fn api_command(exe: &str) -> std::process::Command {
+    let mut c = std::process::Command::new(exe);
+    c.env_remove("EMBARCH_REQUIRE_LEASE");
+    c
+}

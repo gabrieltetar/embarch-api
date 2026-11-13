@@ -13,7 +13,7 @@
 mod support;
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+
 
 use serde_json::json;
 use support::{Behavior, MockCore};
@@ -103,7 +103,7 @@ fn write_inputs(dir: &Path, base_url: &str, bench: &str) -> (PathBuf, PathBuf) {
 
 fn run_study(dir: &Path, config: &Path, study: &Path, extra: &[&str]) -> serde_json::Value {
     let log_dir = dir.join("data");
-    let output = Command::new(env!("CARGO_BIN_EXE_embarch-api"))
+    let output = support::api_command(env!("CARGO_BIN_EXE_embarch-api"))
         .arg("--config")
         .arg(config)
         .arg("--json")
