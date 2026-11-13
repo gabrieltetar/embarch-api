@@ -6,6 +6,7 @@
 mod support;
 
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use embarch_core_client::{CoreClient, CoreConfig, LeaseHeldError};
@@ -40,10 +41,14 @@ fn cli(mock: &MockCore, env_token: Option<&str>, args: &[&str]) -> Output {
 
 /// [`cli`], with `EMBARCH_REQUIRE_LEASE` set to `require` when given.
 fn cli_in_session(mock: &MockCore, env_token: Option<&str>, require: Option<&str>, args: &[&str]) -> Output {
+    // A counter, not the clock: two tests starting a CLI in the same clock tick
+    // shared one directory, so one overwrote the other's config (and its
+    // mock's port) and the first to finish deleted the other's log directory.
+    static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
         "embarch-api-lease-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        NEXT_DIR.fetch_add(1, Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = dir.join("api.toml");
