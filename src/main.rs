@@ -16,6 +16,7 @@ mod reflash;
 mod stack;
 mod study;
 mod tools;
+mod worktree;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -1083,8 +1084,15 @@ async fn async_main() -> Result<()> {
                  or run from within (or under) a firmware repo containing embarch/embarch.toml",
             )?;
 
-        let config = Config::load_from_path(&config_path)
+        let mut config = Config::load_from_path(&config_path)
             .with_context(|| format!("failed to load config from {}", config_path.display()))?;
+        // Decision 106: a worktree session builds its own tree, not the
+        // main clone the linked config names.
+        if let Ok(cwd) = std::env::current_dir() {
+            for note in worktree::rebase_onto_worktree(&mut config, &cwd)? {
+                tracing::info!("{note}");
+            }
+        }
         let core = CoreClient::new(&config.core)
             .context("failed to build embarch-core client")?
             .with_lease_required(embarch_core_client::lease_gate::required_by_env());

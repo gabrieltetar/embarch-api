@@ -1417,42 +1417,4 @@ defines = ["CONFIG_FOO=y"]
         assert_eq!(after.pristine.as_deref(), Some("this directory last built other variant settings"));
         assert_eq!(after.plan.command[2..4], ["-p".to_string(), "always".to_string()]);
     }
-
-    /// Which tree a build asked from a session in a worktree builds
-    /// (`tasks/api/154`): the one named by the config's `source_path`, never
-    /// the process's working directory, and the plan's environment is the
-    /// project's `env` table alone (the server's own environment, e.g. a
-    /// worktree's `ZEPHYR_MODULES`, reaches `west` by inheritance).
-    #[test]
-    fn a_zephyr_build_runs_in_and_builds_the_configured_source_path_not_the_working_directory() {
-        let fixture = write_zephyr_fixture(false);
-        let project = zephyr_project(
-            fixture.path(),
-            r#"west_binary = "/venv/bin/west"
-build_dir_root = "/builds/main""#,
-        );
-        let cwd = std::env::current_dir().unwrap();
-        assert!(!cwd.starts_with(fixture.path()), "the test's own cwd must differ from source_path");
-
-        let build = resolve_build_with(&project, Selection::default(), BuildChoice::default()).unwrap();
-        let plan = &build.plan;
-        assert_eq!(plan.cwd, fixture.path());
-        let argv = &plan.command;
-        let d = argv.iter().position(|a| a == "-d").expect("-d is always passed");
-        assert!(std::path::Path::new(&argv[d + 1]).starts_with("/builds/main"), "{argv:?}");
-        assert_eq!(
-            std::path::Path::new(argv.last().unwrap()),
-            fixture.path().join("app/widget"),
-            "{argv:?}"
-        );
-        assert!(plan.env.is_empty(), "the plan sets no environment of its own: {:?}", plan.env);
-
-        let with_env = zephyr_project(
-            fixture.path(),
-            "west_binary = \"/venv/bin/west\"\nbuild_dir_root = \"/builds/main\"\nenv = { FOO = \"bar\" }",
-        );
-        let build = resolve_build_with(&with_env, Selection::default(), BuildChoice::default()).unwrap();
-        assert_eq!(build.plan.env.len(), 1);
-        assert_eq!(build.plan.env["FOO"], "bar");
-    }
 }
