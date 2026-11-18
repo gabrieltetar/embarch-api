@@ -353,6 +353,48 @@ impl FlashParams {
     }
 }
 
+/// `bundle`'s params: the target selection, where the bundle goes and the
+/// notes appended to its README.
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct BundleParams {
+    /// Name of a project from embarch-api's config file (see `list_projects`). Omit it, or
+    /// say "desk", to use this session's desk's firmware repo.
+    #[serde(default)]
+    pub project: String,
+    /// Zephyr board name. Only for a discovery = "zephyr-west" project.
+    pub board: Option<String>,
+    /// Board variant. Only for a discovery = "zephyr-west" project.
+    pub variant: Option<String>,
+    /// Hardware revision. Only for a discovery = "zephyr-west" project.
+    pub revision: Option<String>,
+    /// App directory name under app/. Only for a discovery = "zephyr-west" project.
+    pub app: Option<String>,
+    /// `-S` snippets, as for `build`.
+    pub snippets: Option<Vec<String>>,
+    /// Extra `west build` flags, as for `build`.
+    pub extra_args: Option<Vec<String>>,
+    /// A named build variant, as for `build`.
+    pub build_variant: Option<String>,
+    /// Path of a file appended to the README (the bench checklist).
+    pub notes_path: Option<String>,
+    /// Directory the `<name>-<short-sha>/` folder and its `.zip` are written
+    /// into. Defaults to the server's working directory.
+    pub out_dir: Option<String>,
+}
+
+impl BundleParams {
+    fn selection(&self) -> Selection<'_> {
+        Selection {
+            board: self.board.as_deref(),
+            variant: self.variant.as_deref(),
+            revision: self.revision.as_deref(),
+            app: self.app.as_deref(),
+            snippets: self.snippets.as_deref().unwrap_or(&[]),
+            extra_args: self.extra_args.as_deref().unwrap_or(&[]),
+        }
+    }
+}
+
 /// `build_each`'s params (decision 104): the target selection, a commit
 /// range, and what to check.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1468,6 +1510,27 @@ impl EmbarchApi {
                 "build succeeded but flash failed for '{}': {e:#}",
                 project.name
             )),
+        }
+    }
+
+    #[tool(description = "Package a project's finished build for an engineer who has a debug probe and the vendor's flashing CLI but no toolchain: writes <name>-<short-sha>/ holding <name>-<short-sha>.hex (the sysbuild merged hex) and README.md, and <name>-<short-sha>.zip of that folder, with no zip binary involved. Reuses the artifact when it is newer than its sources and builds one when it is not; refuses when the build fails or the artifact is still older than its sources. Checks the hex holds data at the bootloader's and the application slot's addresses, read from the build's own zephyr.dts, before writing anything. The README carries the program (full chip erase), reset and recover commands the suite records for the chip family, with the hex's file name filled in, and says so plainly for a family the suite records nothing for; notes_path's file is appended. Does not touch hardware.")]
+    async fn bundle(
+        &self,
+        Parameters(params): Parameters<BundleParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let project = self.project(&params.project)?;
+        let choice = BuildChoice { build_variant: params.build_variant.as_deref(), pristine: false };
+        let resolved = match resolve::resolve_with(project, params.selection(), choice, &self.core).await {
+            Ok(r) => r,
+            Err(e) => return Self::err_text(format!("{e:#}")),
+        };
+        let out = std::path::PathBuf::from(params.out_dir.as_deref().unwrap_or("."));
+        let notes = params.notes_path.as_deref().map(std::path::Path::new);
+        let report = crate::bundle::bundle(&self.build_locks, project, &resolved, notes, &out).await;
+        if report.success {
+            Self::ok_json(report.value)
+        } else {
+            Self::err_json(report.value)
         }
     }
 

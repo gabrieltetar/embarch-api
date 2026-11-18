@@ -51,6 +51,7 @@ const EVERY_SUBCOMMAND: &[&[&str]] = &[
     &["reset", "no-such-project"],
     &["bootload", "no-such-project"],
     &["build-and-bootload", "no-such-project"],
+    &["bundle", "no-such-project"],
     &["declare-bootload-ports", "--bootloader", "2fe3:000c"],
     &["show-bootload-ports"],
     &["run-host-study", "--study-file", "no-such-host-study.json"],

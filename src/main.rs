@@ -2,6 +2,7 @@ mod bench_exchange;
 mod bootload;
 mod build_each;
 mod build_info;
+mod bundle;
 mod capacity;
 mod cli;
 mod dev_bench;
@@ -225,6 +226,23 @@ pub enum Commands {
         project: String,
         #[command(flatten)]
         target: TargetSelection,
+    },
+    /// Package a project's finished build for a bench engineer: a
+    /// `<name>-<short-sha>/` folder holding the merged hex and a README of
+    /// flash commands, and the same folder zipped. Reuses the artifact when
+    /// it is newer than its sources and builds one when it is not; refuses
+    /// a hex that lacks the bootloader or the application slot.
+    Bundle {
+        project: String,
+        #[command(flatten)]
+        target: TargetSelection,
+        /// A file appended to the README (the bench checklist).
+        #[arg(long)]
+        notes: Option<PathBuf>,
+        /// Where the folder and the zip are written. Defaults to the
+        /// current directory.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// Declare the DUT's two USB identities for bootloading: the
     /// bootloader's, where the image goes, and optionally the application's,

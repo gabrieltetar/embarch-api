@@ -40,6 +40,9 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
             bootload(&config, &core, &project, &target, image_path.as_deref(), json).await
         }
         Commands::BuildAndBootload { project, target } => build_and_bootload(&config, &core, &project, &target, json).await,
+        Commands::Bundle { project, target, notes, out } => {
+            bundle(&config, &core, &project, &target, notes.as_deref(), out.as_deref(), json).await
+        }
         Commands::DeclareBootloadPorts { bootloader, bootloader_interface, app, app_interface } => {
             declare_bootload_ports(&core, app.as_deref(), app_interface, &bootloader, bootloader_interface, json).await
         }
@@ -870,6 +873,29 @@ async fn build_and_bootload(
     let build_locks = crate::build::BuildLocks::new();
     let report =
         crate::bootload::build_and_bootload(core, &build_locks, project, target.selection(), build_outcome_json).await;
+    finish(json, report.success, report.value, report.human)
+}
+
+async fn bundle(
+    config: &Config,
+    core: &CoreClient,
+    project_name: &str,
+    target: &TargetSelection,
+    notes: Option<&std::path::Path>,
+    out: Option<&std::path::Path>,
+    json: bool,
+) -> i32 {
+    let project = match lookup_project(config, project_name) {
+        Ok(p) => p,
+        Err(e) => return error_result(json, e),
+    };
+    let resolved = match resolve::resolve_with(project, target.selection(), Default::default(), core).await {
+        Ok(r) => r,
+        Err(e) => return error_result(json, format!("{e:#}")),
+    };
+    let build_locks = crate::build::BuildLocks::new();
+    let report =
+        crate::bundle::bundle(&build_locks, project, &resolved, notes, out.unwrap_or(std::path::Path::new("."))).await;
     finish(json, report.success, report.value, report.human)
 }
 
@@ -2653,7 +2679,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 57,
+            arms, 58,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."
