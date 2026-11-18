@@ -148,8 +148,58 @@ jobs:
             echo "asset=embarch-api/dist/${name}.tar.gz" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Upload release asset
+      # Archives go to the signing job as workflow artifacts; `id-token` stays
+      # off this job, which runs the build.
+      - name: Upload archive as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: archive-${{ matrix.target }}
+          path: ${{ steps.package.outputs.asset }}
+          if-no-files-found: error
+
+  # One job signs and publishes every archive, so one `release` environment
+  # approval covers a release. Signing is in this file, not a reusable
+  # workflow, so the certificate identity names this workflow at the tag:
+  # https://github.com/gabrieltetar/embarch-api/.github/workflows/release.yml@refs/tags/<tag>
+  # (the identity `embarch-umbrella`'s suite assembly verifies against).
+  sign-and-publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: archives
+          pattern: archive-*
+          merge-multiple: true
+
+      - uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v3.0.4
+
+      - name: Sign every archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          cosign version
+          shopt -s nullglob
+          assets=(archives/*.zip archives/*.tar.gz)
+          if [[ ${#assets[@]} -ne 4 ]]; then
+            echo "::error::expected 4 archives, found ${#assets[@]}"
+            exit 1
+          fi
+          for a in "${assets[@]}"; do
+            cosign sign-blob --yes --bundle "${a}.sigstore.json" "${a}"
+          done
+
+      - name: Upload release assets and bundles
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ steps.package.outputs.asset }}
+          files: |
+            archives/*.zip
+            archives/*.tar.gz
+            archives/*.sigstore.json
           fail_on_unmatched_files: true
