@@ -84,9 +84,10 @@ const FAMILIES: [Family; 1] = [Family {
         "J-Link Commander, with `-device {jlink_device} -if SWD -speed 4000 -autoconnect 1 -NoGui 1 -ExitOnError 1`, \
          running a script of three lines: `r`, `g`, `qc`",
     ),
-    // Decision 32 records the vendor's runner with `--erase` as the recovery;
-    // decision 36 maps that `--erase` to the range erase in the program line.
-    recover: Some("run the program command above again: Core's decisions record the vendor runner's `--erase` as the recovery and map it to that range erase"),
+    // Decision 32 measured the vendor's runner with `--erase`, on the same
+    // image, as the recovery. Decision 36 does not say that `--erase` is the
+    // range erase above, so the line claims no link between the two.
+    recover: Some("Core's decision 32 measured the vendor's own runner with `--erase`, on the same image, as the recovery; the suite records no command line for it. The program command above is Core's own erase request and has not been confirmed on a board, so it is not known to be that recovery"),
 }];
 
 fn family_for(chip: &str) -> Option<&'static Family> {
@@ -568,6 +569,8 @@ mod tests {
         assert!(r.contains("not yet confirmed on a board"), "{r}");
         assert!(r.contains("-device nRF54L15_M33"), "{r}");
         assert!(r.contains("Reset") && r.contains("Recover") && r.contains("115200 baud"), "{r}");
+        assert!(r.contains("decision 32 measured the vendor's own runner with `--erase`"), "{r}");
+        assert!(!r.contains("map it to") && !r.contains("run the program command above again"), "{r}");
         assert!(r.trim_end().ends_with("bench checklist"), "{r}");
     }
 
