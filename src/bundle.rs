@@ -64,7 +64,7 @@ struct Family {
     prefix: &'static str,
     /// Where the suite records it, named in the README.
     source: &'static str,
-    /// Program with a full chip erase. `{hex}` is the file name.
+    /// Program, erasing the ranges the firmware touches. `{hex}` is the file name.
     program: Option<&'static str>,
     reset: Option<&'static str>,
     recover: Option<&'static str>,
@@ -73,19 +73,20 @@ struct Family {
 const FAMILIES: [Family; 1] = [Family {
     prefix: "nrf54l",
     source: "embarch-core's flash backends and its decisions on flashing",
-    // `ERASE_ALL` is nRF Util's own name for a full chip erase; Core never
-    // asks for it (it asks for `ERASE_RANGES_TOUCHED_BY_FIRMWARE`), but names
-    // it as what the vendor's erase-all recovery is.
-    program: Some("nrfutil device program --firmware {hex} --options chip_erase_mode=ERASE_ALL"),
+    // What Core's nrfutil backend runs for an erase request (decision 36). It
+    // is a construction-time contract nobody has confirmed on a board.
+    program: Some(
+        "nrfutil device program --firmware {hex} --options chip_erase_mode=ERASE_RANGES_TOUCHED_BY_FIRMWARE",
+    ),
     // The reset-and-go sequence Core's J-Link backend scripts (`r`, `g`,
     // `qc`); the suite records no `nrfutil` reset.
     reset: Some(
         "J-Link Commander, with `-device {jlink_device} -if SWD -speed 4000 -autoconnect 1 -NoGui 1 -ExitOnError 1`, \
          running a script of three lines: `r`, `g`, `qc`",
     ),
-    // Core's decisions record the board recovered by the vendor's own
-    // erase-all and by nothing else.
-    recover: Some("run the program command above again: the vendor's erase-all is the recovery the suite recorded for this family"),
+    // Decision 32 records the vendor's runner with `--erase` as the recovery;
+    // decision 36 maps that `--erase` to the range erase in the program line.
+    recover: Some("run the program command above again: Core's decisions record the vendor runner's `--erase` as the recovery and map it to that range erase"),
 }];
 
 fn family_for(chip: &str) -> Option<&'static Family> {
@@ -348,8 +349,9 @@ pub fn render_readme(c: &Contents<'_>, hex_name: &str) -> String {
     match family_for(c.chip) {
         Some(f) => {
             let fill = |s: &str| s.replace("{hex}", hex_name).replace("{jlink_device}", &jlink_device(c.chip));
-            let _ = writeln!(commands, "Chip `{}`. Every command below is what {} records for this family.\n", c.chip, f.source);
-            for (title, text) in [("Program, with a full chip erase", f.program), ("Reset", f.reset), ("Recover", f.recover)] {
+            let _ = writeln!(commands, "Chip `{}`. Every command below is what {} records for this family. \
+                 The program line's erase mode is a contract Core's decision 36 records as not yet confirmed on a board.\n", c.chip, f.source);
+            for (title, text) in [("Program, erasing the ranges the firmware touches", f.program), ("Reset", f.reset), ("Recover", f.recover)] {
                 match text {
                     Some(t) if title == "Reset" || title == "Recover" => {
                         let _ = writeln!(commands, "- **{title}:** {}", fill(t));
@@ -561,7 +563,9 @@ mod tests {
             notes: Some("bench checklist\n"),
         };
         let r = render_readme(&c, "p-abc1234.hex");
-        assert!(r.contains("--firmware p-abc1234.hex --options chip_erase_mode=ERASE_ALL"), "{r}");
+        assert!(r.contains("--firmware p-abc1234.hex --options chip_erase_mode=ERASE_RANGES_TOUCHED_BY_FIRMWARE"), "{r}");
+        assert!(!r.contains("ERASE_ALL"), "{r}");
+        assert!(r.contains("not yet confirmed on a board"), "{r}");
         assert!(r.contains("-device nRF54L15_M33"), "{r}");
         assert!(r.contains("Reset") && r.contains("Recover") && r.contains("115200 baud"), "{r}");
         assert!(r.trim_end().ends_with("bench checklist"), "{r}");
