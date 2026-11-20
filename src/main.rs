@@ -1087,7 +1087,7 @@ async fn async_main() -> Result<()> {
     if let Some(Commands::Patches { action }) = cli.command {
         std::process::exit(patches::run(action, cli.json));
     }
-    // `guide` prints compiled-in text (decision 99): same early dispatch.
+    // `guide` prints compiled-in text (decision 108): same early dispatch.
     if let Some(Commands::Guide { action }) = cli.command {
         std::process::exit(guide::run(action, cli.json));
     }

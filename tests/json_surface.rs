@@ -42,6 +42,7 @@ use std::process::Command;
 /// subcommand surface grows and this list has not.
 const EVERY_SUBCOMMAND: &[&[&str]] = &[
     &["list-projects"],
+    &["guide", "hil"],
     &["list-targets", "demo"],
     &["status"],
     &["build", "no-such-project"],

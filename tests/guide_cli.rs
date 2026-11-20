@@ -1,5 +1,5 @@
 //! `embarch-api guide hil` serves the guide embedded at build (`tasks/api/163`,
-//! decision 99): from a directory with no `embarch-doc` and no config, and
+//! decision 108): from a directory with no `embarch-doc` and no config, and
 //! every command the `embarch-hil` skill names resolves.
 
 use std::path::PathBuf;

@@ -1,5 +1,5 @@
 //! `embarch-api guide hil [mode]` — serves the HIL guide embedded at build
-//! (`tasks/api/163`, decision 99). Host-side only: no config, no Core, no
+//! (`tasks/api/163`, decision 108). Host-side only: no config, no Core, no
 //! `embarch-doc` on disk, so `main` dispatches it before any of them.
 //!
 //! The text is `guide/hil-guide.md`, a pinned copy of `embarch-doc`'s
