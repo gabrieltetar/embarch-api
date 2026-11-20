@@ -6,6 +6,7 @@ mod bundle;
 mod capacity;
 mod cli;
 mod dev_bench;
+mod guide;
 mod host_study;
 mod instrument;
 mod lease;
@@ -972,6 +973,12 @@ pub enum Commands {
         #[command(subcommand)]
         action: patches::PatchesAction,
     },
+    /// Print the hardware-in-the-loop guide embedded in this binary (`guide
+    /// hil [live|study|test]`). Needs no config, no Core and no embarch-doc.
+    Guide {
+        #[command(subcommand)]
+        action: guide::GuideAction,
+    },
     /// Fold review fixes into the commits they belong to and restack a PR
     /// stack (plan, fold, restack). Needs only `git`: no config, no Core.
     Stack {
@@ -1079,6 +1086,10 @@ async fn async_main() -> Result<()> {
     // `patches` is host-side git work only (decision 92): same early dispatch.
     if let Some(Commands::Patches { action }) = cli.command {
         std::process::exit(patches::run(action, cli.json));
+    }
+    // `guide` prints compiled-in text (decision 99): same early dispatch.
+    if let Some(Commands::Guide { action }) = cli.command {
+        std::process::exit(guide::run(action, cli.json));
     }
     // `stack` is host-side git work only (decision 96): same early dispatch.
     if let Some(Commands::Stack { action }) = cli.command {

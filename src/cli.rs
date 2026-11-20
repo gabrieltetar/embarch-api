@@ -273,6 +273,7 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         Commands::Versions => versions(json),
         Commands::Patches { action } => crate::patches::run(action, json),
         Commands::Stack { action } => crate::stack::run(action, json),
+        Commands::Guide { action } => crate::guide::run(action, json),
     }
 }
 
