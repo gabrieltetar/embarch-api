@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::OnceCell;
 
-use crate::CoreConfig;
+use crate::{CoreConfig, TokenScope};
 use embarch_topology::software::{ProbeOutcome, TopologyClass};
 
 /// Where Core's address comes from.
@@ -36,6 +36,8 @@ pub struct CoreClient {
     /// uploads bytes instead of sending a path for those classes.
     resolved: Arc<OnceCell<(String, TopologyClass)>>,
     token: String,
+    /// Which of Core's two tokens `token` is. Fixed at construction.
+    scope: TokenScope,
     /// The bench lease this process holds or was handed (decision 93 of
     /// embarch-core; `embarch-api` decision 90). `dispatch` sends it as
     /// `X-Embarch-Lease` on every request; when empty it falls back to
@@ -1860,8 +1862,20 @@ struct CoreErrorBody {
 }
 
 impl CoreClient {
+    /// The scope of the token this client sends.
+    pub fn scope(&self) -> TokenScope {
+        self.scope
+    }
+
+    /// A client sending the agent's token, as every caller has always had.
     pub fn new(config: &CoreConfig) -> Result<CoreClient> {
-        let token = config.resolve_token()?;
+        Self::new_with_scope(config, TokenScope::Agent)
+    }
+
+    /// A client sending the token of `scope`. The scope is chosen once, here;
+    /// no method switches it afterwards.
+    pub fn new_with_scope(config: &CoreConfig, scope: TokenScope) -> Result<CoreClient> {
+        let token = config.resolve_token_for(scope)?;
         let client = reqwest::Client::builder()
             .build()
             .context("failed to build reqwest client")?;
@@ -1879,6 +1893,7 @@ impl CoreClient {
             address: Arc::new(address),
             resolved: Arc::new(OnceCell::new()),
             token,
+            scope,
             lease: Arc::new(Mutex::new(HeldLease::default())),
             lease_required: false,
             client,
@@ -3507,6 +3522,20 @@ impl CoreClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn new_is_the_agents_client_and_a_person_client_uses_the_person_token() {
+        let cfg: CoreConfig = serde_json::from_value(serde_json::json!({
+            "base_url": "http://127.0.0.1:1", "token": "agent-t", "person_token": "person-t"
+        }))
+        .unwrap();
+        let agent = CoreClient::new(&cfg).unwrap();
+        assert_eq!(agent.scope(), TokenScope::Agent);
+        assert_eq!(agent.token, "agent-t");
+        let person = CoreClient::new_with_scope(&cfg, TokenScope::Person).unwrap();
+        assert_eq!(person.scope(), TokenScope::Person);
+        assert_eq!(person.token, "person-t");
+    }
+
     #[test]
     fn exchange_response_parses_an_old_body_and_a_new_one() {
         let old: SignalExchangeResponse = serde_json::from_str(

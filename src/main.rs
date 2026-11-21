@@ -36,7 +36,7 @@ pub(crate) use embarch_api::build;
 // `config` ever named it — the scan is reached through the resolution that
 // consumes it, not directly.
 pub(crate) use embarch_firmware_build::{config, resolve, verdict};
-use embarch_core_client::CoreClient;
+use embarch_core_client::{CoreClient, CoreConfig, TokenScope};
 use rmcp::ServiceExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1122,7 +1122,7 @@ async fn async_main() -> Result<()> {
                 tracing::info!("{note}");
             }
         }
-        let core = CoreClient::new(&config.core)
+        let core = agent_core_client(&config.core)
             .context("failed to build embarch-core client")?
             .with_lease_required(embarch_core_client::lease_gate::required_by_env());
         Ok((config_path, config, core))
@@ -1181,8 +1181,23 @@ async fn async_main() -> Result<()> {
     Ok(())
 }
 
+/// The client the MCP server and the CLI verbs use: always the agent's token
+/// (`embarch-api` decision 109). No tool, verb or flag reaches the person's.
+fn agent_core_client(config: &CoreConfig) -> Result<CoreClient> {
+    CoreClient::new_with_scope(config, TokenScope::Agent)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_client_is_built_with_the_agents_token_even_when_a_person_token_is_configured() {
+        let cfg: CoreConfig = serde_json::from_value(serde_json::json!({
+            "base_url": "http://127.0.0.1:1", "token": "agent-t", "person_token": "person-t"
+        }))
+        .unwrap();
+        assert_eq!(agent_core_client(&cfg).unwrap().scope(), TokenScope::Agent);
+    }
+
     use super::*;
     use std::fs;
 

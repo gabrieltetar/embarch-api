@@ -12,6 +12,48 @@ use std::sync::OnceLock;
 ///    explicit `EMBARCH_TOKEN` — same-OS path, or the WSL2-translated path
 ///    to the Windows-side file when running under WSL2.
 pub fn resolve_token(explicit_token: Option<String>, explicit_token_env: Option<String>) -> Result<String> {
+    resolve_token_for(TokenScope::Agent, explicit_token, explicit_token_env)
+}
+
+/// Which of Core's two tokens a client sends (`embarch-core` decision 109).
+/// The agent's is what every caller has always used; the person's is for a
+/// surface the engineer drives. Never chosen by a tool call: a caller picks
+/// it once, when it builds its client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenScope {
+    Agent,
+    Person,
+}
+
+impl TokenScope {
+    /// The environment variable Core itself reads for this scope's token.
+    /// `None` for the agent: the agent's resolution has never read it
+    /// implicitly, and stays byte-for-byte as it was.
+    fn well_known_env(self) -> Option<&'static str> {
+        match self {
+            TokenScope::Agent => None,
+            TokenScope::Person => Some("EMBARCH_PERSON_TOKEN"),
+        }
+    }
+
+    /// The file beside the other under Core's machine-wide data directory.
+    fn file_name(self) -> &'static str {
+        match self {
+            TokenScope::Agent => "token",
+            TokenScope::Person => "person-token",
+        }
+    }
+}
+
+/// [`resolve_token`] for either scope. Same order for both: the named env
+/// var, the inline value, then (person only) `EMBARCH_PERSON_TOKEN`, then the
+/// scope's file. The two scopes share no fallback: a missing person token is
+/// an error, never the agent's token.
+pub fn resolve_token_for(
+    scope: TokenScope,
+    explicit_token: Option<String>,
+    explicit_token_env: Option<String>,
+) -> Result<String> {
     if let Some(var) = &explicit_token_env {
         if let Ok(value) = std::env::var(var) {
             return Ok(value);
@@ -26,9 +68,16 @@ pub fn resolve_token(explicit_token: Option<String>, explicit_token_env: Option<
     if let Some(token) = explicit_token {
         return Ok(token);
     }
+    if let Some(var) = scope.well_known_env() {
+        if let Ok(value) = std::env::var(var) {
+            if !value.trim().is_empty() {
+                return Ok(value);
+            }
+        }
+    }
 
-    let path = discover_token_path().context("failed to determine embarch-core token file path")?;
-    read_token_file(&path).map_err(|_| no_token_error(&path))
+    let path = discover_token_path(scope.file_name()).context("failed to determine embarch-core token file path")?;
+    read_token_file(&path).map_err(|_| no_token_error(scope, &path))
 }
 
 fn read_token_file(path: &Path) -> Result<String> {
@@ -41,7 +90,15 @@ fn read_token_file(path: &Path) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
-fn no_token_error(checked_path: &Path) -> anyhow::Error {
+fn no_token_error(scope: TokenScope, checked_path: &Path) -> anyhow::Error {
+    if scope == TokenScope::Person {
+        return anyhow!(
+            "no embarch-core person token available: [core] config has neither `person_token` nor \
+             `person_token_env` set, EMBARCH_PERSON_TOKEN is unset, and no token file was found at {}. \
+             Start embarch-core (it generates one) or set one of those, and retry.",
+            checked_path.display()
+        );
+    }
     anyhow!(
         "no embarch-core token available: [core] config has neither `token` nor `token_env` set, \
          and no token file was found at {}. Set [core].token or token_env in config, or start \
@@ -53,25 +110,25 @@ fn no_token_error(checked_path: &Path) -> anyhow::Error {
 
 /// The same-OS or WSL2-translated path to embarch-core's generated token
 /// file, per the precedence documented on `resolve_token`.
-fn discover_token_path() -> Result<PathBuf> {
+fn discover_token_path(file_name: &str) -> Result<PathBuf> {
     #[cfg(windows)]
     {
-        Ok(windows_token_path())
+        Ok(windows_embarch_dir().join(file_name))
     }
     #[cfg(unix)]
     {
         if is_wsl2() {
-            wsl2_token_path().map_err(|msg| anyhow!(msg))
+            wsl2_embarch_dir().map(|d| d.join(file_name)).map_err(|msg| anyhow!(msg))
         } else {
-            Ok(PathBuf::from("/var/lib/embarch/token"))
+            Ok(PathBuf::from("/var/lib/embarch").join(file_name))
         }
     }
 }
 
 #[cfg(windows)]
-fn windows_token_path() -> PathBuf {
+fn windows_embarch_dir() -> PathBuf {
     let program_data = std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string());
-    Path::new(&program_data).join("embarch").join("token")
+    Path::new(&program_data).join("embarch")
 }
 
 /// Detects WSL2 by delegating to `embarch_topology::software::detect_wsl2`
@@ -99,24 +156,24 @@ fn is_wsl2() -> bool {
     embarch_topology::software::detect_wsl2(proc_version.as_deref(), wsl_distro_env.as_deref())
 }
 
-/// The WSL2-translated path to `%ProgramData%\embarch\token`, computed once
-/// per process and cached — the shell-out to resolve `%ProgramData%` should
-/// not run on every token resolution.
+/// The WSL2-translated path to `%ProgramData%\embarch`, computed once per
+/// process and cached — the shell-out to resolve `%ProgramData%` should not
+/// run on every token resolution. Both token files sit in it.
 #[cfg(unix)]
-fn wsl2_token_path() -> Result<PathBuf, String> {
+fn wsl2_embarch_dir() -> Result<PathBuf, String> {
     static CACHE: OnceLock<Result<PathBuf, String>> = OnceLock::new();
     CACHE
-        .get_or_init(|| compute_wsl2_token_path().map_err(|e| format!("{e:#}")))
+        .get_or_init(|| compute_wsl2_embarch_dir().map_err(|e| format!("{e:#}")))
         .clone()
 }
 
 #[cfg(unix)]
-fn compute_wsl2_token_path() -> Result<PathBuf> {
+fn compute_wsl2_embarch_dir() -> Result<PathBuf> {
     let program_data = windows_program_data_via_shellout()
         .context("could not determine Windows %ProgramData% from within WSL2")?;
     let mnt_root = translate_windows_path_to_wsl(&program_data)
         .with_context(|| format!("could not translate Windows path '{program_data}' to its WSL2 mount form"))?;
-    Ok(mnt_root.join("embarch").join("token"))
+    Ok(mnt_root.join("embarch"))
 }
 
 #[cfg(unix)]
@@ -221,7 +278,7 @@ mod tests {
     #[test]
     fn missing_file_produces_actionable_error() {
         let path = PathBuf::from("/nonexistent/embarch/token/for/test");
-        let err = no_token_error(&path);
+        let err = no_token_error(TokenScope::Agent, &path);
         let msg = err.to_string();
         assert!(msg.contains(&path.display().to_string()));
         assert!(msg.contains("token or token_env"));
@@ -240,5 +297,65 @@ mod tests {
     fn hand_parse_lowercases_drive_letter() {
         let translated = hand_parse_windows_path(r"D:\Foo\Bar").unwrap();
         assert_eq!(translated, PathBuf::from("/mnt/d/Foo/Bar"));
+    }
+
+    // The env-var tests below each use their own variable name, so they do
+    // not race under the parallel test runner. EMBARCH_PERSON_TOKEN is the
+    // one shared name and is touched by exactly one test.
+
+    #[test]
+    fn person_resolves_from_explicit_token() {
+        let r = resolve_token_for(TokenScope::Person, Some("person-inline".into()), None);
+        assert_eq!(r.unwrap(), "person-inline");
+    }
+
+    #[test]
+    fn person_resolves_from_named_env() {
+        std::env::set_var("EMBARCH_TEST_PERSON_NAMED", "person-from-env");
+        let r = resolve_token_for(
+            TokenScope::Person,
+            Some("person-inline".into()),
+            Some("EMBARCH_TEST_PERSON_NAMED".into()),
+        );
+        std::env::remove_var("EMBARCH_TEST_PERSON_NAMED");
+        assert_eq!(r.unwrap(), "person-from-env");
+    }
+
+    #[test]
+    fn person_resolves_from_well_known_env_and_agent_does_not() {
+        std::env::set_var("EMBARCH_PERSON_TOKEN", "person-well-known");
+        let person = resolve_token_for(TokenScope::Person, None, None);
+        let agent_inline = resolve_token_for(TokenScope::Agent, Some("agent-inline".into()), None);
+        std::env::remove_var("EMBARCH_PERSON_TOKEN");
+        assert_eq!(person.unwrap(), "person-well-known");
+        assert_eq!(agent_inline.unwrap(), "agent-inline");
+    }
+
+    #[test]
+    fn each_scope_reads_its_own_file_name() {
+        assert_eq!(TokenScope::Agent.file_name(), "token");
+        assert_eq!(TokenScope::Person.file_name(), "person-token");
+        assert_eq!(TokenScope::Agent.well_known_env(), None);
+        assert_eq!(TokenScope::Person.well_known_env(), Some("EMBARCH_PERSON_TOKEN"));
+    }
+
+    #[test]
+    fn scope_file_is_read_and_trimmed() {
+        let dir = std::env::temp_dir().join(format!("embarch-scope-test-{:?}", std::thread::current().id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for scope in [TokenScope::Agent, TokenScope::Person] {
+            let path = dir.join(scope.file_name());
+            std::fs::write(&path, format!("  {}-file\n", scope.file_name())).unwrap();
+            assert_eq!(read_token_file(&path).unwrap(), format!("{}-file", scope.file_name()));
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn person_missing_error_names_the_person_sources() {
+        let msg = no_token_error(TokenScope::Person, Path::new("/x/person-token")).to_string();
+        assert!(msg.contains("person_token"));
+        assert!(msg.contains("EMBARCH_PERSON_TOKEN"));
+        assert!(msg.contains("/x/person-token"));
     }
 }

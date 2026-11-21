@@ -14,6 +14,7 @@ pub mod lease_gate;
 pub mod sse;
 pub mod study_events;
 pub mod token_discovery;
+pub use token_discovery::TokenScope;
 pub mod user_dirs;
 pub mod version;
 
@@ -79,6 +80,13 @@ pub struct CoreConfig {
     pub token: Option<String>,
     #[serde(default)]
     pub token_env: Option<String>,
+    /// The person's token, inline. Only a client built with
+    /// [`TokenScope::Person`] reads it; the MCP server never does.
+    #[serde(default)]
+    pub person_token: Option<String>,
+    /// Env var holding the person's token; wins over `person_token`.
+    #[serde(default)]
+    pub person_token_env: Option<String>,
     #[serde(default = "default_status_timeout_secs")]
     pub status_timeout_secs: u64,
     #[serde(default = "default_reset_timeout_secs")]
@@ -110,6 +118,20 @@ impl CoreConfig {
     /// no config changes.
     pub fn resolve_token(&self) -> Result<String> {
         token_discovery::resolve_token(self.token.clone(), self.token_env.clone())
+    }
+
+    /// [`CoreConfig::resolve_token`] for either scope. The person's falls
+    /// back to `EMBARCH_PERSON_TOKEN`, then `person-token` beside the
+    /// agent's file, and never to the agent's token.
+    pub fn resolve_token_for(&self, scope: TokenScope) -> Result<String> {
+        match scope {
+            TokenScope::Agent => self.resolve_token(),
+            TokenScope::Person => token_discovery::resolve_token_for(
+                TokenScope::Person,
+                self.person_token.clone(),
+                self.person_token_env.clone(),
+            ),
+        }
     }
 
     /// Is Core's address to be discovered rather than declared?
