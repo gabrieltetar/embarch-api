@@ -1,0 +1,6 @@
+[package]
+name = "report"
+version = "0.1.0"
+entrypoint = "lib.typ"
+license = "MIT"
+description = "EmbArch's report helper: a plot of per-bin min and max over a staged capture, and a measurement citation."

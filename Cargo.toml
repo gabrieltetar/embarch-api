@@ -60,3 +60,17 @@ tracing = "0.1.44"
 tracing-appender = "0.2"
 tracing-subscriber = "0.3.23"
 zip = { version = "9.7.0", default-features = false, features = ["deflate"] }
+# 2026-11-21 (api decision 110): the report-to-PDF renderer, behind the `pdf`
+# feature. `typst-as-lib` supplies the world and the compile loop; its default
+# resolvers (file system, package registry) are not used, `report_pdf` brings
+# its own so the root can be confined and no registry is ever reachable.
+typst = { version = "0.15.1", optional = true }
+typst-pdf = { version = "0.15.1", optional = true }
+typst-layout = { version = "0.15.1", optional = true }
+typst-as-lib = { version = "0.18.0", optional = true, default-features = false, features = ["typst-kit-fonts", "typst-kit-embed-fonts"] }
+include_dir = { version = "0.7.4", optional = true }
+tempfile = { version = "3", optional = true }
+
+[features]
+default = ["pdf"]
+pdf = ["dep:typst", "dep:typst-pdf", "dep:typst-layout", "dep:typst-as-lib", "dep:include_dir", "dep:tempfile"]

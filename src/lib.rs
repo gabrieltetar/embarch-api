@@ -35,3 +35,9 @@ pub use embarch_firmware_build::build;
 /// [`json_out::SCHEMA_VERSION`] rather than against a second copy of the
 /// number. See `embarch-doc/embarch-api/decisions.md` decision 50.
 pub use embarch_firmware_build::json_out;
+
+/// Typst-built-in PDF rendering of a report (`embarch-api` decision 109, HIL
+/// milestone M1.9). Behind the `pdf` feature, on by default; M1.10's `publish`
+/// is its caller. It is in the library so `tests/` can reach it.
+#[cfg(feature = "pdf")]
+pub mod report_pdf;

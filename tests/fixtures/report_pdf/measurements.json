@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "run_id": "0123456789abcdef",
+  "behaviours": {
+    "mean": 1
+  },
+  "measurements": [
+    {
+      "name": "rate",
+      "value": 49.8,
+      "unit": "Hz",
+      "at_utc_ms": 1700000000000,
+      "source": {
+        "file": "capture.csv",
+        "rows": [
+          0,
+          999
+        ]
+      },
+      "by": "bench",
+      "instrument": null,
+      "bench_image": "unverified",
+      "method": {
+        "kind": "reducer",
+        "name": "mean",
+        "behaviour": 1,
+        "window": {}
+      },
+      "resolution": null,
+      "uncertainty": null,
+      "u_source": "undeclared",
+      "declared_by": [],
+      "incomplete": []
+    }
+  ]
+}
