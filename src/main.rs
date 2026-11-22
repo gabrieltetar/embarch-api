@@ -1000,6 +1000,21 @@ pub enum Commands {
         #[command(subcommand)]
         action: patches::PatchesAction,
     },
+    /// Check a published Study zip offline: signatures, manifest, measurements,
+    /// labels, exports and the run log's segment, from the zip and Core's
+    /// public key alone. Needs no config and no Core; exits 1 when a check fails.
+    Verify {
+        zip: PathBuf,
+        /// Core's public key, 64 hex characters, as the engineer handed it out
+        /// of band (never one read from the zip). Its SHA-256 is the key
+        /// fingerprint.
+        #[arg(long)]
+        public_key: String,
+        /// The attested key fingerprint from Core's elevated install. Without
+        /// it, or with another, the result says "origin unattested".
+        #[arg(long)]
+        attested_fingerprint: Option<String>,
+    },
     /// Print the hardware-in-the-loop guide embedded in this binary (`guide
     /// hil [live|study|test]`). Needs no config, no Core and no embarch-doc.
     Guide {
@@ -1117,6 +1132,10 @@ async fn async_main() -> Result<()> {
     // `guide` prints compiled-in text (decision 108): same early dispatch.
     if let Some(Commands::Guide { action }) = cli.command {
         std::process::exit(guide::run(action, cli.json));
+    }
+    // `verify` reads a zip and a key, nothing else (decision 118): same early dispatch.
+    if let Some(Commands::Verify { zip, public_key, attested_fingerprint }) = &cli.command {
+        std::process::exit(cli::verify(zip, public_key, attested_fingerprint.as_deref(), cli.json));
     }
     // `stack` is host-side git work only (decision 96): same early dispatch.
     if let Some(Commands::Stack { action }) = cli.command {

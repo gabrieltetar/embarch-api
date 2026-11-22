@@ -47,7 +47,11 @@ embarch-firmware-build = { path = "crates/embarch-firmware-build" }
 # overflowed its stack serving a live `study_status` over MCP — and, unlike
 # embarch-core/embarch-ui, it enables none of the `std`-implying features that
 # would pull `alloc` in anyway, so it has to ask for it by name.
-embarch-study-designer = { path = "../embarch-study-designer", features = ["alloc"] }
+# `reducers` (decisions 92 to 94 there) is what `verify` re-runs a measurement
+# with (`embarch-api` decision 118); the registry keeps every behaviour shipped.
+embarch-study-designer = { path = "../embarch-study-designer", features = ["alloc", "reducers"] }
+# Ed25519 for `verify` check 0 only: `verify_strict` over a DSSE PAE.
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 heapless = { version = "0.8", features = ["serde"] }
 ihex = "3.0.0"
 rmcp = { version = "2.2.0", features = ["server", "transport-io"] }

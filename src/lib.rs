@@ -54,6 +54,10 @@ pub mod publish_export;
 /// files and `report.typ`, cited, tagged, unbound, untagged or hardcoded.
 #[cfg(feature = "pdf")]
 pub mod publish_oracle;
+/// `verify <zip>`: a published zip checked offline (`embarch-api` decisions 118
+/// to 121). Behind `pdf` with the exports it regenerates.
+#[cfg(feature = "pdf")]
+pub mod verify;
 /// The Typst sources `publish` generates: the audit appendix and a Study's
 /// data section.
 #[cfg(feature = "pdf")]

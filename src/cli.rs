@@ -285,6 +285,7 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         Commands::Patches { action } => crate::patches::run(action, json),
         Commands::Stack { action } => crate::stack::run(action, json),
         Commands::Guide { action } => crate::guide::run(action, json),
+        Commands::Verify { zip, public_key, attested_fingerprint } => verify(&zip, &public_key, attested_fingerprint.as_deref(), json),
     }
 }
 
@@ -1018,6 +1019,21 @@ async fn run_host_study(core: &CoreClient, study_file: &Path, json: bool) -> i32
         ),
         Err(e) => error_result(json, format!("run-host-study failed: {e:#}")),
     }
+}
+
+/// `verify <zip>`: no config, no Core. Exit 1 on a failed check.
+#[cfg(feature = "pdf")]
+pub fn verify(zip: &Path, public_key: &str, attested: Option<&str>, json: bool) -> i32 {
+    let opts = embarch_api::verify::Options { public_key_hex: public_key, attested_fingerprint: attested };
+    match embarch_api::verify::run(zip, &opts) {
+        Ok(r) => finish(json, r.ok(), r.to_json(), r.to_text()),
+        Err(e) => error_result(json, format!("verify failed: {e:#}")),
+    }
+}
+
+#[cfg(not(feature = "pdf"))]
+pub fn verify(_zip: &Path, _public_key: &str, _attested: Option<&str>, json: bool) -> i32 {
+    error_result(json, "verify failed: this build has no `pdf` feature, which the exports check needs".to_string())
 }
 
 #[cfg_attr(not(feature = "pdf"), allow(dead_code))]
@@ -2742,7 +2758,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 60,
+            arms, 61,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."
