@@ -325,6 +325,21 @@ pub enum Commands {
         /// confirmed or cancelled.
         answer: String,
     },
+    /// Publish a finished Study run as one zip in the configured publish
+    /// folder: the PDF, the run's signed files from Core, both exports and the
+    /// sources the PDF was built from. Refuses until `[publish] folder` is set
+    /// in the config. A publish is never overwritten; publishing again is the
+    /// next revision.
+    Publish {
+        run_id: String,
+        /// The operator's notes, the person's own words verbatim.
+        #[arg(long)]
+        notes: Option<String>,
+        /// The study's report.typ. Without it the zip carries a generated
+        /// data section.
+        #[arg(long)]
+        report: Option<PathBuf>,
+    },
     /// Send one command to a declared instrument and print its reply, raw.
     InstrumentExchange {
         name: String,

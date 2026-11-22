@@ -41,3 +41,16 @@ pub use embarch_firmware_build::json_out;
 /// is its caller. It is in the library so `tests/` can reach it.
 #[cfg(feature = "pdf")]
 pub mod report_pdf;
+
+/// `publish <run id>`: a finished Study run as one zip (`embarch-api` decisions
+/// 112 and 113, HIL milestone M1.10). In the library so `tests/` can reach it,
+/// and behind `pdf` because the report is its PDF.
+#[cfg(feature = "pdf")]
+pub mod publish;
+/// The two interop exports of a Study run, pure functions of the signed data.
+#[cfg(feature = "pdf")]
+pub mod publish_export;
+/// The Typst sources `publish` generates: the audit appendix and a Study's
+/// data section.
+#[cfg(feature = "pdf")]
+pub mod publish_report;

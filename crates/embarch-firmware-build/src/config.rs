@@ -583,6 +583,20 @@ pub struct Config {
     /// "not configured" error rather than a silent no-op or a guessed path.
     #[serde(default)]
     pub dev_bench: Option<DevBenchConfig>,
+    /// `[publish]`: where `publish` writes a run's zip. **No default**
+    /// (`embarch-api` decision 112): absent, `publish` refuses and says how to
+    /// set it.
+    #[serde(default)]
+    pub publish: Option<PublishConfig>,
+}
+
+/// `[publish]`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublishConfig {
+    /// The local folder a published zip is written to. Created if its parent
+    /// exists.
+    pub folder: PathBuf,
 }
 
 impl Config {
@@ -877,6 +891,18 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `[publish]` has no default (`embarch-api` decision 112): absent is
+    /// `None`, and an unknown key in it is refused.
+    #[test]
+    fn the_publish_folder_has_no_default_and_a_typo_is_refused() {
+        let base = "[core]\nbase_url = \"http://127.0.0.1:1\"\n";
+        let none: Config = toml::from_str(base).unwrap();
+        assert!(none.publish.is_none());
+        let some: Config = toml::from_str(&format!("{base}[publish]\nfolder = \"/x/y\"\n")).unwrap();
+        assert_eq!(some.publish.unwrap().folder, PathBuf::from("/x/y"));
+        assert!(toml::from_str::<Config>(&format!("{base}[publish]\nfolders = \"/x\"\n")).is_err());
+    }
 
     // Minimal tempdir helper, same pattern as `zephyr.rs`'s tests — avoids
     // pulling in the `tempfile` crate for a handful of directory-existence

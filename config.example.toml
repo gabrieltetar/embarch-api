@@ -208,3 +208,10 @@ build_timeout_secs = 900
 # artifact_path = "build/zephyr/zephyr.bin"
 # base_address = 0x2000    # required for bin, rejected for hex
 # build_timeout_secs = 900
+
+# Where `publish <run id>` writes a finished Study run's zip. NO DEFAULT: with
+# this table absent, `publish` refuses and prints this very example. The folder
+# is created if its parent exists. Sending a zip anywhere else is a human step
+# (embarch-api decision 112).
+# [publish]
+# folder = "/home/you/embarch-publish"

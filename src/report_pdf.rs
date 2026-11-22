@@ -55,6 +55,12 @@ pub const REPORT_FILE: &str = "report.typ";
 /// content under this page setup.
 const WRAPPER: &str = "#set page(footer: context align(center, counter(page).display(\"1\")))\n#include \"/report.typ\"\n";
 
+/// The fixed audit appendix `publish` stages beside `report.typ` (`embarch-api`
+/// decision 113): when it is staged, the compile appends it after a page break.
+pub const APPENDIX_FILE: &str = "appendix.typ";
+
+const APPENDIX_INCLUDE: &str = "#pagebreak()\n#include \"/appendix.typ\"\n";
+
 /// Every package a report may import, embedded at build time. The directory
 /// layout is `<namespace>/<name>/<version>/…`, as Typst's own local package
 /// root has it.
@@ -218,8 +224,13 @@ fn compile(staging: &Staging, opts: &RenderOptions) -> Result<(PagedDocument, Da
         .map_err(|_| ReportPdfError::Compile("timestamp before 1970".into()))?;
     let now = SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
 
+    let main = if staging.root().join(APPENDIX_FILE).is_file() {
+        format!("{WRAPPER}{APPENDIX_INCLUDE}")
+    } else {
+        WRAPPER.to_string()
+    };
     let engine = TypstEngine::builder()
-        .main_file(("/embarch-main.typ", WRAPPER))
+        .main_file(("/embarch-main.typ", main))
         .search_fonts_with(
             TypstKitFontOptions::new()
                 .include_system_fonts(false)

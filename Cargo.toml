@@ -23,6 +23,7 @@ license = "MIT"
 
 [dependencies]
 anyhow = "1.0.103"
+base64 = "0.22"
 clap = { version = "4.6.2", features = ["derive"] }
 # 2026-08-24: `core_client.rs`/`config::CoreConfig`/`token_discovery.rs`
 # extracted into this shared crate (`embarch-ui` decision 5) so embarch-ui

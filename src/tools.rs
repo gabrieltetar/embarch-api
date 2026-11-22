@@ -541,6 +541,19 @@ pub struct RunHostStudyParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct PublishParams {
+    /// The run id run_study or run_host_study returned.
+    pub run_id: String,
+    /// The operator's notes: exactly the words the person you are working for
+    /// gave you, never your own summary. Recorded by Core as relayed by the
+    /// agent.
+    pub notes: Option<String>,
+    /// Path to the study's report.typ. Without it the zip carries a generated
+    /// data section instead of a report.
+    pub report: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct AnswerPromptParams {
     pub study_id: String,
     /// The prompt_id study_watch or study_status showed for the waiting prompt.
@@ -1699,6 +1712,26 @@ impl EmbarchApi {
         match self.core.post_host_study(&study).await {
             Ok(accepted) => Self::ok_json(serde_json::json!({ "study_id": accepted.study_id })),
             Err(e) => Self::err_text(format!("run_host_study failed: {e:#}")),
+        }
+    }
+
+    #[tool(description = "Publish a finished Study run as one zip (embarch-api decisions 112, 113; embarch-core decisions 116 to 119), written to the folder `[publish] folder` names in the config, which has no default: with none set this refuses and says how to set it. The zip holds the PDF report (the study's report.typ when `report` names one, else a generated data section, always with the fixed audit appendix), Core's signed record, signed manifest and run-log segment, the study file, events.json, measurements.json, every capture raw and as Core rendered it, report-data.json, both interop exports (JUnit XML and OCP T&V JSON Lines) and the sources the PDF was built from; interfaces/publish.md has the layout. `notes` is the operator's words verbatim, never your summary: Core records them as relayed by the agent. A publish is never overwritten; publishing the same run again writes the next revision (-r2). Only a Study run publishes. Returns the zip's path, its hashes and any warning: a non-empty `warnings` means the zip is written but is less than a complete report, and you must tell the person.")]
+    async fn publish(&self, Parameters(p): Parameters<PublishParams>) -> Result<CallToolResult, McpError> {
+        #[cfg(feature = "pdf")]
+        {
+            let folder = self.config.publish.as_ref().map(|c| c.folder.as_path());
+            let report = p.report.as_deref().map(std::path::Path::new);
+            let req = embarch_api::publish::PublishRequest { run_id: &p.run_id, notes: p.notes.as_deref(), report_typ: report };
+            match embarch_api::publish::run(&self.core, folder, &req, embarch_api::publish::now_unix()).await {
+                Ok(o) if o.warnings.is_empty() => Self::ok_json(embarch_api::publish::outcome_json(&o)),
+                Ok(o) => Self::err_json(embarch_api::publish::outcome_json(&o)),
+                Err(e) => Self::err_text(format!("publish failed: {e:#}")),
+            }
+        }
+        #[cfg(not(feature = "pdf"))]
+        {
+            let _ = (&p.run_id, &p.notes, &p.report);
+            Self::err_text("publish failed: this build has no `pdf` feature, which the report needs")
         }
     }
 

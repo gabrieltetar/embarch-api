@@ -865,6 +865,31 @@ pub struct StudyStepEntry {
     pub ended_utc_ms: Option<u64>,
 }
 
+/// `POST /study/{id}/report-data`'s body (`embarch-core/interfaces/publish.md`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReportDataResponse {
+    pub revision: u64,
+    pub report_data_sha256: String,
+    pub keyid: String,
+    /// The data as JSON; the file's own bytes are `publish_file(.., "report-data.json")`.
+    pub report_data: serde_json::Value,
+}
+
+/// One of embarch-api's own files, as `POST /study/{id}/publish` lists it.
+#[derive(Debug, Clone, Serialize)]
+pub struct PublishFile {
+    pub name: String,
+    pub sha256: String,
+}
+
+/// `POST /study/{id}/publish`'s body.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PublishResponse {
+    pub revision: u64,
+    pub entry: serde_json::Value,
+    pub keyid: String,
+}
+
 /// `GET /study/{study_id}/streams`' body — what a study's taps captured, and
 /// **why a trace has no names when it has none**
 /// (`embarch-core` decision 30(c)'s 2026-08-26 amendment).
@@ -3518,6 +3543,56 @@ impl CoreClient {
             .text()
             .await
             .unwrap_or_else(|_| "<no response body>".to_string());
+        Err(anyhow!("embarch-core returned {status}: {body}"))
+    }
+
+    /// `POST /study/{study_id}/adopt` (`embarch-core` decision 117): hands Core a
+    /// note or a prose block, whose text it hashes and whose token scope it
+    /// records. Returns Core's `adopted` `{entry, hash}` as it came.
+    pub async fn adopt(&self, study_id: &str, kind: &str, name: &str, text: &str) -> Result<serde_json::Value> {
+        let url = format!("{}/study/{}/adopt", self.base_url().await?, urlencode(study_id));
+        let body = serde_json::json!({ "kind": kind, "name": name, "text": text });
+        self.send(self.client.post(url).json(&body), self.study_timeout).await
+    }
+
+    /// `POST /study/{study_id}/report-data` (`embarch-core` decision 116): Core
+    /// writes and signs `report-data.json` for the next revision and answers
+    /// it. Writes no log entry and may be asked again.
+    pub async fn report_data(&self, study_id: &str) -> Result<ReportDataResponse> {
+        let url = format!("{}/study/{}/report-data", self.base_url().await?, urlencode(study_id));
+        self.send(self.client.post(url), self.study_timeout).await
+    }
+
+    /// `POST /study/{study_id}/publish` (`embarch-core` decision 116): Core
+    /// hashes every file it produced, signs the manifest and appends the
+    /// `published` entry. `files` are embarch-api's own, listed and not vouched
+    /// for. Reuses `study_timeout`: Core hashes the run's captures here, so a
+    /// very large run may need longer; **assumed**, not measured.
+    pub async fn publish(&self, study_id: &str, files: &[PublishFile]) -> Result<PublishResponse> {
+        let url = format!("{}/study/{}/publish", self.base_url().await?, urlencode(study_id));
+        let body = serde_json::json!({ "files": files });
+        self.send(self.client.post(url).json(&body), self.study_timeout).await
+    }
+
+    /// `GET /study/{study_id}/publish/{revision}/files/{name}`: one file of a
+    /// revision, `Ok(None)` for a `404` (Core serves nothing it does not name).
+    /// `name` may hold `/`; each segment is encoded.
+    pub async fn publish_file(&self, study_id: &str, revision: u64, name: &str) -> Result<Option<Bytes>> {
+        let name = name.split('/').map(urlencode).collect::<Vec<_>>().join("/");
+        let url = format!(
+            "{}/study/{}/publish/{revision}/files/{name}",
+            self.base_url().await?,
+            urlencode(study_id)
+        );
+        let response = self.dispatch(self.client.get(url), Some(self.study_timeout)).await?;
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if status.is_success() {
+            return response.bytes().await.map(Some).context("failed to read embarch-core's response body");
+        }
+        let body = response.text().await.unwrap_or_else(|_| "<no response body>".to_string());
         Err(anyhow!("embarch-core returned {status}: {body}"))
     }
 

@@ -191,6 +191,7 @@ mod tests {
             core: toml::from_str("base_url = \"http://127.0.0.1:1\"").unwrap(),
             projects: vec![project(&main, "env = { FOO = \"bar\" }")],
             dev_bench: None,
+            publish: None,
         };
 
         // Main clone: unchanged, builds the main clone into the configured root.
@@ -230,6 +231,7 @@ mod tests {
             core: toml::from_str("base_url = \"http://127.0.0.1:1\"").unwrap(),
             projects: vec![project(&main.join("deep/fw"), "")],
             dev_bench: None,
+            publish: None,
         };
         let err = format!("{:#}", rebase_onto_worktree(&mut config, &wt).unwrap_err());
         assert!(err.contains(wt.to_str().unwrap()) && err.contains(main.to_str().unwrap()), "{err}");
@@ -250,6 +252,7 @@ mod tests {
             core: toml::from_str("base_url = \"http://127.0.0.1:1\"").unwrap(),
             projects: vec![project(&main, "")],
             dev_bench: None,
+            publish: None,
         };
         assert!(rebase_onto_worktree(&mut config, &other).unwrap().is_empty());
         assert!(rebase_onto_worktree(&mut config, &plain).unwrap().is_empty());

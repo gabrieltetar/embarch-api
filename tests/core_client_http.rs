@@ -180,6 +180,10 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.get_study_status("study-1").await;
     let _ = client.study_streams("study-1").await;
     let _ = client.study_steps("study-1").await;
+    let _ = client.adopt("study-1", "note", "notes/n.txt", "words").await;
+    let _ = client.report_data("study-1").await;
+    let _ = client.publish("study-1", &[]).await;
+    let _ = client.publish_file("study-1", 1, "streams/a.csv").await;
     let _ = client.get_study_stream("study-1", "ppg", true).await;
     let _ = client.get_study_stream_arrivals("study-1", "ppg").await;
     let _ = client.get_study_load("study-1", "ppg").await;
@@ -281,6 +285,10 @@ async fn every_outbound_call_carries_the_bearer_token() {
         ("POST", "/study"),
         ("POST", "/host-studies"),
         ("POST", "/study/study-1/prompt"),
+        ("POST", "/study/study-1/adopt"),
+        ("POST", "/study/study-1/report-data"),
+        ("POST", "/study/study-1/publish"),
+        ("GET", "/study/study-1/publish/1/files/streams/a.csv"),
         ("GET", "/study/study-1/events"),
     ]
     .into_iter()

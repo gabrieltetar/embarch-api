@@ -146,6 +146,9 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
             instrument_exchange(&core, &name, line, query, timeout_ms, port_wait_ms, json).await
         }
         Commands::RunHostStudy { study_file } => run_host_study(&core, &study_file, json).await,
+        Commands::Publish { run_id, notes, report } => {
+            publish(&config, &core, &run_id, notes.as_deref(), report.as_deref(), json).await
+        }
         Commands::AnswerPrompt { study_id, prompt_id, answer } => answer_prompt(&core, &study_id, prompt_id, &answer, json).await,
         Commands::SerialLog {
             project,
@@ -1007,6 +1010,41 @@ async fn run_host_study(core: &CoreClient, study_file: &Path, json: bool) -> i32
         ),
         Err(e) => error_result(json, format!("run-host-study failed: {e:#}")),
     }
+}
+
+#[cfg(feature = "pdf")]
+async fn publish(
+    config: &Config,
+    core: &CoreClient,
+    run_id: &str,
+    notes: Option<&str>,
+    report: Option<&Path>,
+    json: bool,
+) -> i32 {
+    let folder = config.publish.as_ref().map(|p| p.folder.as_path());
+    let req = embarch_api::publish::PublishRequest { run_id, notes, report_typ: report };
+    match embarch_api::publish::run(core, folder, &req, embarch_api::publish::now_unix()).await {
+        Ok(o) => {
+            let mut human = format!("published {run_id} as revision {}: {}", o.revision, o.zip.display());
+            for w in &o.warnings {
+                human.push_str(&format!("\nWARNING: {w}"));
+            }
+            finish(json, o.warnings.is_empty(), embarch_api::publish::outcome_json(&o), human)
+        }
+        Err(e) => error_result(json, format!("publish failed: {e:#}")),
+    }
+}
+
+#[cfg(not(feature = "pdf"))]
+async fn publish(
+    _config: &Config,
+    _core: &CoreClient,
+    _run_id: &str,
+    _notes: Option<&str>,
+    _report: Option<&Path>,
+    json: bool,
+) -> i32 {
+    error_result(json, "publish failed: this build has no `pdf` feature, which the report needs".to_string())
 }
 
 async fn answer_prompt(core: &CoreClient, study_id: &str, prompt_id: u32, answer: &str, json: bool) -> i32 {
@@ -2685,7 +2723,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 59,
+            arms, 60,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."
