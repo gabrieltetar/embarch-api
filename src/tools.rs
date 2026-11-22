@@ -2320,6 +2320,13 @@ impl EmbarchApi {
             allow_version_mismatch: params.allow_version_mismatch.unwrap_or(false),
             project: params.project.as_deref(),
             selection: params.selection(),
+            // The project the ledger row uses (decision 98): the one named,
+            // else this session's desk's. Neither resolving sends no claim
+            // (decision 111).
+            build: self
+                .project(params.project.as_deref().unwrap_or(""))
+                .map(crate::build_claims::for_project)
+                .unwrap_or_default(),
         };
 
         match crate::reflash::run_study(&self.config, &self.core, &self.build_locks, &study, request)

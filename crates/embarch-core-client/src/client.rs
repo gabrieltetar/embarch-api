@@ -1469,7 +1469,7 @@ impl StudyRunOptions {
     /// The `?k=v` suffix for `POST /study`, empty when nothing is set — so a
     /// default-options submit is byte-identical to the URL every caller sent
     /// before these existed.
-    fn query_suffix(&self) -> String {
+    fn query_suffix(&self, build: &BuildClaims) -> String {
         let mut parts: Vec<String> = Vec::new();
         if self.allow_version_mismatch {
             parts.push("allow_version_mismatch=1".to_string());
@@ -1477,11 +1477,53 @@ impl StudyRunOptions {
         if let Some(version) = &self.flashed_firmware_version {
             parts.push(format!("flashed_firmware_version={}", urlencode(version)));
         }
-        if parts.is_empty() {
-            String::new()
-        } else {
-            format!("?{}", parts.join("&"))
+        parts.extend(build.query_pairs());
+        join_query(parts)
+    }
+}
+
+/// What a client says about the build a study runs against: `POST /study` and
+/// `POST /host-studies` take it as `build_commit`, `build_dirty` and
+/// `build_toolchain` and record it under the run record's `claimed.build`,
+/// kept apart from what Core observed (`embarch-core` decision 110). Core
+/// cannot check any of it.
+///
+/// **Each field is sent only when known.** `BuildClaims::default()` sends
+/// nothing, which is what a client with no git checkout must send: an absent
+/// parameter reads as "not claimed", a made-up one as a fact.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct BuildClaims {
+    /// Full lowercase hex commit id the build's checkout was at (Core takes 7 to 64).
+    pub commit: Option<String>,
+    /// Whether tracked files differed from `commit`.
+    pub dirty: Option<bool>,
+    /// Free-form printable text, at most 200 bytes (Core's limit).
+    pub toolchain: Option<String>,
+}
+
+impl BuildClaims {
+    /// The `k=v` pairs for whatever is known, in a fixed order.
+    fn query_pairs(&self) -> Vec<String> {
+        let mut parts = Vec::new();
+        if let Some(commit) = &self.commit {
+            parts.push(format!("build_commit={}", urlencode(commit)));
         }
+        if let Some(dirty) = self.dirty {
+            parts.push(format!("build_dirty={dirty}"));
+        }
+        if let Some(toolchain) = &self.toolchain {
+            parts.push(format!("build_toolchain={}", urlencode(toolchain)));
+        }
+        parts
+    }
+}
+
+/// Joins `pairs` into a `?a=b&c=d` suffix, empty when there are none.
+fn join_query(pairs: Vec<String>) -> String {
+    if pairs.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", pairs.join("&"))
     }
 }
 
@@ -2859,6 +2901,18 @@ impl CoreClient {
         study: &Study,
         run: &StudyRunOptions,
     ) -> Result<PostStudyResponse> {
+        self.post_study_claiming(study, run, &BuildClaims::default()).await
+    }
+
+    /// [`CoreClient::post_study`] that also tells Core what it knows about the
+    /// build (see [`BuildClaims`]). With `BuildClaims::default()` the request
+    /// is byte-identical to `post_study`'s.
+    pub async fn post_study_claiming(
+        &self,
+        study: &Study,
+        run: &StudyRunOptions,
+        build: &BuildClaims,
+    ) -> Result<PostStudyResponse> {
         let core_version = self.status().await?.study_designer_schema_version;
         if core_version != Some(embarch_study_designer::HOST_TYPE_SCHEMA_VERSION) {
             return Err(anyhow::Error::new(SchemaVersionMismatch {
@@ -2867,7 +2921,7 @@ impl CoreClient {
             }));
         }
 
-        let url = format!("{}/study{}", self.base_url().await?, run.query_suffix());
+        let url = format!("{}/study{}", self.base_url().await?, run.query_suffix(build));
         let response = self
             .dispatch(self.client.post(url).json(study), Some(self.study_timeout))
             .await?;
@@ -2937,6 +2991,16 @@ impl CoreClient {
     /// (`embarch-core` decisions 95, 105). Same schema gate as
     /// [`CoreClient::post_study`]: `HostStudy` is a study-designer host type.
     pub async fn post_host_study(&self, study: &embarch_study_designer::HostStudy) -> Result<PostStudyResponse> {
+        self.post_host_study_claiming(study, &BuildClaims::default()).await
+    }
+
+    /// [`CoreClient::post_host_study`] that also tells Core what it knows
+    /// about the build (see [`BuildClaims`]).
+    pub async fn post_host_study_claiming(
+        &self,
+        study: &embarch_study_designer::HostStudy,
+        build: &BuildClaims,
+    ) -> Result<PostStudyResponse> {
         let core_version = self.status().await?.study_designer_schema_version;
         if core_version != Some(embarch_study_designer::HOST_TYPE_SCHEMA_VERSION) {
             return Err(anyhow::Error::new(SchemaVersionMismatch {
@@ -2944,7 +3008,7 @@ impl CoreClient {
                 core_version,
             }));
         }
-        let url = format!("{}/host-studies", self.base_url().await?);
+        let url = format!("{}/host-studies{}", self.base_url().await?, join_query(build.query_pairs()));
         let response = self.dispatch(self.client.post(url).json(study), Some(self.study_timeout)).await?;
         let status = response.status();
         if status.is_success() {
@@ -4170,26 +4234,26 @@ mod tests {
     /// mid-flight breakage keeping them as aliases exists to avoid.
     #[test]
     fn default_run_options_change_the_request_not_at_all() {
-        assert_eq!(StudyRunOptions::default().query_suffix(), "");
+        assert_eq!(StudyRunOptions::default().query_suffix(&BuildClaims::default()), "");
     }
 
     #[test]
     fn each_run_option_appears_only_when_it_is_actually_set() {
         let allow = StudyRunOptions { allow_version_mismatch: true, ..Default::default() };
-        assert_eq!(allow.query_suffix(), "?allow_version_mismatch=1");
+        assert_eq!(allow.query_suffix(&BuildClaims::default()), "?allow_version_mismatch=1");
 
         let flashed = StudyRunOptions {
             flashed_firmware_version: Some("g1a2b3c".to_string()),
             ..Default::default()
         };
-        assert_eq!(flashed.query_suffix(), "?flashed_firmware_version=g1a2b3c");
+        assert_eq!(flashed.query_suffix(&BuildClaims::default()), "?flashed_firmware_version=g1a2b3c");
 
         let both = StudyRunOptions {
             allow_version_mismatch: true,
             flashed_firmware_version: Some("g1a2b3c-dirty".to_string()),
         };
         assert_eq!(
-            both.query_suffix(),
+            both.query_suffix(&BuildClaims::default()),
             "?allow_version_mismatch=1&flashed_firmware_version=g1a2b3c-dirty"
         );
     }
@@ -4203,9 +4267,25 @@ mod tests {
             flashed_firmware_version: Some("v1 &allow_version_mismatch=1".to_string()),
             ..Default::default()
         };
-        let suffix = sneaky.query_suffix();
+        let suffix = sneaky.query_suffix(&BuildClaims::default());
         assert_eq!(suffix, "?flashed_firmware_version=v1%20%26allow_version_mismatch%3D1");
         assert!(!suffix.contains("&allow_version_mismatch=1"));
+    }
+
+    #[test]
+    fn build_claims_send_only_what_is_known_and_never_a_blank() {
+        assert!(BuildClaims::default().query_pairs().is_empty());
+        let some = BuildClaims { dirty: Some(false), ..Default::default() };
+        assert_eq!(StudyRunOptions::default().query_suffix(&some), "?build_dirty=false");
+        let all = BuildClaims {
+            commit: Some("abcdef1234".to_string()),
+            dirty: Some(true),
+            toolchain: Some("West version: v1.2.0".to_string()),
+        };
+        assert_eq!(
+            StudyRunOptions { allow_version_mismatch: true, ..Default::default() }.query_suffix(&all),
+            "?allow_version_mismatch=1&build_commit=abcdef1234&build_dirty=true&build_toolchain=West%20version%3A%20v1.2.0"
+        );
     }
 
     #[test]

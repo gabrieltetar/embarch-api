@@ -200,6 +200,9 @@ pub struct RunStudyRequest<'a> {
     /// build target to come from.
     pub project: Option<&'a str>,
     pub selection: crate::resolve::Selection<'a>,
+    /// What to tell Core about the build the study runs against (decision
+    /// 111); `BuildClaims::default()` sends nothing.
+    pub build: embarch_core_client::BuildClaims,
 }
 
 /// decision 40's sequence: **check → build → flash → `POST
@@ -375,7 +378,7 @@ pub async fn run_study(
         allow_version_mismatch: request.allow_version_mismatch,
         flashed_firmware_version: outcome.flashed_firmware_version.clone(),
     };
-    let response = core.post_study(study, &run).await?;
+    let response = core.post_study_claiming(study, &run, &request.build).await?;
     outcome.study_id = response.study_id;
     Ok(outcome)
 }

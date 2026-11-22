@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use embarch_core_client::{
-    CoreClient, CoreConfig, SignalDirection, SignalLink, SignalRoute, StudyRunOptions,
+    BuildClaims, CoreClient, CoreConfig, SignalDirection, SignalLink, SignalRoute, StudyRunOptions,
 };
 use embarch_study_designer::Study;
 use serde_json::json;
@@ -168,7 +168,8 @@ async fn every_outbound_call_carries_the_bearer_token() {
         "steps": [{ "name": "w", "action": { "Wait": { "ms": 1 } }, "timeout_ms": 1, "continue_on_fail": false, "delay_before_ms": 0 }],
     }))
     .expect("a one-step host study");
-    let _ = client.post_host_study(&host).await;
+    // `post_host_study` and `post_study` delegate to these; the claiming forms build the request.
+    let _ = client.post_host_study_claiming(&host, &BuildClaims::default()).await;
     let answer = embarch_core_client::PromptAnswerRequest { prompt_id: 1, answer: "confirmed".into(), answered_by: "cli".into() };
     let _ = client.answer_prompt("study-1", &answer).await;
     let _ = client.lease_take("sweep", Some("sweep"), 60).await;
@@ -187,10 +188,12 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client
         .flash("nRF52840_xxAA", "/nonexistent/app.hex", "hex", None, None, false)
         .await;
-    // Two requests, not one: `post_study` reads `GET /status` for Core's
+    // Two requests, not one: `post_study_claiming` reads `GET /status` for Core's
     // schema version first, and refuses to submit across a mismatch — which
     // is why the mock answers that one route.
-    let _ = client.post_study(&self_test_study(), &StudyRunOptions::default()).await;
+    let _ = client
+        .post_study_claiming(&self_test_study(), &StudyRunOptions::default(), &BuildClaims::default())
+        .await;
     // The SSE stream is the one route that does not go through the client's
     // `send` helper (it streams a body and sets no request timeout), so it
     // is exactly the shape that escapes a hand-kept list — and did. It does
@@ -1030,4 +1033,51 @@ async fn a_stream_404_keeps_cores_body_and_an_empty_one_falls_back() {
         .expect_err("a 404 was reported as success")
         .to_string();
     assert!(error.contains("no capture served for stream tap 'ppg'"), "{error}");
+}
+
+/// Decision 111: the build claims reach `POST /study` and `POST /host-studies`
+/// as query parameters, and a default `BuildClaims` adds none.
+#[tokio::test]
+async fn build_claims_ride_both_study_routes_and_default_sends_none() {
+    let mock = MockCore::start(Behavior::Router {
+        routes: vec![(
+            "/status".to_string(),
+            Behavior::json_ok(json!({
+                "status": "ok",
+                "probes": [],
+                "study_designer_schema_version": embarch_study_designer::HOST_TYPE_SCHEMA_VERSION,
+            })),
+        )],
+        otherwise: Box::new(Behavior::json_ok(json!({ "study_id": "s-1", "status": "accepted" }))),
+    })
+    .await;
+    let client = CoreClient::new(&config(json!({ "base_url": mock.base_url() }))).expect("client");
+    let claims = BuildClaims {
+        commit: Some("0123456789abcdef".to_string()),
+        dirty: Some(true),
+        toolchain: Some("West version: v1.2.0".to_string()),
+    };
+    let study = self_test_study();
+    client.post_study_claiming(&study, &StudyRunOptions::default(), &claims).await.unwrap();
+    client.post_study(&study, &StudyRunOptions::default()).await.unwrap();
+    let host: embarch_study_designer::HostStudy = serde_json::from_value(json!({
+        "name": "w",
+        "steps": [{ "name": "w", "action": { "Wait": { "ms": 1 } }, "timeout_ms": 1, "continue_on_fail": false, "delay_before_ms": 0 }],
+    }))
+    .unwrap();
+    client.post_host_study_claiming(&host, &claims).await.unwrap();
+    let targets: Vec<String> = mock
+        .requests()
+        .into_iter()
+        .filter(|r| r.method == "POST")
+        .map(|r| r.target)
+        .collect();
+    assert_eq!(
+        targets,
+        vec![
+            "/study?build_commit=0123456789abcdef&build_dirty=true&build_toolchain=West%20version%3A%20v1.2.0".to_string(),
+            "/study".to_string(),
+            "/host-studies?build_commit=0123456789abcdef&build_dirty=true&build_toolchain=West%20version%3A%20v1.2.0".to_string(),
+        ]
+    );
 }

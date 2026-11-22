@@ -2002,6 +2002,11 @@ async fn run_study(
         allow_version_mismatch,
         project,
         selection: target.selection(),
+        // The project the ledger row uses (decision 98): the one named, else
+        // this session's desk's. Neither resolving sends no claim (decision 111).
+        build: lookup_project(config, project.unwrap_or("desk"))
+            .map(crate::build_claims::for_project)
+            .unwrap_or_default(),
     };
 
     match crate::reflash::run_study(config, core, &build_locks, &study, request).await {

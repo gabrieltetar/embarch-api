@@ -1,5 +1,6 @@
 mod bench_exchange;
 mod bootload;
+mod build_claims;
 mod build_each;
 mod build_info;
 mod bundle;
