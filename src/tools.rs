@@ -559,6 +559,7 @@ pub struct PublishParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[cfg_attr(not(feature = "pdf"), allow(dead_code))]
 pub struct ProseParam {
     /// The file's name, no directory (it is carried as prose/<name>).
     pub name: String,

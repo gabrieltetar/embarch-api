@@ -1020,6 +1020,7 @@ async fn run_host_study(core: &CoreClient, study_file: &Path, json: bool) -> i32
     }
 }
 
+#[cfg_attr(not(feature = "pdf"), allow(dead_code))]
 struct PublishArgs<'a> {
     run_id: &'a str,
     notes: Option<&'a str>,
