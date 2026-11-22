@@ -15,13 +15,17 @@
 //!    checked against the manifest's digest, and the zip written.
 //!
 //! The zip is written to the configured folder as `<date>-<slug>-<id8>.zip`
-//! (`-r<N>` from the second revision) and is never overwritten.
+//! (`-r<N>` from the second revision) and is never overwritten. A revision is
+//! built from the earlier zip in that folder (decision 117): its captures and
+//! `measurements.json` are read from it, not from Core, and the appendix names
+//! the revision it supersedes and that zip's manifest hash.
 
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
+const PROSE_DIR_LABEL: &str = crate::publish_report::PROSE_DIR;
 use base64::Engine as _;
 use embarch_core_client::{CoreClient, PublishFile};
 use embarch_study_designer::StreamEncoding;
@@ -29,7 +33,10 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::publish_export::{civil_from_days, junit_xml, ocp_jsonl, ExportInputs, StepRow};
-use crate::publish_report::{appendix_source, data_section_source, CaptureRow, ReportInputs, ReportSource};
+use crate::publish_oracle::{self, Source};
+use crate::publish_report::{
+    appendix_source, data_section_source, CaptureRow, ProseBlock, ReportInputs, ReportSource, Supersedes,
+};
 use crate::report_pdf::{render_report, vendored_files, RenderOptions, Staging, APPENDIX_FILE, REPORT_FILE, TYPST_VERSION};
 
 /// The note's name, to Core and in the zip.
@@ -59,6 +66,9 @@ pub struct PublishRequest<'a> {
     /// The study's `report.typ`. None: the zip carries the data section this
     /// crate generates.
     pub report_typ: Option<&'a Path>,
+    /// The prose files the agent wrote for the run, adopted through Core as
+    /// `prose` and carried in the zip.
+    pub prose: &'a [ProseBlock],
 }
 
 #[derive(Debug)]
@@ -72,6 +82,8 @@ pub struct PublishOutcome {
     pub files: Vec<String>,
     /// The files embarch-api made, with the hashes it sent Core.
     pub embarch_api_files: Vec<PublishFile>,
+    /// The earlier revision this one supersedes.
+    pub supersedes: Option<Supersedes>,
     /// Anything that makes the zip less than a complete report. Not empty means
     /// the zip is written and the caller must say so.
     pub warnings: Vec<String>,
@@ -147,6 +159,60 @@ fn manifest_subjects(envelope: &[u8]) -> Result<Vec<(String, String)>> {
         .collect()
 }
 
+/// A zip name of this run, and its revision: `<date>-<slug>-<id8>[-r<N>].zip`.
+fn revision_of_name(file: &str, id8: &str) -> Option<u64> {
+    let stem = file.strip_suffix(".zip")?;
+    if stem.ends_with(&format!("-{id8}")) {
+        return Some(1);
+    }
+    let (head, n) = stem.rsplit_once("-r")?;
+    if head.ends_with(&format!("-{id8}")) { n.parse().ok().filter(|n| *n >= 2) } else { None }
+}
+
+/// An earlier publish of this run found in the folder: its revision, and its
+/// files by name.
+struct EarlierZip {
+    revision: u64,
+    files: BTreeMap<String, Vec<u8>>,
+}
+
+fn read_zip(path: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
+    let mut z = zip::ZipArchive::new(std::fs::File::open(path)?)?;
+    let mut out = BTreeMap::new();
+    for i in 0..z.len() {
+        let mut f = z.by_index(i)?;
+        let mut b = Vec::new();
+        std::io::Read::read_to_end(&mut f, &mut b)?;
+        out.insert(f.name()?.to_string(), b);
+    }
+    Ok(out)
+}
+
+/// The run's earlier zips in `folder`, by the revision `report-data.json`
+/// inside them says; a name that merely looks like this run's is checked
+/// against the run id it holds.
+fn earlier_zips(folder: &Path, run_id: &str) -> Vec<EarlierZip> {
+    let id8: String = run_id.chars().filter(|c| c.is_ascii_alphanumeric()).take(8).collect();
+    let mut out = Vec::new();
+    let Ok(dir) = std::fs::read_dir(folder) else { return out };
+    for e in dir.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if revision_of_name(&name, &id8).is_none() {
+            continue;
+        }
+        let Ok(files) = read_zip(&e.path()) else { continue };
+        let Some(rd) = files.get(REPORT_DATA_NAME).and_then(|b| serde_json::from_slice::<Value>(b).ok()) else { continue };
+        if rd["study_id"].as_str() != Some(run_id) {
+            continue;
+        }
+        if let Some(revision) = rd["revision"].as_u64() {
+            out.push(EarlierZip { revision, files });
+        }
+    }
+    out.sort_by_key(|z| z.revision);
+    out
+}
+
 fn count_rows(name: &str, bytes: &[u8]) -> u64 {
     let lines = bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()).count() as u64;
     if name.ends_with(".csv") { lines.saturating_sub(1) } else { lines }
@@ -178,13 +244,53 @@ pub async fn run(core: &CoreClient, folder: Option<&Path>, req: &PublishRequest<
         ReportSource::Generated => None,
     };
 
+    let study_report_text: Option<String> =
+        study_report_bytes.as_ref().map(|b| String::from_utf8_lossy(b).into_owned());
+    if let Some(src) = &study_report_text {
+        let pics = publish_oracle::pictures(src);
+        if let Some((line, what)) = pics.first() {
+            bail!(
+                "publish refuses this report.typ: line {line} draws a picture ({what}). A plot is drawn by the plot helper \
+                 from a signed file; any other picture, an embedded image or SVG included, is refused, except `image()` of \
+                 a capture Core signed (a `streams/` path)"
+            );
+        }
+    }
+    let mut prose_names = std::collections::BTreeSet::new();
+    for p in req.prose {
+        if p.name.is_empty() || p.name.contains('/') || p.name.contains('\\') || p.name == ".." || p.name == "." {
+            bail!("{:?} is not a prose file name: a name only, no directory (the zip carries it as {PROSE_DIR_LABEL}<name>)", p.name);
+        }
+        if !prose_names.insert(p.name.clone()) {
+            bail!("the prose file {:?} is given twice", p.name);
+        }
+    }
+
+    let earlier = earlier_zips(folder, run_id);
+
     let notes = req.notes.filter(|n| !n.trim().is_empty());
     if let Some(text) = notes {
         core.adopt(run_id, "note", NOTES_NAME, text).await.context("Core refused the notes")?;
     }
+    for p in req.prose {
+        core.adopt(run_id, "prose", &p.zip_name(), &p.text)
+            .await
+            .with_context(|| format!("Core refused the prose file {}", p.name))?;
+    }
 
-    let rd = core.report_data(run_id).await.context("Core refused report-data")?;
+    let rd = match core.report_data(run_id).await {
+        Ok(rd) => rd,
+        Err(e) if !earlier.is_empty() && format!("{e:#}").contains("404") => bail!(
+            "Core no longer holds this run's files (its directory is swept), so it cannot sign another revision: \
+             report-data answered 404 ({e:#}). The earlier zip in {} is unchanged and nothing was written \
+             (embarch-api decision 117; embarch-core open.md)",
+            folder.display()
+        ),
+        Err(e) => return Err(e.context("Core refused report-data")),
+    };
     let revision = rd.revision;
+    // A revision is built from the earlier zip: the highest one below this revision.
+    let prev: Option<&EarlierZip> = earlier.iter().filter(|z| z.revision < revision).max_by_key(|z| z.revision);
     let report_data_bytes = core
         .publish_file(run_id, revision, REPORT_DATA_NAME)
         .await?
@@ -198,7 +304,10 @@ pub async fn run(core: &CoreClient, folder: Option<&Path>, req: &PublishRequest<
     // files route, which Core is asked to serve before the manifest exists
     // (open.md); a 404 is "absent", and is warned about once the manifest says
     // whether the run has one.
-    let measurements_bytes = core.publish_file(run_id, revision, MEASUREMENTS_NAME).await?;
+    let measurements_bytes: Option<Vec<u8>> = match prev.and_then(|z| z.files.get(MEASUREMENTS_NAME)) {
+        Some(b) => Some(b.clone()),
+        None => core.publish_file(run_id, revision, MEASUREMENTS_NAME).await?.map(|b| b.to_vec()),
+    };
     let measurements: Option<Value> = match &measurements_bytes {
         Some(b) => {
             staging.stage_bytes(MEASUREMENTS_NAME, b)?;
@@ -207,7 +316,13 @@ pub async fn run(core: &CoreClient, folder: Option<&Path>, req: &PublishRequest<
         None => None,
     };
     let mut staged_streams: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-    if let Some(index) = core.study_streams(run_id).await? {
+    if let Some(z) = prev {
+        // The earlier zip's renderings, so a run whose captures retention has swept republishes.
+        for (name, bytes) in z.files.iter().filter(|(n, _)| n.starts_with("streams/") && (n.ends_with(".csv") || n.ends_with(".txt"))) {
+            staging.stage_bytes(name, bytes)?;
+            staged_streams.insert(name.clone(), bytes.clone());
+        }
+    } else if let Some(index) = core.study_streams(run_id).await? {
         for tap in index.streams.iter().filter(|t| t.rendered) {
             let ext = if matches!(tap.encoding, StreamEncoding::Text) { "txt" } else { "csv" };
             let name = format!("streams/{}.{ext}", tap.name);
@@ -235,8 +350,34 @@ pub async fn run(core: &CoreClient, folder: Option<&Path>, req: &PublishRequest<
         })
         .unwrap_or_default();
 
+    // What this revision supersedes: the earlier zip's manifest hash, or Core's copy.
+    let supersedes: Option<Supersedes> = match (prev, revision) {
+        (_, r) if r <= 1 => None,
+        (Some(z), _) => Some(Supersedes {
+            revision: z.revision,
+            manifest_sha256: z.files.get(MANIFEST_NAME).map(|b| sha256_hex(b)),
+            from_zip: true,
+        }),
+        (None, r) => Some(Supersedes {
+            revision: r - 1,
+            manifest_sha256: core.publish_file(run_id, r - 1, MANIFEST_NAME).await.ok().flatten().map(|b| sha256_hex(&b)),
+            from_zip: false,
+        }),
+    };
+
+    // The numeric-oracle listing.
+    let mut sources: Vec<Source> = req.prose.iter().map(|p| Source { name: &p.name, text: &p.text, typst: false }).collect();
+    let report_label = REPORT_FILE;
+    if let Some(src) = &study_report_text {
+        sources.push(Source { name: report_label, text: src, typst: true });
+    }
+    let oracle = publish_oracle::rows(&sources, measurements.as_ref(), &rd.report_data);
+
     // The report's sources, then the PDF.
     let inputs = ReportInputs {
+        prose: req.prose,
+        oracle: &oracle,
+        supersedes: supersedes.as_ref(),
         report_data: &rd.report_data,
         measurements: measurements.as_ref(),
         steps: &steps,
@@ -276,6 +417,9 @@ pub async fn run(core: &CoreClient, folder: Option<&Path>, req: &PublishRequest<
     api.insert(OCP_NAME.into(), ocp_jsonl(&export).into_bytes());
     if let Some(text) = notes {
         api.insert(NOTES_NAME.into(), text.as_bytes().to_vec());
+    }
+    for p in req.prose {
+        api.insert(p.zip_name(), p.text.as_bytes().to_vec());
     }
     if report_source == ReportSource::Study {
         for f in vendored_files() {
@@ -371,6 +515,7 @@ pub async fn run(core: &CoreClient, folder: Option<&Path>, req: &PublishRequest<
         report_source,
         files: zip_entries.keys().cloned().collect(),
         embarch_api_files: api_files,
+        supersedes,
         warnings,
     })
 }
@@ -407,6 +552,7 @@ pub fn outcome_json(o: &PublishOutcome) -> Value {
         "report_source": o.report_source.as_str(),
         "files": o.files,
         "embarch_api_files": o.embarch_api_files.iter().map(|f| serde_json::json!({"name": f.name, "sha256": f.sha256})).collect::<Vec<_>>(),
+        "supersedes": o.supersedes.as_ref().map(|s| serde_json::json!({"revision": s.revision, "manifest_sha256": s.manifest_sha256, "from_zip": s.from_zip})),
         "warnings": o.warnings,
     })
 }

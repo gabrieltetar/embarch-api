@@ -33,15 +33,18 @@ fn fixture(name: &str) -> String {
     std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/report_pdf").join(name)).unwrap()
 }
 
-fn report_data() -> String {
+/// `extra` are more `adopted` rows (prose blocks Core recorded).
+fn report_data_rev(revision: u64, extra: &[Value]) -> String {
+    let mut adopted = vec![json!({ "kind": "note", "name": "notes/operator-notes.txt", "text_sha256": sha(b"the person said: ok"),
+                       "scope": "agent", "attribution": "relayed by the agent", "at_utc_ms": 1 })];
+    adopted.extend_from_slice(extra);
     json!({
-        "schema": 1, "study_id": RUN, "kind": "device", "revision": 1, "run_status": "step_failed",
+        "schema": 1, "study_id": RUN, "kind": "device", "revision": revision, "run_status": "step_failed",
         "steps": { "total": 2, "pass": 1, "fail": 1, "timed_out": 0, "other": 0 },
         "subject": { "study_name": "GATT rate / loss", "provenance": "declared by the study" },
         "attestation": { "label": "agent-scoped only", "core_attested": false, "reason": "an unattested Core" },
         "go_by": "agent", "published_by": "agent",
-        "adopted": [{ "kind": "note", "name": "notes/operator-notes.txt", "text_sha256": sha(b"the person said: ok"),
-                       "scope": "agent", "attribution": "relayed by the agent", "at_utc_ms": 1 }],
+        "adopted": adopted,
         "observed": { "image_status": "unverified", "declarations": [] },
         "claimed": { "build": null }, "core": { "version": "0.0.0", "keyid": "k" },
         "record_sha256": sha(b"record"),
@@ -51,6 +54,10 @@ fn report_data() -> String {
 
 /// Core's files for the fixture run, by the name the zip gives them.
 fn core_files() -> BTreeMap<String, String> {
+    core_files_rev(1, &[])
+}
+
+fn core_files_rev(revision: u64, extra: &[Value]) -> BTreeMap<String, String> {
     let mut f = BTreeMap::new();
     f.insert("events.json".to_string(), r#"{"steps":[]}"#.to_string());
     f.insert("measurements.json".to_string(), fixture("measurements.json"));
@@ -59,7 +66,7 @@ fn core_files() -> BTreeMap<String, String> {
     f.insert("streams/rate.bin".to_string(), "raw-bytes-of-the-rate-tap".to_string());
     f.insert("streams/rate.csv".to_string(), fixture("capture.csv"));
     f.insert("streams/console.txt".to_string(), "boot\nconnected\n".to_string());
-    f.insert("report-data.json".to_string(), report_data());
+    f.insert("report-data.json".to_string(), report_data_rev(revision, extra));
     f.insert("report-data.dsse.json".to_string(), r#"{"payloadType":"rd"}"#.to_string());
     f.insert("run-log-segment.jsonl".to_string(), "{\"n\":0}\n".to_string());
     f
@@ -78,17 +85,21 @@ fn ok_text(body: &str) -> Behavior {
 }
 
 fn router(files: &BTreeMap<String, String>, measurements: Behavior) -> Behavior {
+    router_rev(1, files, measurements)
+}
+
+fn router_rev(revision: u64, files: &BTreeMap<String, String>, measurements: Behavior) -> Behavior {
     let rd = &files["report-data.json"];
     let mut routes: Vec<(String, Behavior)> = vec![
         ("/adopt".into(), Behavior::json_ok(json!({ "entry": {}, "hash": "h" }))),
         (
             "/report-data".into(),
             Behavior::json_ok(json!({
-                "revision": 1, "report_data_sha256": sha(rd.as_bytes()), "keyid": "k",
+                "revision": revision, "report_data_sha256": sha(rd.as_bytes()), "keyid": "k",
                 "report_data": serde_json::from_str::<Value>(rd).unwrap(),
             })),
         ),
-        ("/publish".into(), Behavior::json_ok(json!({ "revision": 1, "entry": {}, "keyid": "k" }))),
+        ("/publish".into(), Behavior::json_ok(json!({ "revision": revision, "entry": {}, "keyid": "k" }))),
         (
             "/streams".into(),
             Behavior::json_ok(json!({ "streams": [
@@ -156,7 +167,7 @@ async fn a_fixture_run_publishes_one_zip_and_every_api_hash_matches_what_core_wa
     let out = publish::run(
         &client(mock.base_url()),
         Some(&dir.join("zips")),
-        &PublishRequest { run_id: RUN, notes: Some("the person said: ok"), report_typ: Some(&report) },
+        &PublishRequest { run_id: RUN, notes: Some("the person said: ok"), report_typ: Some(&report), prose: &[] },
         NOW,
     )
     .await
@@ -203,7 +214,7 @@ async fn the_pdf_rebuilds_byte_for_byte_from_the_zip_alone() {
     let out = publish::run(
         &client(mock.base_url()),
         Some(&dir),
-        &PublishRequest { run_id: RUN, notes: None, report_typ: Some(&report) },
+        &PublishRequest { run_id: RUN, notes: None, report_typ: Some(&report), prose: &[] },
         NOW,
     )
     .await
@@ -225,7 +236,7 @@ async fn a_study_with_no_report_typ_publishes_with_the_appendix_and_a_data_secti
     let out = publish::run(
         &client(mock.base_url()),
         Some(&dir),
-        &PublishRequest { run_id: RUN, notes: None, report_typ: None },
+        &PublishRequest { run_id: RUN, notes: None, report_typ: None, prose: &[] },
         NOW,
     )
     .await
@@ -254,7 +265,7 @@ async fn a_study_with_no_report_typ_publishes_with_the_appendix_and_a_data_secti
 async fn publish_refuses_with_no_folder_and_says_how_to_set_one() {
     let files = core_files();
     let mock = MockCore::start(router(&files, ok_text(&files["measurements.json"]))).await;
-    let err = publish::run(&client(mock.base_url()), None, &PublishRequest { run_id: RUN, notes: Some("n"), report_typ: None }, NOW)
+    let err = publish::run(&client(mock.base_url()), None, &PublishRequest { run_id: RUN, notes: Some("n"), report_typ: None, prose: &[] }, NOW)
         .await
         .unwrap_err();
     let msg = format!("{err:#}");
@@ -269,7 +280,7 @@ async fn a_publish_is_never_overwritten() {
     let files = core_files();
     let mock = MockCore::start(router(&files, ok_text(&files["measurements.json"]))).await;
     let dir = tmp("again");
-    let req = PublishRequest { run_id: RUN, notes: None, report_typ: None };
+    let req = PublishRequest { run_id: RUN, notes: None, report_typ: None, prose: &[] };
     let first = publish::run(&client(mock.base_url()), Some(&dir), &req, NOW).await.unwrap();
     // The same revision again (the mock answers 1 twice): never overwritten.
     let err = publish::run(&client(mock.base_url()), Some(&dir), &req, NOW).await.unwrap_err();
@@ -284,7 +295,7 @@ async fn measurements_core_does_not_serve_before_publish_are_a_warning_not_a_sil
     let late = Behavior::Sequence(vec![Behavior::plain_text_error(404, "Not Found", "no file yet"), ok_text(&files["measurements.json"])]);
     let mock = MockCore::start(router(&files, late)).await;
     let dir = tmp("warn");
-    let out = publish::run(&client(mock.base_url()), Some(&dir), &PublishRequest { run_id: RUN, notes: None, report_typ: None }, NOW)
+    let out = publish::run(&client(mock.base_url()), Some(&dir), &PublishRequest { run_id: RUN, notes: None, report_typ: None, prose: &[] }, NOW)
         .await
         .unwrap();
     assert_eq!(out.warnings.len(), 1, "{:?}", out.warnings);
@@ -299,7 +310,7 @@ async fn a_manifest_naming_a_file_core_will_not_serve_writes_no_zip() {
     let never = Behavior::plain_text_error(404, "Not Found", "no file");
     let mock = MockCore::start(router(&files, never)).await;
     let dir = tmp("contradiction");
-    let out = publish::run(&client(mock.base_url()), Some(&dir), &PublishRequest { run_id: RUN, notes: None, report_typ: None }, NOW).await;
+    let out = publish::run(&client(mock.base_url()), Some(&dir), &PublishRequest { run_id: RUN, notes: None, report_typ: None, prose: &[] }, NOW).await;
     assert!(format!("{:#}", out.unwrap_err()).contains("measurements.json"));
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
 }
@@ -311,9 +322,164 @@ async fn a_report_that_sets_its_own_footer_is_refused_before_core_is_asked() {
     let dir = tmp("footer");
     let report = dir.join("r.typ");
     std::fs::write(&report, "#set page(footer: [mine])\nhi").unwrap();
-    let err = publish::run(&client(mock.base_url()), Some(&dir), &PublishRequest { run_id: RUN, notes: None, report_typ: Some(&report) }, NOW)
+    let err = publish::run(&client(mock.base_url()), Some(&dir), &PublishRequest { run_id: RUN, notes: None, report_typ: Some(&report), prose: &[] }, NOW)
         .await
         .unwrap_err();
     assert!(format!("{err:#}").contains("footer"), "{err:#}");
     assert!(mock.requests().is_empty());
+}
+
+fn pdf_text_of(zip: &BTreeMap<String, Vec<u8>>, revision: u64) -> String {
+    let mut s = Staging::new().unwrap();
+    for name in zip.keys().filter(|n| matches!(n.as_str(), "report.typ" | "appendix.typ" | "report-data.json" | "measurements.json") || n.starts_with("streams/") && (n.ends_with(".csv") || n.ends_with(".txt"))) {
+        s.stage_bytes(name, &zip[name]).unwrap();
+    }
+    let pages = embarch_api::report_pdf::report_text(&s, &RenderOptions { ident: format!("{RUN}-r{revision}"), timestamp_unix: NOW }).unwrap();
+    pages.iter().flatten().cloned().collect::<Vec<_>>().join(" ")
+}
+
+fn prose_adopted(name: &str, text: &str, scope: &str, attribution: &str) -> Value {
+    json!({ "kind": "prose", "name": name, "text_sha256": sha(text.as_bytes()), "scope": scope,
+            "attribution": attribution, "at_utc_ms": 2 })
+}
+
+#[tokio::test]
+async fn the_appendix_lists_each_cited_tagged_unbound_untagged_and_hardcoded_number() {
+    let prose = "The rate was 49.8 Hz [rate]. A margin of 12 (derived). It also read 49.8 Hz. There were 17 retries.";
+    let adopted = prose_adopted("prose/findings.md", prose, "agent", "entered with the agent's token");
+    let files = core_files_rev(1, &[adopted]);
+    let mock = MockCore::start(router(&files, ok_text(&files["measurements.json"]))).await;
+    let dir = tmp("oracle");
+    let report = dir.join("r.typ");
+    std::fs::write(&report, format!("{}\n#let hand = (3.5, 9)\nAbout 7 widgets (spec).\n", study_report())).unwrap();
+    let blocks = [embarch_api::publish_report::ProseBlock {
+        name: "findings.md".into(),
+        text: prose.into(),
+        author: Some("claude-sonnet-5-5".into()),
+        reviewed_by: None,
+    }];
+    let out = publish::run(
+        &client(mock.base_url()),
+        Some(&dir.join("zips")),
+        &PublishRequest { run_id: RUN, notes: None, report_typ: Some(&report), prose: &blocks },
+        NOW,
+    )
+    .await
+    .unwrap();
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+    let zip = unzip(&out.zip);
+    assert_eq!(zip["prose/findings.md"], prose.as_bytes());
+    let reqs = mock.requests();
+    let adopt = reqs.iter().filter(|r| r.path().ends_with("/adopt")).map(|r| serde_json::from_slice::<Value>(&r.body).unwrap()).collect::<Vec<_>>();
+    assert!(adopt.contains(&json!({ "kind": "prose", "name": "prose/findings.md", "text": prose })));
+    // The prose is among embarch-api's files, hashed.
+    let publish_req = reqs.iter().find(|r| r.method == "POST" && r.path().ends_with("/publish")).unwrap();
+    let body: Value = serde_json::from_slice(&publish_req.body).unwrap();
+    assert!(body["files"].as_array().unwrap().iter().any(|f| f["name"] == "prose/findings.md" && f["sha256"] == sha(prose.as_bytes())));
+
+    let appendix = String::from_utf8(zip["appendix.typ"].clone()).unwrap();
+    for (num, kind) in [("49.8", "cited"), ("12", "tagged"), ("17", "untagged"), ("9", "hardcoded"), ("3.5", "hardcoded"), ("7", "tagged")] {
+        assert!(appendix.contains(&format!("\"{num}\"")) && appendix.contains(&format!("\"{kind}\"")), "{num} {kind}: {appendix}");
+    }
+    // 49.8 with no citation is unbound, and report.typ's own #m call is cited.
+    assert!(appendix.contains("\"unbound\"") && appendix.contains("#m(\\\"rate\\\")"), "{appendix}");
+    // The appendix is in the PDF and the PDF still rebuilds from the zip.
+    let text = pdf_text_of(&zip, 1);
+    assert!(text.contains("Numbers in the prose and in report.typ") && text.contains("hardcoded"), "{text}");
+}
+
+#[tokio::test]
+async fn an_agents_block_names_its_model_and_an_adopted_one_its_reviewer_with_core_s_scope() {
+    let a = prose_adopted("prose/a.md", "alpha", "agent", "entered with the agent's token");
+    let b1 = prose_adopted("prose/b.md", "beta", "agent", "entered with the agent's token");
+    let b2 = prose_adopted("prose/b.md", "beta", "person", "the person's token");
+    let files = core_files_rev(1, &[a, b1, b2]);
+    let mock = MockCore::start(router(&files, ok_text(&files["measurements.json"]))).await;
+    let dir = tmp("authors");
+    let blocks = [
+        embarch_api::publish_report::ProseBlock { name: "a.md".into(), text: "alpha".into(), author: Some("claude-sonnet-5-5".into()), reviewed_by: None },
+        embarch_api::publish_report::ProseBlock { name: "b.md".into(), text: "beta".into(), author: Some("claude-sonnet-5-5".into()), reviewed_by: Some("Ada Lovelace".into()) },
+    ];
+    let out = publish::run(&client(mock.base_url()), Some(&dir), &PublishRequest { run_id: RUN, notes: None, report_typ: None, prose: &blocks }, NOW)
+        .await
+        .unwrap();
+    let appendix = String::from_utf8(unzip(&out.zip)["appendix.typ"].clone()).unwrap();
+    assert!(appendix.contains("\"agent (claude-sonnet-5-5)\""), "{appendix}");
+    assert!(appendix.contains("\"agent, reviewed by Ada Lovelace\""), "{appendix}");
+    assert!(appendix.contains("\"person\"") && appendix.contains("\"agent\""), "the token scope Core recorded: {appendix}");
+}
+
+#[tokio::test]
+async fn a_report_that_draws_an_embedded_image_or_svg_is_refused_before_core_is_asked() {
+    let files = core_files();
+    let mock = MockCore::start(router(&files, ok_text(&files["measurements.json"]))).await;
+    let dir = tmp("picture");
+    for (i, src) in ["#image(\"logo.png\")", "#svg(\"a.svg\")", "#figure(image.decode(\"<svg/>\"))"].iter().enumerate() {
+        let report = dir.join(format!("r{i}.typ"));
+        std::fs::write(&report, src).unwrap();
+        let err = publish::run(&client(mock.base_url()), Some(&dir), &PublishRequest { run_id: RUN, notes: None, report_typ: Some(&report), prose: &[] }, NOW)
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("draws a picture"), "{err:#}");
+    }
+    assert!(mock.requests().is_empty());
+}
+
+#[tokio::test]
+async fn publishing_again_writes_r2_keeps_r1_and_names_it_and_its_manifest_hash() {
+    let dir = tmp("revisions");
+    let req = PublishRequest { run_id: RUN, notes: None, report_typ: None, prose: &[] };
+    let files1 = core_files_rev(1, &[]);
+    let mock1 = MockCore::start(router_rev(1, &files1, ok_text(&files1["measurements.json"]))).await;
+    let first = publish::run(&client(mock1.base_url()), Some(&dir), &req, NOW).await.unwrap();
+    let r1_bytes = std::fs::read(&first.zip).unwrap();
+    assert!(first.supersedes.is_none());
+
+    // Core's second revision. Its capture routes answer 404: the captures are swept,
+    // so the revision must come from the earlier zip.
+    let files2 = core_files_rev(2, &[]);
+    let swept = Behavior::plain_text_error(404, "Not Found", "swept");
+    let mut routes = match router_rev(2, &files2, ok_text(&files2["measurements.json"])) {
+        Behavior::Router { routes, .. } => routes,
+        _ => unreachable!(),
+    };
+    routes.retain(|(p, _)| !p.starts_with("/stream") && p != "/files/measurements.json");
+    routes.insert(0, ("/stream".into(), swept.clone()));
+    routes.insert(0, ("/files/measurements.json".into(), ok_text(&files2["measurements.json"])));
+    let mock2 = MockCore::start(Behavior::Router { routes, otherwise: Box::new(swept) }).await;
+    let later = publish::run(&client(mock2.base_url()), Some(&dir), &req, NOW + 86_400 * 3).await.unwrap();
+    assert!(later.warnings.is_empty(), "{:?}", later.warnings);
+    assert!(later.zip.file_name().unwrap().to_string_lossy().ends_with("-01234567-r2.zip"), "{:?}", later.zip);
+    assert_eq!(std::fs::read(&first.zip).unwrap(), r1_bytes, "r1 is kept byte for byte");
+    let s = later.supersedes.as_ref().unwrap();
+    assert_eq!((s.revision, s.from_zip), (1, true));
+    assert_eq!(s.manifest_sha256.as_deref(), Some(first.manifest_sha256.as_str()));
+    // No capture was asked of Core.
+    assert!(!mock2.requests().iter().any(|r| r.method == "GET" && (r.path().ends_with("/streams") || r.path().contains("/stream/"))), "{:?}", mock2.requests().iter().map(|r| r.path().to_string()).collect::<Vec<_>>());
+    // The captures are the earlier zip's, and the appendix names r1 and its manifest hash.
+    let zip = unzip(&later.zip);
+    assert_eq!(zip["streams/rate.csv"], files2["streams/rate.csv"].as_bytes());
+    let appendix = String::from_utf8(zip["appendix.typ"].clone()).unwrap();
+    assert!(appendix.contains("supersedes revision 1") && appendix.contains(&first.manifest_sha256), "{appendix}");
+    // And the PDF of r2 rebuilds from r2's zip alone.
+    let mut st = Staging::new().unwrap();
+    for name in ["report.typ", "appendix.typ", "report-data.json", "measurements.json", "streams/rate.csv", "streams/console.txt"] {
+        st.stage_bytes(name, &zip[name]).unwrap();
+    }
+    let again = render_report(&st, &RenderOptions { ident: format!("{RUN}-r2"), timestamp_unix: NOW + 86_400 * 3 }).unwrap();
+    assert_eq!(again, zip["report.pdf"]);
+}
+
+#[tokio::test]
+async fn a_republish_of_a_swept_run_refuses_and_leaves_the_earlier_zip() {
+    let dir = tmp("swept");
+    let req = PublishRequest { run_id: RUN, notes: None, report_typ: None, prose: &[] };
+    let files = core_files_rev(1, &[]);
+    let mock = MockCore::start(router_rev(1, &files, ok_text(&files["measurements.json"]))).await;
+    let first = publish::run(&client(mock.base_url()), Some(&dir), &req, NOW).await.unwrap();
+    let gone = MockCore::start(Behavior::plain_text_error(404, "Not Found", "run directory swept")).await;
+    let err = publish::run(&client(gone.base_url()), Some(&dir), &req, NOW).await.unwrap_err();
+    assert!(format!("{err:#}").contains("swept"), "{err:#}");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+    assert!(first.zip.exists());
 }

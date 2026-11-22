@@ -11,6 +11,7 @@
 use serde_json::Value;
 
 use crate::publish_export::{measurement_line, qualifiers, StepRow};
+use crate::publish_oracle::{Kind, Row};
 
 /// One capture the data section lists.
 #[derive(Debug, Clone, PartialEq)]
@@ -38,6 +39,41 @@ impl ReportSource {
     }
 }
 
+/// A prose file the agent wrote for the run, and who the caller says wrote it.
+/// Core records the token's scope and the text's hash; the names here are the
+/// caller's claim, printed as one (`embarch-api` decision 116).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProseBlock {
+    /// The file's name, no directory; the zip carries it as `prose/<name>`.
+    pub name: String,
+    pub text: String,
+    /// The model id of an agent's block, or a person's name for a person's.
+    pub author: Option<String>,
+    /// The person who adopted an agent's block.
+    pub reviewed_by: Option<String>,
+}
+
+impl ProseBlock {
+    /// The name Core adopts the block under, and the zip carries.
+    pub fn zip_name(&self) -> String {
+        format!("{PROSE_DIR}{}", self.name)
+    }
+}
+
+/// Where prose files sit in the zip.
+pub const PROSE_DIR: &str = "prose/";
+
+/// The revision a publish supersedes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Supersedes {
+    pub revision: u64,
+    /// SHA-256 of that revision's `manifest.dsse.json`, or None when neither its
+    /// zip nor Core could supply it.
+    pub manifest_sha256: Option<String>,
+    /// Whether the hash is of the manifest in the earlier zip (else Core's copy).
+    pub from_zip: bool,
+}
+
 pub struct ReportInputs<'a> {
     pub report_data: &'a Value,
     pub measurements: Option<&'a Value>,
@@ -45,6 +81,10 @@ pub struct ReportInputs<'a> {
     pub captures: &'a [CaptureRow],
     /// The operator's notes, verbatim.
     pub notes: Option<&'a str>,
+    pub prose: &'a [ProseBlock],
+    /// The numeric-oracle listing of the prose files and `report.typ`.
+    pub oracle: &'a [Row],
+    pub supersedes: Option<&'a Supersedes>,
     pub revision: u64,
     pub api_version: &'a str,
     pub typst_version: &'a str,
@@ -141,6 +181,46 @@ fn measurement_rows(ms: Option<&Value>) -> Vec<Vec<String>> {
 }
 
 const MEASUREMENT_COLS: [&str; 7] = ["Name", "Value", "By", "Bench image", "U source", "Source", "Incomplete"];
+
+/// Who wrote a block, from Core's adoption rows of the file and the caller's
+/// claim. `agent` is the token scope Core records for an agent.
+fn author_label(name: &str, adopted: &[Value], prose: &[ProseBlock]) -> String {
+    let scopes: Vec<&str> = adopted.iter().filter(|a| a["name"] == name).map(|a| a["scope"].as_str().unwrap_or("")).collect();
+    let claim = prose.iter().find(|p| p.zip_name() == name);
+    let author = claim.and_then(|p| p.author.as_deref());
+    let reviewer = claim.and_then(|p| p.reviewed_by.as_deref());
+    let person = |who: Option<&str>| who.map(str::to_string).unwrap_or_else(|| "name not given".to_string());
+    match (scopes.first(), scopes.last()) {
+        (Some(&"agent"), Some(&"agent")) => format!("agent ({})", author.unwrap_or("model id not given")),
+        (Some(&"agent"), Some(_)) => format!("agent, reviewed by {}", person(reviewer.or(author))),
+        (Some(_), _) => person(author),
+        _ => "not recorded".to_string(),
+    }
+}
+
+fn oracle_section(d: &mut Doc, i: &ReportInputs) {
+    let kinds = [Kind::Cited, Kind::Mismatch, Kind::Tagged, Kind::Unbound, Kind::Untagged, Kind::Hardcoded];
+    let counts: Vec<String> =
+        kinds.iter().map(|k| format!("{} {}", i.oracle.iter().filter(|r| r.kind == *k).count(), k.as_str())).collect();
+    let scanned = match i.source {
+        ReportSource::Study => "the prose files and the study's report.typ",
+        ReportSource::Generated => "the prose files (the generated data section carries no number of its own)",
+    };
+    d.para(&format!(
+        "Listed by embarch-api from {scanned}, read as source text: {}. An unbound or untagged number is one no measurement vouches for; a hardcoded one is a literal in report.typ's code. verify rescans these sources.",
+        counts.join(", ")
+    ));
+    if i.oracle.is_empty() {
+        d.para("No number was found in them.");
+        return;
+    }
+    let rows: Vec<Vec<String>> = i
+        .oracle
+        .iter()
+        .map(|r| vec![r.file.clone(), r.line.to_string(), r.text.clone(), r.kind.as_str().to_string(), r.detail.clone()])
+        .collect();
+    d.table(&["File", "Line", "Number", "Listed as", "Detail"], &rows);
+}
 
 /// The data section: the report of a Study that has no `report.typ`.
 pub fn data_section_source(i: &ReportInputs) -> String {
@@ -243,14 +323,15 @@ pub fn appendix_source(i: &ReportInputs) -> String {
     }
 
     d.heading(2, "Notes and prose");
-    let adopted: Vec<Vec<String>> = rd["adopted"]
-        .as_array()
-        .into_iter()
-        .flatten()
+    let adopted_rows = rd["adopted"].as_array().cloned().unwrap_or_default();
+    let adopted: Vec<Vec<String>> = adopted_rows
+        .iter()
         .map(|a| {
+            let name = show(&a["name"]);
             vec![
                 show(&a["kind"]),
-                show(&a["name"]),
+                name.clone(),
+                author_label(&name, &adopted_rows, i.prose),
                 show(&a["attribution"]),
                 show(&a["scope"]),
                 show(&a["text_sha256"]),
@@ -260,12 +341,16 @@ pub fn appendix_source(i: &ReportInputs) -> String {
     if adopted.is_empty() {
         d.para("No note or prose block was adopted for this run.");
     } else {
-        d.table(&["Kind", "File", "Attribution", "Token scope", "Text SHA-256"], &adopted);
+        d.table(&["Kind", "File", "Author", "Attribution", "Token scope", "Text SHA-256"], &adopted);
+        d.para("Attribution, token scope and hash are Core's record of the adoption. The author's model id or name is the caller's claim, which Core does not record; an agent's block adopted by a person reads \"agent, reviewed by <name>\".");
     }
     if let Some(n) = i.notes {
         d.heading(2, "Operator and setup notes");
         d.para(n);
     }
+
+    d.heading(2, "Numbers in the prose and in report.typ");
+    oracle_section(&mut d, i);
 
     d.heading(2, "Limits and losses");
     let mut lost = Vec::new();
@@ -283,6 +368,17 @@ pub fn appendix_source(i: &ReportInputs) -> String {
 
     d.heading(2, "Hash manifest");
     d.para(&format!("manifest.dsse.json, signed by Core, holds the SHA-256 of every file of this zip. This is revision {}.", i.revision));
+    match i.supersedes {
+        None => d.para("It supersedes no earlier revision."),
+        Some(s) => {
+            let hash = match (&s.manifest_sha256, s.from_zip) {
+                (Some(h), true) => format!("the SHA-256 of that zip's manifest.dsse.json is {h}"),
+                (Some(h), false) => format!("that zip was not in the publish folder; Core's manifest for it hashes to {h}"),
+                (None, _) => "neither that zip nor Core supplied its manifest, so no hash is recorded".to_string(),
+            };
+            d.para(&format!("It supersedes revision {}: {hash}. The earlier zip is kept.", s.revision));
+        }
+    }
     d.0
 }
 

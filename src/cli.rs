@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -146,8 +146,16 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
             instrument_exchange(&core, &name, line, query, timeout_ms, port_wait_ms, json).await
         }
         Commands::RunHostStudy { study_file } => run_host_study(&core, &study_file, json).await,
-        Commands::Publish { run_id, notes, report } => {
-            publish(&config, &core, &run_id, notes.as_deref(), report.as_deref(), json).await
+        Commands::Publish { run_id, notes, report, prose, prose_author, prose_reviewed_by } => {
+            let args = PublishArgs {
+                run_id: &run_id,
+                notes: notes.as_deref(),
+                report: report.as_deref(),
+                prose: &prose,
+                author: prose_author.as_deref(),
+                reviewed_by: prose_reviewed_by.as_deref(),
+            };
+            publish(&config, &core, &args, json).await
         }
         Commands::AnswerPrompt { study_id, prompt_id, answer } => answer_prompt(&core, &study_id, prompt_id, &answer, json).await,
         Commands::SerialLog {
@@ -1012,17 +1020,34 @@ async fn run_host_study(core: &CoreClient, study_file: &Path, json: bool) -> i32
     }
 }
 
+struct PublishArgs<'a> {
+    run_id: &'a str,
+    notes: Option<&'a str>,
+    report: Option<&'a Path>,
+    prose: &'a [PathBuf],
+    author: Option<&'a str>,
+    reviewed_by: Option<&'a str>,
+}
+
 #[cfg(feature = "pdf")]
-async fn publish(
-    config: &Config,
-    core: &CoreClient,
-    run_id: &str,
-    notes: Option<&str>,
-    report: Option<&Path>,
-    json: bool,
-) -> i32 {
+async fn publish(config: &Config, core: &CoreClient, args: &PublishArgs<'_>, json: bool) -> i32 {
+    let run_id = args.run_id;
+    let mut prose = Vec::new();
+    for path in args.prose {
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) => return error_result(json, format!("publish failed: cannot read {}: {e}", path.display())),
+        };
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        prose.push(embarch_api::publish_report::ProseBlock {
+            name,
+            text,
+            author: args.author.map(str::to_string),
+            reviewed_by: args.reviewed_by.map(str::to_string),
+        });
+    }
     let folder = config.publish.as_ref().map(|p| p.folder.as_path());
-    let req = embarch_api::publish::PublishRequest { run_id, notes, report_typ: report };
+    let req = embarch_api::publish::PublishRequest { run_id, notes: args.notes, report_typ: args.report, prose: &prose };
     match embarch_api::publish::run(core, folder, &req, embarch_api::publish::now_unix()).await {
         Ok(o) => {
             let mut human = format!("published {run_id} as revision {}: {}", o.revision, o.zip.display());
@@ -1036,14 +1061,7 @@ async fn publish(
 }
 
 #[cfg(not(feature = "pdf"))]
-async fn publish(
-    _config: &Config,
-    _core: &CoreClient,
-    _run_id: &str,
-    _notes: Option<&str>,
-    _report: Option<&Path>,
-    json: bool,
-) -> i32 {
+async fn publish(_config: &Config, _core: &CoreClient, _args: &PublishArgs<'_>, json: bool) -> i32 {
     error_result(json, "publish failed: this build has no `pdf` feature, which the report needs".to_string())
 }
 

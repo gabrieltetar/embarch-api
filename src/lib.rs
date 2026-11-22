@@ -50,6 +50,10 @@ pub mod publish;
 /// The two interop exports of a Study run, pure functions of the signed data.
 #[cfg(feature = "pdf")]
 pub mod publish_export;
+/// The numeric-oracle listing of the audit appendix: every number in the prose
+/// files and `report.typ`, cited, tagged, unbound, untagged or hardcoded.
+#[cfg(feature = "pdf")]
+pub mod publish_oracle;
 /// The Typst sources `publish` generates: the audit appendix and a Study's
 /// data section.
 #[cfg(feature = "pdf")]

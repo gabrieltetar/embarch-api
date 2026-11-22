@@ -339,6 +339,17 @@ pub enum Commands {
         /// data section.
         #[arg(long)]
         report: Option<PathBuf>,
+        /// A prose file you wrote for the run; repeatable. Its numbers are
+        /// listed in the audit appendix and it is carried as prose/<name>.
+        #[arg(long)]
+        prose: Vec<PathBuf>,
+        /// The author of every --prose file: your model id for an agent's
+        /// block, a person's name for a person's. Printed as a claim.
+        #[arg(long)]
+        prose_author: Option<String>,
+        /// The person who reviewed and adopted the --prose files.
+        #[arg(long)]
+        prose_reviewed_by: Option<String>,
     },
     /// Send one command to a declared instrument and print its reply, raw.
     InstrumentExchange {

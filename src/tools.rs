@@ -551,6 +551,24 @@ pub struct PublishParams {
     /// Path to the study's report.typ. Without it the zip carries a generated
     /// data section instead of a report.
     pub report: Option<String>,
+    /// Prose files you wrote for the run, which the report's numbers are
+    /// checked in. Each is adopted through Core, which records the token's
+    /// scope and the text's hash, and listed in the audit appendix with its
+    /// author.
+    pub prose: Option<Vec<ProseParam>>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ProseParam {
+    /// The file's name, no directory (it is carried as prose/<name>).
+    pub name: String,
+    /// The file's text.
+    pub text: String,
+    /// Your model id, for a block you wrote; a person's name for a block a
+    /// person wrote. Printed as a claim, since Core does not record it.
+    pub author: Option<String>,
+    /// The person who reviewed and adopted your block.
+    pub reviewed_by: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1715,13 +1733,24 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Publish a finished Study run as one zip (embarch-api decisions 112, 113; embarch-core decisions 116 to 119), written to the folder `[publish] folder` names in the config, which has no default: with none set this refuses and says how to set it. The zip holds the PDF report (the study's report.typ when `report` names one, else a generated data section, always with the fixed audit appendix), Core's signed record, signed manifest and run-log segment, the study file, events.json, measurements.json, every capture raw and as Core rendered it, report-data.json, both interop exports (JUnit XML and OCP T&V JSON Lines) and the sources the PDF was built from; interfaces/publish.md has the layout. `notes` is the operator's words verbatim, never your summary: Core records them as relayed by the agent. A publish is never overwritten; publishing the same run again writes the next revision (-r2). Only a Study run publishes. Returns the zip's path, its hashes and any warning: a non-empty `warnings` means the zip is written but is less than a complete report, and you must tell the person.")]
+    #[tool(description = "Publish a finished Study run as one zip (embarch-api decisions 112, 113; embarch-core decisions 116 to 119), written to the folder `[publish] folder` names in the config, which has no default: with none set this refuses and says how to set it. The zip holds the PDF report (the study's report.typ when `report` names one, else a generated data section, always with the fixed audit appendix), Core's signed record, signed manifest and run-log segment, the study file, events.json, measurements.json, every capture raw and as Core rendered it, report-data.json, both interop exports (JUnit XML and OCP T&V JSON Lines) and the sources the PDF was built from; interfaces/publish.md has the layout. `notes` is the operator's words verbatim, never your summary: Core records them as relayed by the agent. `prose` lists the prose files you wrote with your model id as `author`: the appendix lists every number in them and in report.typ as cited, tagged, unbound, untagged or hardcoded. A report.typ that draws a picture other than a plot helper's is refused. A publish is never overwritten; publishing the same run again writes the next revision (-r2), built from the earlier zip. Only a Study run publishes. Returns the zip's path, its hashes and any warning: a non-empty `warnings` means the zip is written but is less than a complete report, and you must tell the person.")]
     async fn publish(&self, Parameters(p): Parameters<PublishParams>) -> Result<CallToolResult, McpError> {
         #[cfg(feature = "pdf")]
         {
             let folder = self.config.publish.as_ref().map(|c| c.folder.as_path());
             let report = p.report.as_deref().map(std::path::Path::new);
-            let req = embarch_api::publish::PublishRequest { run_id: &p.run_id, notes: p.notes.as_deref(), report_typ: report };
+            let prose: Vec<embarch_api::publish_report::ProseBlock> = p
+                .prose
+                .iter()
+                .flatten()
+                .map(|b| embarch_api::publish_report::ProseBlock {
+                    name: b.name.clone(),
+                    text: b.text.clone(),
+                    author: b.author.clone(),
+                    reviewed_by: b.reviewed_by.clone(),
+                })
+                .collect();
+            let req = embarch_api::publish::PublishRequest { run_id: &p.run_id, notes: p.notes.as_deref(), report_typ: report, prose: &prose };
             match embarch_api::publish::run(&self.core, folder, &req, embarch_api::publish::now_unix()).await {
                 Ok(o) if o.warnings.is_empty() => Self::ok_json(embarch_api::publish::outcome_json(&o)),
                 Ok(o) => Self::err_json(embarch_api::publish::outcome_json(&o)),
@@ -1730,7 +1759,7 @@ impl EmbarchApi {
         }
         #[cfg(not(feature = "pdf"))]
         {
-            let _ = (&p.run_id, &p.notes, &p.report);
+            let _ = (&p.run_id, &p.notes, &p.report, &p.prose);
             Self::err_text("publish failed: this build has no `pdf` feature, which the report needs")
         }
     }
