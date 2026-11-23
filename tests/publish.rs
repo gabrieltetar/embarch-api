@@ -470,18 +470,77 @@ async fn publishing_again_writes_r2_keeps_r1_and_names_it_and_its_manifest_hash(
     assert_eq!(again, zip["report.pdf"]);
 }
 
+/// Core's answer for a run whose directory the retention sweep took (`embarch-core`
+/// decision 120): `report-data` answers 409 until every Core file is handed back.
+fn swept_then_restored_router(revision: u64, files: &BTreeMap<String, String>) -> Behavior {
+    let mut routes = match router_rev(revision, files, ok_text(&files["measurements.json"])) {
+        Behavior::Router { routes, .. } => routes,
+        _ => unreachable!(),
+    };
+    let rd_ok = routes.iter().find(|(p, _)| p == "/report-data").unwrap().1.clone();
+    for (p, b) in routes.iter_mut() {
+        if p == "/report-data" {
+            *b = Behavior::Sequence(vec![
+                Behavior::plain_text_error(409, "Conflict", "the run's files were swept; hand back manifest.dsse.json"),
+                rd_ok.clone(),
+            ]);
+        }
+    }
+    // The captures are gone: only the restore routes and the revision's own files answer.
+    routes.retain(|(p, _)| !p.starts_with("/stream"));
+    routes.insert(0, ("/restore/manifest.dsse.json".into(), Behavior::json_ok(json!({ "restored": "manifest.dsse.json", "sha256": "h" }))));
+    for n in files.keys().filter(|n| !n.starts_with("report-data.") && *n != "run-log-segment.jsonl") {
+        routes.insert(0, (format!("/restore/{n}"), Behavior::json_ok(json!({ "restored": n, "sha256": "h" }))));
+    }
+    let gone = Behavior::plain_text_error(404, "Not Found", "swept");
+    routes.insert(0, ("/stream".into(), gone.clone()));
+    Behavior::Router { routes, otherwise: Box::new(gone) }
+}
+
 #[tokio::test]
-async fn a_republish_of_a_swept_run_refuses_and_leaves_the_earlier_zip() {
+async fn a_swept_run_republishes_to_r2_from_the_earlier_zip_which_is_unchanged() {
     let dir = tmp("swept");
     let req = PublishRequest { run_id: RUN, notes: None, report_typ: None, prose: &[] };
+    let files1 = core_files_rev(1, &[]);
+    let mock1 = MockCore::start(router_rev(1, &files1, ok_text(&files1["measurements.json"]))).await;
+    let first = publish::run(&client(mock1.base_url()), Some(&dir), &req, NOW).await.unwrap();
+    let r1_bytes = std::fs::read(&first.zip).unwrap();
+    let r1 = unzip(&first.zip);
+
+    let files2 = core_files_rev(2, &[]);
+    let mock2 = MockCore::start(swept_then_restored_router(2, &files2)).await;
+    let later = publish::run(&client(mock2.base_url()), Some(&dir), &req, NOW + 86_400 * 3).await.unwrap();
+    assert!(later.zip.file_name().unwrap().to_string_lossy().ends_with("-01234567-r2.zip"), "{:?}", later.zip);
+    assert_eq!(std::fs::read(&first.zip).unwrap(), r1_bytes, "r1 is kept byte for byte");
+
+    let reqs = mock2.requests();
+    let puts: Vec<_> = reqs.iter().filter(|r| r.method == "PUT").collect();
+    assert!(puts[0].path().ends_with("/restore/manifest.dsse.json"), "the manifest goes first: {:?}", puts.iter().map(|r| r.path()).collect::<Vec<_>>());
+    assert_eq!(puts[0].body_text().as_bytes(), r1["manifest.dsse.json"].as_slice(), "the zip's own manifest is what is handed back");
+    let rate = puts.iter().find(|r| r.path().ends_with("/restore/streams/rate.csv")).expect("a capture is restored");
+    assert_eq!(rate.body_text().as_bytes(), r1["streams/rate.csv"].as_slice());
+    // Core's revision outputs and embarch-api's own files are not handed back.
+    assert!(!puts.iter().any(|r| r.path().contains("/restore/report-data") || r.path().ends_with("/restore/report.pdf")));
+    // The restore came before the second report-data, which is what signs the revision.
+    let last_rd = reqs.iter().rposition(|r| r.path().ends_with("/report-data")).unwrap();
+    assert!(reqs.iter().rposition(|r| r.method == "PUT").unwrap() < last_rd);
+    let zip = unzip(&later.zip);
+    assert_eq!(zip["streams/rate.csv"], r1["streams/rate.csv"]);
+    let appendix = String::from_utf8(zip["appendix.typ"].clone()).unwrap();
+    assert!(appendix.contains("supersedes revision 1") && appendix.contains(&first.manifest_sha256), "{appendix}");
+}
+
+#[tokio::test]
+async fn a_swept_run_with_no_earlier_zip_refuses_saying_what_it_looked_for_and_writes_nothing() {
+    let dir = tmp("swept-none");
+    let req = PublishRequest { run_id: RUN, notes: None, report_typ: None, prose: &[] };
     let files = core_files_rev(1, &[]);
-    let mock = MockCore::start(router_rev(1, &files, ok_text(&files["measurements.json"]))).await;
-    let first = publish::run(&client(mock.base_url()), Some(&dir), &req, NOW).await.unwrap();
-    let gone = MockCore::start(Behavior::plain_text_error(404, "Not Found", "run directory swept")).await;
-    let err = publish::run(&client(gone.base_url()), Some(&dir), &req, NOW).await.unwrap_err();
-    assert!(format!("{err:#}").contains("swept"), "{err:#}");
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
-    assert!(first.zip.exists());
+    let mock = MockCore::start(swept_then_restored_router(1, &files)).await;
+    let err = publish::run(&client(mock.base_url()), Some(&dir), &req, NOW).await.unwrap_err();
+    let text = format!("{err:#}");
+    assert!(text.contains("swept") && text.contains("01234567") && text.contains("earlier zip") && text.contains(&dir.display().to_string()), "{text}");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    assert!(!mock.requests().iter().any(|r| r.method == "PUT"));
 }
 
 #[tokio::test]

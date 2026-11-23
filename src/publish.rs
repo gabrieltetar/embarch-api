@@ -219,6 +219,27 @@ fn count_rows(name: &str, bytes: &[u8]) -> u64 {
     if name.ends_with(".csv") { lines.saturating_sub(1) } else { lines }
 }
 
+/// Hands Core the earlier zip's Core files for a swept run (`embarch-core`
+/// decision 120): `manifest.dsse.json` first, then every Core file it names as a
+/// subject. Core's own revision outputs (`report-data.*`, the segment, the
+/// manifest) are not restorable and are skipped; embarch-api's files are not
+/// subjects. The zip is only read.
+async fn restore_from_zip(core: &CoreClient, run_id: &str, z: &EarlierZip) -> Result<()> {
+    let manifest = z
+        .files
+        .get(MANIFEST_NAME)
+        .ok_or_else(|| anyhow!("the earlier zip (revision {}) holds no {MANIFEST_NAME}, so Core's files cannot be restored from it", z.revision))?;
+    core.restore_file(run_id, MANIFEST_NAME, manifest).await.context("Core refused the earlier zip's manifest")?;
+    for (name, _) in manifest_subjects(manifest)?.iter().filter(|(n, _)| !CORE_PUBLISH_FILES.contains(&n.as_str())) {
+        let bytes = z
+            .files
+            .get(name)
+            .ok_or_else(|| anyhow!("the earlier zip's manifest names {name}, but the zip does not hold it"))?;
+        core.restore_file(run_id, name, bytes).await.with_context(|| format!("Core refused the restored file {name}"))?;
+    }
+    Ok(())
+}
+
 /// Runs the whole publish. `folder` is the configured publish folder, `now_unix`
 /// the time stamped on the PDF and the date in the zip's name.
 pub async fn run(core: &CoreClient, folder: Option<&Path>, req: &PublishRequest<'_>, now_unix: i64) -> Result<PublishOutcome> {
@@ -294,12 +315,21 @@ pub async fn run(core: &CoreClient, folder: Option<&Path>, req: &PublishRequest<
 
     let rd = match core.report_data(run_id).await {
         Ok(rd) => rd,
-        Err(e) if !earlier.is_empty() && format!("{e:#}").contains("404") => bail!(
-            "Core no longer holds this run's files (its directory is swept), so it cannot sign another revision: \
-             report-data answered 404 ({e:#}). The earlier zip in {} is unchanged and nothing was written \
-             (embarch-api decision 117; embarch-core open.md)",
-            folder.display()
-        ),
+        // Core answers 409 for a run whose directory the retention sweep took
+        // (`embarch-core` decision 120): hand it the earlier zip's own Core files.
+        Err(e) if format!("{e:#}").contains("409") => {
+            let Some(z) = earlier.iter().max_by_key(|z| z.revision) else {
+                bail!(
+                    "Core refused report-data with 409 ({e:#}). If the run's directory is swept, Core needs the earlier revision's own files \
+                     back, and publish reads them from an earlier zip in {} (a file named like `<date>-<slug>-{}.zip` or `...-r<N>.zip`, \
+                     whose report-data.json names this run); there is none there, so nothing was written (embarch-api decision 117)",
+                    folder.display(),
+                    run_id.chars().filter(|c| c.is_ascii_alphanumeric()).take(8).collect::<String>()
+                );
+            };
+            restore_from_zip(core, run_id, z).await?;
+            core.report_data(run_id).await.context("Core refused report-data after the earlier revision's files were handed back")?
+        }
         Err(e) => return Err(e.context("Core refused report-data")),
     };
     let revision = rd.revision;

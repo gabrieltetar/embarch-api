@@ -24,10 +24,9 @@ use crate::verify::{adoptions, json_of, segment_lines, sha, Check};
 const PAGE_WIDTH_PT: f64 = 595.28;
 const MM_PT: f64 = 72.0 / 25.4;
 /// The footer's page number: centre within 5 mm of the page's, baseline 8 to 16
-/// mm above its bottom edge. `hil-pdf.md`'s band is 8 to 15 mm; a Typst-rendered
-/// page sets the baseline at 14.96 mm (11 pt text) and a little above 15 mm with
-/// the appendix's 9 pt, on the band's edge, so the upper bound is 16 mm
-/// (decision 123).
+/// mm above its bottom edge. `hil-pdf.md`'s band is 8 to 16 mm, measured on one
+/// Typst page (decision 123): a Typst-rendered page sets the baseline at 14.96 mm
+/// (11 pt text) and a little above 15 mm with the appendix's 9 pt.
 const FOOTER_CENTRE_MM: f64 = 5.0;
 const FOOTER_BASE_MIN_MM: f64 = 8.0;
 const FOOTER_BASE_MAX_MM: f64 = 16.0;

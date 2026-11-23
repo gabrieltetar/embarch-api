@@ -3574,6 +3574,18 @@ impl CoreClient {
         self.send(self.client.post(url).json(&body), self.study_timeout).await
     }
 
+    /// `PUT /study/{study_id}/restore/{name}` (`embarch-core` decision 120): hands
+    /// Core one file of a run its retention sweep took, raw. `manifest.dsse.json`
+    /// first, then every Core file it names; Core checks each against the logged
+    /// manifest and refuses (`409`, `422`) what does not match. `name` may hold
+    /// `/`; each segment is encoded. Reuses `study_timeout`: a capture can be
+    /// large; **assumed**, not measured.
+    pub async fn restore_file(&self, study_id: &str, name: &str, bytes: &[u8]) -> Result<serde_json::Value> {
+        let name = name.split('/').map(urlencode).collect::<Vec<_>>().join("/");
+        let url = format!("{}/study/{}/restore/{name}", self.base_url().await?, urlencode(study_id));
+        self.send(self.client.put(url).body(bytes.to_vec()), self.study_timeout).await
+    }
+
     /// `GET /study/{study_id}/publish/{revision}/files/{name}`: one file of a
     /// revision, `Ok(None)` for a `404` (Core serves nothing it does not name).
     /// `name` may hold `/`; each segment is encoded.
