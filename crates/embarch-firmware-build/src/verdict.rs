@@ -46,8 +46,10 @@ pub struct Verdict {
     /// The first error and the lines that belong to it, with everything the
     /// build printed after it (the cascade) dropped.
     pub first_error: Option<String>,
-    /// The last linker memory table in the log, by region name. A sysbuild
-    /// log carries one table per image; the last one printed wins.
+    /// The first linker memory table in the log, by region name. A sysbuild
+    /// log carries one table per image and prints the application's (the
+    /// default image `artifact_path` flashes) before MCUboot's, so the first
+    /// wins; a single-image log has one table.
     pub memory: BTreeMap<String, Region>,
     /// One line per test case (`PASS suite.case`), or per twister scenario
     /// when the log has no per-case lines. Empty when the log has no tests.
@@ -91,7 +93,7 @@ pub fn parse(log: &str, source: Option<&Path>) -> Verdict {
         if verdict.first_error.is_none() && is_error_start(line) {
             verdict.first_error = Some(error_block(&lines, i, &shorten));
         }
-        if is_memory_header(line) {
+        if verdict.memory.is_empty() && is_memory_header(line) {
             verdict.memory = memory_table(&lines[i + 1..]);
         }
         if let Some(t) = ztest_case(line) {
@@ -509,6 +511,23 @@ Generating files from /work/proj/build/zephyr/zephyr.elf for board: nrf54l15dk
         assert_eq!(r.memory["FLASH"], Region { used_bytes: 45680, total_bytes: 1024 * 1024 });
         assert_eq!(r.memory["RAM"], Region { used_bytes: 8448, total_bytes: 256 * 1024 });
         assert_eq!(r.memory["IDT_LIST"].used_bytes, 0);
+    }
+
+    #[test]
+    fn a_sysbuild_log_gives_the_application_table_not_mcuboots() {
+        let log = "\
+[150/150] Linking C executable zephyr/zephyr.elf
+Memory region         Used Size  Region Size  %age Used
+           FLASH:      522368 B     712560 B     73.31%
+             RAM:      100000 B       256 KB     38.15%
+[90/90] Linking C executable zephyr/zephyr.elf
+Memory region         Used Size  Region Size  %age Used
+           FLASH:       43596 B        62 KB     68.67%
+             RAM:       20000 B        64 KB     30.52%
+";
+        let r = v(log);
+        assert_eq!(r.memory["FLASH"], Region { used_bytes: 522368, total_bytes: 712560 });
+        assert_eq!(r.memory["RAM"].used_bytes, 100000);
     }
 
     #[test]
