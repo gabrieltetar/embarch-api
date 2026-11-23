@@ -286,13 +286,14 @@ pub fn scan(source_path: &Path) -> Result<Vec<Target>, ScanError> {
     }
     let apps = scan_apps(source_path)?;
 
+    let socs = scan_soc_clusters(source_path);
     let mut targets = Vec::new();
     let mut notes = Vec::new();
     let mut survivors = 0usize;
     for board in &boards {
         let single_soc = board.yml.board.socs.len() == 1;
         for soc in &board.yml.board.socs {
-            survivors += push_targets_for_soc(&mut targets, &mut notes, board, soc, single_soc, &apps);
+            survivors += push_targets_for_soc(&mut targets, &mut notes, board, soc, single_soc, &apps, &socs);
         }
     }
     if survivors == 0 {
@@ -345,12 +346,29 @@ fn push_targets_for_soc(
     soc: &SocSection,
     single_soc: bool,
     apps: &[String],
+    socs: &SocClusters,
 ) -> usize {
     struct Selected<'a> {
         name: Option<&'a str>,
         cpucluster: Option<&'a str>,
     }
-    let mut candidates: Vec<Selected> = if soc.variants.is_empty() {
+    // Decision 127: a board.yml that names no cpucluster takes them from the
+    // SoC's own soc.yml, the way Zephyr's board qualifiers do.
+    let board_names_cluster = soc.variants.iter().any(|v| v.cpucluster.is_some());
+    let soc_clusters: &[String] = match socs.get(&soc.name) {
+        Some(c) if !board_names_cluster => c,
+        _ => &[],
+    };
+    let mut candidates: Vec<Selected> = if !soc_clusters.is_empty() {
+        let mut all = Vec::new();
+        for cluster in soc_clusters {
+            all.push(Selected { name: None, cpucluster: Some(cluster.as_str()) });
+            for v in soc.variants.iter().filter(|v| v.name != "default") {
+                all.push(Selected { name: Some(v.name.as_str()), cpucluster: Some(cluster.as_str()) });
+            }
+        }
+        all
+    } else if soc.variants.is_empty() {
         vec![Selected { name: None, cpucluster: None }]
     } else {
         let named: Vec<Selected> = soc
@@ -386,7 +404,11 @@ fn push_targets_for_soc(
         match dts_status(&board.dir, &board.yml.board.name, &soc.name, c.cpucluster, c.name, single_soc) {
             DtsStatus::Found => true,
             DtsStatus::Dropped(why) => {
-                notes.push(why);
+                if !socs.contains_key(&soc.name) && c.cpucluster.is_none() {
+                    notes.push(format!("{why}; found no soc.yml defining soc {}, so no CPU clusters to try", soc.name));
+                } else {
+                    notes.push(why);
+                }
                 false
             }
         }
@@ -424,6 +446,74 @@ fn push_targets_for_soc(
         }
     }
     survivors
+}
+
+/// SoC name -> CPU cluster names, from every `soc.yml` the scan can reach.
+type SocClusters = std::collections::HashMap<String, Vec<String>>;
+
+/// Reads CPU clusters from the Zephyr tree's `soc.yml` files (decision 127).
+/// Looks under `<source>/soc`, `<source>/zephyr/soc` and `<source>/../zephyr/soc`
+/// (the west workspace layout, where the project repo sits beside `zephyr/`).
+/// A SoC listed with `cpuclusters:` maps to those names; anything else is absent.
+fn scan_soc_clusters(source_path: &Path) -> SocClusters {
+    let mut out = SocClusters::new();
+    let roots = [
+        source_path.join("soc"),
+        source_path.join("zephyr").join("soc"),
+        source_path.join("..").join("zephyr").join("soc"),
+    ];
+    for root in roots {
+        let mut stack = vec![(root, 0usize)];
+        while let Some((dir, depth)) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if depth < 6 {
+                        stack.push((path, depth + 1));
+                    }
+                } else if path.file_name().is_some_and(|n| n == "soc.yml") {
+                    if let Ok(raw) = std::fs::read_to_string(&path) {
+                        if let Ok(v) = serde_yaml::from_str::<serde_yaml::Value>(&raw) {
+                            collect_soc_clusters(&v, &mut out);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Walks a parsed `soc.yml`, recording every mapping that has a `name` and a
+/// `cpuclusters` list of `name`s.
+fn collect_soc_clusters(v: &serde_yaml::Value, out: &mut SocClusters) {
+    match v {
+        serde_yaml::Value::Mapping(m) => {
+            let name = m.get("name").and_then(|n| n.as_str());
+            let clusters = m.get("cpuclusters").and_then(|c| c.as_sequence());
+            if let (Some(name), Some(clusters)) = (name, clusters) {
+                let names: Vec<String> = clusters
+                    .iter()
+                    .filter_map(|c| c.get("name").and_then(|n| n.as_str()).map(str::to_string))
+                    .collect();
+                if !names.is_empty() {
+                    out.entry(name.to_string()).or_insert(names);
+                }
+            }
+            for (_, child) in m {
+                collect_soc_clusters(child, out);
+            }
+        }
+        serde_yaml::Value::Sequence(seq) => {
+            for child in seq {
+                collect_soc_clusters(child, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// `<board>[_<soc>][_<cpucluster>][_<variant>]` — the file stem Zephyr
@@ -1214,6 +1304,69 @@ board:
         assert_eq!(picked.board, "single");
         assert_eq!(picked.variant, None);
         assert_eq!(picked.revision, None);
+    }
+
+    fn write_soc_board(root: &Path, board_yml: &str, dts: &str) {
+        let board_dir = root.join("boards/acme/socb");
+        fs::create_dir_all(&board_dir).unwrap();
+        fs::write(board_dir.join("board.yml"), board_yml).unwrap();
+        fs::write(board_dir.join(dts), "").unwrap();
+        let app_dir = root.join("app/dev");
+        fs::create_dir_all(&app_dir).unwrap();
+        fs::write(app_dir.join("CMakeLists.txt"), "").unwrap();
+    }
+
+    const SOC_YML: &str = r#"
+family:
+  - name: nrf54l
+    series:
+      - name: nrf54l
+        socs:
+          - name: nrf54l15
+            cpuclusters:
+              - name: cpuapp
+              - name: cpuflpr
+"#;
+
+    #[test]
+    fn cluster_from_soc_yml_when_board_yml_lists_only_the_soc() {
+        let dir = tempfile_dir();
+        write_soc_board(dir.path(), "board:\n  name: socb\n  socs:\n    - name: nrf54l15\n", "socb_nrf54l15_cpuapp.dts");
+        let soc_dir = dir.path().join("zephyr/soc/nordic/nrf54l");
+        fs::create_dir_all(&soc_dir).unwrap();
+        fs::write(soc_dir.join("soc.yml"), SOC_YML).unwrap();
+        let targets = scan(dir.path()).unwrap();
+        assert_eq!(targets.len(), 1, "{targets:#?}");
+        assert_eq!(targets[0].board_qualifier(), "socb/nrf54l15/cpuapp");
+    }
+
+    #[test]
+    fn board_yml_clusters_win_over_soc_yml() {
+        let dir = tempfile_dir();
+        write_soc_board(
+            dir.path(),
+            "board:\n  name: socb\n  socs:\n    - name: nrf54l15\n      variants:\n        - name: default\n          cpucluster: cpuflpr\n",
+            "socb_nrf54l15_cpuflpr.dts",
+        );
+        let soc_dir = dir.path().join("soc/nordic");
+        fs::create_dir_all(&soc_dir).unwrap();
+        fs::write(soc_dir.join("soc.yml"), SOC_YML).unwrap();
+        let targets = scan(dir.path()).unwrap();
+        assert_eq!(targets.len(), 1, "{targets:#?}");
+        assert_eq!(targets[0].cpucluster.as_deref(), Some("cpuflpr"));
+    }
+
+    #[test]
+    fn no_soc_yml_keeps_the_drop_message_and_says_so() {
+        let dir = tempfile_dir();
+        write_soc_board(dir.path(), "board:\n  name: socb\n  socs:\n    - name: nrf54l15\n", "socb_nrf54l15_cpuapp.dts");
+        match scan(dir.path()) {
+            Err(ScanError::AllBoardsDropped(notes)) => {
+                assert!(notes[0].contains("found neither"), "{notes:?}");
+                assert!(notes[0].contains("found no soc.yml"), "{notes:?}");
+            }
+            other => panic!("expected AllBoardsDropped, got {other:?}"),
+        }
     }
 
     #[test]
