@@ -4,7 +4,8 @@
 //!
 //! The text is `guide/hil-guide.md`, a pinned copy of `embarch-doc`'s
 //! `suite/hil-guide.md` compiled in with `include_str!`. Sections are the
-//! file's `## ` headings: "Choosing a mode" is what `guide hil` prints, and
+//! file's `## ` headings: "Every mode" (the words, the trust claim, choosing a
+//! mode, what comes before any hardware) is what `guide hil` prints, and
 //! `Live`, `Study` and `Test` are the modes.
 
 use clap::Subcommand;
@@ -12,13 +13,13 @@ use serde_json::json;
 
 pub const HIL_GUIDE: &str = include_str!("../guide/hil-guide.md");
 
-const MODE_SECTION: &str = "Choosing a mode";
+const SHARED_SECTION: &str = "Every mode";
 pub const MODES: [&str; 3] = ["live", "study", "test"];
 
 #[derive(Subcommand, Debug)]
 pub enum GuideAction {
-    /// Print the hardware-in-the-loop guide: with no mode, the "which mode"
-    /// part; with `live`, `study` or `test`, that mode's section.
+    /// Print the hardware-in-the-loop guide: with no mode, what every mode
+    /// shares (read it first); with `live`, `study` or `test`, that mode's section.
     Hil {
         /// live, study or test.
         mode: Option<String>,
@@ -52,7 +53,7 @@ fn heading_of(mode: &str) -> String {
 
 fn render(mode: Option<&str>) -> Result<String, String> {
     let heading = match mode {
-        None => MODE_SECTION.to_string(),
+        None => SHARED_SECTION.to_string(),
         Some(m) if MODES.contains(&m) => heading_of(m),
         Some(m) => {
             return Err(format!("unknown mode {m:?}; the modes are {}", MODES.join(", ")));
@@ -102,7 +103,7 @@ mod tests {
             assert!(s.starts_with(&format!("## {}", heading_of(m))));
             assert_eq!(s.matches("\n## ").count(), 0);
         }
-        assert!(render(None).unwrap().starts_with("## Choosing a mode"));
+        assert!(render(None).unwrap().starts_with("## Every mode"));
     }
 
     #[test]

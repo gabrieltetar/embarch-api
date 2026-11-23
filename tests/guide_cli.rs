@@ -32,7 +32,7 @@ fn each_mode_prints_its_section_with_no_embarch_doc_reachable() {
     }
     let out = run_in(&dir, &["guide", "hil"]);
     assert!(out.status.success());
-    assert!(String::from_utf8(out.stdout).unwrap().starts_with("## Choosing a mode"));
+    assert!(String::from_utf8(out.stdout).unwrap().starts_with("## Every mode"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

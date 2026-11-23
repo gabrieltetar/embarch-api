@@ -1,0 +1,57 @@
+{
+  "name": "ble-gatt-rate",
+  "requires": { "dev_bench_version": "any", "firmware_version": "any" },
+  "steps": [
+    {
+      "name": "connect",
+      "action": {
+        "BleConnect": {
+          "role": "Central",
+          "target_address": { "bytes": [196, 130, 225, 66, 177, 38], "kind": "Public" },
+          "target_name": null
+        }
+      },
+      "timeout_ms": 15000,
+      "continue_on_fail": false
+    },
+    {
+      "name": "capture",
+      "action": {
+        "GattMonitorSelected": {
+          "targets": [
+            {
+              "service_uuid": [18, 52, 86, 120, 18, 52, 86, 120, 18, 52, 86, 120, 154, 188, 222, 240],
+              "characteristic_uuid": [18, 52, 86, 120, 18, 52, 86, 120, 18, 52, 86, 120, 154, 188, 222, 241]
+            }
+          ]
+        }
+      },
+      "timeout_ms": 60000,
+      "continue_on_fail": false
+    }
+  ],
+  "streams": [
+    {
+      "id": 0,
+      "name": "data",
+      "source": {
+        "GattNotify": {
+          "service_uuid": [18, 52, 86, 120, 18, 52, 86, 120, 18, 52, 86, 120, 154, 188, 222, 240],
+          "characteristic_uuid": [18, 52, 86, 120, 18, 52, 86, 120, 18, 52, 86, 120, 154, 188, 222, 241]
+        }
+      },
+      "encoding": { "Struct": { "decoder": 0 } },
+      "scope": "WholeStudy"
+    }
+  ],
+  "decoders": [
+    { "name": "packet", "header": [{ "name": "seq", "type": "u32_le" }], "repeat": [] }
+  ],
+  "measurements": [
+    { "name": "notifications", "reducer": "count", "tap": 0 },
+    { "name": "rate", "reducer": "rate", "tap": 0 },
+    { "name": "first_seq", "reducer": "min", "tap": 0, "field": "seq", "unit": "1" },
+    { "name": "last_seq", "reducer": "max", "tap": 0, "field": "seq", "unit": "1" }
+  ],
+  "steps_crc": 0
+}

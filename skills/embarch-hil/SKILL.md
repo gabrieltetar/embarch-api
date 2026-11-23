@@ -22,9 +22,9 @@ A spec named is a Test, not a Study. A request that fits no row gets one questio
 
 The guide is served by the binary, so it matches the tools you have and needs no `embarch-doc` checkout:
 
-- `embarch-api guide hil` prints the "which mode" part.
+- `embarch-api guide hil` prints what every mode shares: the words, what you are trusted with and what you never do, choosing a mode, and what comes before any hardware. Read it first.
 - `embarch-api guide hil live`
 - `embarch-api guide hil study`
 - `embarch-api guide hil test`
 
-Read the section before the first hardware call. If a section says it is not written yet, say so to the engineer and stop short of inventing a procedure.
+Read the shared part and the mode's section before the first hardware call. If a section says it is not written yet, say so to the engineer and stop short of inventing a procedure.
