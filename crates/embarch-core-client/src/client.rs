@@ -1853,6 +1853,59 @@ impl std::fmt::Display for UnknownStudyError {
 
 impl std::error::Error for UnknownStudyError {}
 
+/// Why `GET /study/{id}/measurements` refused (`embarch-core` `interfaces/
+/// measurements.md`), by name. `Display` leads with the name so a caller
+/// reading only the first words knows which of the four it is, then keeps
+/// Core's own plain-text body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MeasurementsRefusal {
+    /// 404: the run log has no run of that id.
+    NoSuchRun { study_id: String, body: String },
+    /// 409: the study is still running; its file is written as it ends.
+    StillRunning { study_id: String, body: String },
+    /// 422: the run is there but wrote no `measurements.json`.
+    NoMeasurements { study_id: String, body: String },
+    /// 410: the run's files are gone (discarded or swept by retention).
+    FilesGone { study_id: String, body: String },
+}
+
+impl MeasurementsRefusal {
+    /// The refusal's stable name.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::NoSuchRun { .. } => "no-such-run",
+            Self::StillRunning { .. } => "still-running",
+            Self::NoMeasurements { .. } => "no-measurements",
+            Self::FilesGone { .. } => "files-gone",
+        }
+    }
+
+    fn from_status(status: reqwest::StatusCode, study_id: &str, body: &str) -> Option<Self> {
+        let (study_id, body) = (study_id.to_string(), body.trim().to_string());
+        Some(match status.as_u16() {
+            404 => Self::NoSuchRun { study_id, body },
+            409 => Self::StillRunning { study_id, body },
+            422 => Self::NoMeasurements { study_id, body },
+            410 => Self::FilesGone { study_id, body },
+            _ => return None,
+        })
+    }
+}
+
+impl std::fmt::Display for MeasurementsRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (code, study_id, body) = match self {
+            Self::NoSuchRun { study_id, body } => (404, study_id, body),
+            Self::StillRunning { study_id, body } => (409, study_id, body),
+            Self::NoMeasurements { study_id, body } => (422, study_id, body),
+            Self::FilesGone { study_id, body } => (410, study_id, body),
+        };
+        write!(f, "{} ({code}) for study '{study_id}': {body}", self.name())
+    }
+}
+
+impl std::error::Error for MeasurementsRefusal {}
+
 /// `GET /study/{study_id}`'s body — this repo's `spec.md`. `status` is
 /// left as a plain `String` (matching how `StatusResponse.status` above is
 /// already handled) rather than a closed enum, since this is a
@@ -3048,6 +3101,24 @@ impl CoreClient {
         }
 
         Err(anyhow!(Self::format_study_error(status, &body)))
+    }
+
+    /// `GET /study/{study_id}/measurements` — a finished run's own
+    /// `measurements.json`, byte for byte as Core wrote it, before any
+    /// publish. Core's four refusals come back as a [`MeasurementsRefusal`]
+    /// inside the error, so a caller can tell them apart by name.
+    pub async fn get_study_measurements(&self, study_id: &str) -> Result<Bytes> {
+        let url = format!("{}/study/{study_id}/measurements", self.base_url().await?);
+        let response = self.dispatch(self.client.get(url), Some(self.study_timeout)).await?;
+        let status = response.status();
+        if status.is_success() {
+            return response.bytes().await.context("failed to read embarch-core's response body");
+        }
+        let body = response.text().await.unwrap_or_else(|_| "<no response body>".to_string());
+        match MeasurementsRefusal::from_status(status, study_id, &body) {
+            Some(refusal) => Err(anyhow::Error::new(refusal)),
+            None => Err(anyhow!(Self::format_study_error(status, &body))),
+        }
     }
 
     /// `POST /host-studies` — a study Core runs itself, with no dev bench

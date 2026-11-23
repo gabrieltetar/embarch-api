@@ -581,6 +581,18 @@ pub enum Commands {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// A finished run's own `measurements.json`, exactly as embarch-core wrote
+    /// it, before any publish: every entry's value, unit, by, u_source and
+    /// declared_by unchanged. Writes to stdout, or to --out. A refusal is
+    /// reported by name: no-such-run (404), still-running (409),
+    /// no-measurements (422: none declared, not completed, or a host study) or
+    /// files-gone (410: discarded or swept by retention).
+    StudyMeasurements {
+        study_id: String,
+        /// Write the file to this path instead of stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// List what a completed study actually captured: one row per declared
     /// stream tap, with its name, bytes written, and whether it was
     /// TRUNCATED — which is how you learn a capture is short rather than

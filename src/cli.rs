@@ -199,6 +199,9 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
                 study_status(&core, &study_id, json).await
             }
         }
+        Commands::StudyMeasurements { study_id, out } => {
+            study_measurements(&core, &study_id, out.as_deref(), json).await
+        }
         Commands::StudyStreamData { study_id, name, raw, out } => {
             study_stream_data(&core, &study_id, &name, raw, out.as_deref(), json).await
         }
@@ -2448,6 +2451,13 @@ fn write_study_csv(json: bool, kind: &str, study_id: &str, bytes: &[u8], out: Op
     }
 }
 
+async fn study_measurements(core: &CoreClient, study_id: &str, out: Option<&Path>, json: bool) -> i32 {
+    match core.get_study_measurements(study_id).await {
+        Ok(bytes) => write_study_csv(json, "measurements.json", study_id, &bytes, out),
+        Err(e) => error_result(json, format!("study-measurements refused: {e:#}")),
+    }
+}
+
 async fn study_stream_data(
     core: &CoreClient,
     study_id: &str,
@@ -2780,7 +2790,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 62,
+            arms, 63,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."

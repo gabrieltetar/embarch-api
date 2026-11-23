@@ -2652,6 +2652,22 @@ impl EmbarchApi {
         }
     }
 
+    #[tool(description = "Read a finished run's own measurements.json, exactly as embarch-core wrote it, BEFORE publishing: the file is returned unchanged (no summary, no reshaping), so cite each measurement's value, unit, by, u_source and declared_by as written. Use it to write a Study's prose, instead of publishing a throwaway first revision to get at the file. Core's refusals come back by name in the error: no-such-run (404: the run log has no run of that id), still-running (409: its measurements are written as it ends), no-measurements (422: the study declared none, did not complete, or is a host study) and files-gone (410: discarded or swept by retention). Needs no bench lease.")]
+    async fn study_measurements(
+        &self,
+        Parameters(StudyIdParams { study_id }): Parameters<StudyIdParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match self.core.get_study_measurements(&study_id).await {
+            Ok(bytes) => match String::from_utf8(bytes.to_vec()) {
+                Ok(text) => Ok(CallToolResult::success(vec![ContentBlock::text(text)])),
+                Err(e) => Self::err_text(format!(
+                    "study_measurements: study '{study_id}' measurements.json is not valid UTF-8 ({e})"
+                )),
+            },
+            Err(e) => Self::err_text(format!("study_measurements refused: {e:#}")),
+        }
+    }
+
     #[tool(description = "List what a completed study actually captured: one entry per declared stream tap, with its name, how many bytes it wrote, whether it was TRUNCATED, and — when the study declared its record framing — a records object saying how many of its records verify against their own checksums. Read truncated: it is how you learn a capture is short rather than complete — either a retention rotation deleted a segment, or dev-bench reported dropping records — and a capture that lost data must not be read as a whole one. Read records too, because it answers a different question and is the only end-to-end one: truncated is what some link reported about itself, while records.verified vs records.total is whether the bytes on disk match what the DUT computed a checksum over. A 10 h drain reported truncated false with 3 of 598 records damaged, so a clean truncated is not proof of a clean capture. records absent means the study declared no framing to check, which is not the same as everything verifying. An entry with bytes_written 0 is a tap that was declared and produced nothing, which is a different fact from a tap that wasn't declared at all. A tap declared against a source embarch-dev-bench has no front end for yet (power sampling, today) also reports bytes_written 0 without being either kind of mistake — Core's own stream index marks that case with its own flag, source_deferred, which this listing does not carry, so do not read a 0 here as ruling it out. Only a completed study has this; a pending, running or failed one returns its status instead. Use the names from here with study_stream_data.")]
     async fn list_study_streams(
         &self,

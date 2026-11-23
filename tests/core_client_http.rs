@@ -188,6 +188,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.restore_file("study-1", "streams/a.csv", b"bytes").await;
     let _ = client.get_study_stream("study-1", "ppg", true).await;
     let _ = client.get_study_stream_arrivals("study-1", "ppg").await;
+    let _ = client.get_study_measurements("study-1").await;
     let _ = client.get_study_load("study-1", "ppg").await;
     // A declared `base_url` resolves as `TopologyClass::Local`, so `flash`
     // takes its send-a-path branch and needs no artifact on disk.
@@ -290,6 +291,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
         ("GET", "/studies"),
         ("GET", "/study/study-1/stream/ppg"),
         ("GET", "/study/study-1/stream/ppg/arrivals"),
+        ("GET", "/study/study-1/measurements"),
         ("GET", "/study/study-1/stream/ppg/load"),
         ("POST", "/flash"),
         ("POST", "/study"),
@@ -1052,6 +1054,40 @@ async fn a_stream_404_keeps_cores_body_and_an_empty_one_falls_back() {
         .expect_err("a 404 was reported as success")
         .to_string();
     assert!(error.contains("no capture served for stream tap 'ppg'"), "{error}");
+}
+
+/// `get_study_measurements` returns Core's file byte for byte, and each of
+/// Core's four refusals reaches the caller as a named `MeasurementsRefusal`
+/// carrying Core's own body.
+#[tokio::test]
+async fn study_measurements_returns_the_file_unchanged_and_names_each_refusal() {
+    use embarch_core_client::MeasurementsRefusal;
+    // Odd whitespace and key order: any reshaping would show.
+    let file = "{ \"schema\":1,\n  \"measurements\": [ {\"value\": 1.50, \"unit\": \"bpm\", \"by\": \"dut\"} ] }\n";
+    let mock = MockCore::start(Behavior::Reply {
+        status: 200,
+        reason: "OK".into(),
+        content_type: "application/json".into(),
+        body: file.into(),
+    })
+    .await;
+    let client = CoreClient::new(&config(json!({ "base_url": mock.base_url() }))).unwrap();
+    assert_eq!(client.get_study_measurements("study-1").await.unwrap().as_ref(), file.as_bytes());
+
+    for (status, reason, name, body) in [
+        (404, "Not Found", "no-such-run", "the run log has no run study-1"),
+        (409, "Conflict", "still-running", "study study-1 is still running: its measurements are written as it ends"),
+        (422, "Unprocessable Entity", "no-measurements", "study study-1 has no measurements.json: it declared no measurements, did not complete, or is a host study"),
+        (410, "Gone", "files-gone", "study study-1's files are gone (discarded or swept by retention)"),
+    ] {
+        let mock = MockCore::start(Behavior::plain_text_error(status, reason, body)).await;
+        let client = CoreClient::new(&config(json!({ "base_url": mock.base_url() }))).unwrap();
+        let err = client.get_study_measurements("study-1").await.expect_err("a refusal was reported as success");
+        let refusal = err.downcast_ref::<MeasurementsRefusal>().expect("not a MeasurementsRefusal");
+        assert_eq!(refusal.name(), name);
+        let text = format!("{err:#}");
+        assert!(text.starts_with(name) && text.contains(body), "{text}");
+    }
 }
 
 /// Decision 111: the build claims reach `POST /study` and `POST /host-studies`

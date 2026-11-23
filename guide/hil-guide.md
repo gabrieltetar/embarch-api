@@ -175,7 +175,7 @@ The report's appendix says what Core observed of each image. Today a DUT image i
 ### 4. Read the losses, then the measurements
 
 1. **`list_study_streams <study_id>` first.** Every tap, its bytes, and whether it was **truncated**. A capture with 0 bytes was declared and produced nothing, which is a different problem from one never declared. Truncated data is short data: say so in every sentence that rests on it.
-2. **Read `measurements.json`, not the captures.** Today no tool serves it before publish, so publish once with no prose (step 5), then read it from that zip: `unzip -p <zip> measurements.json`. Each entry carries `value`, `unit`, `by`, `u_source` and `declared_by`; "U undeclared" and "declared by the agent" are what they say, and your prose repeats them.
+2. **Read `measurements.json`, not the captures.** Read it before you publish: MCP `study_measurements <study_id>`, or CLI `embarch-api study-measurements <study_id>`, returns the file as Core wrote it. A refusal names itself: `no-such-run`, `still-running` (wait for the run to end), `no-measurements` (none declared, not completed, or a host study) or `files-gone`. Each entry carries `value`, `unit`, `by`, `u_source` and `declared_by`; "U undeclared" and "declared by the agent" are what they say, and your prose repeats them.
 3. Sample a capture with `study_stream_data --out` only to diagnose, never to conclude.
 
 ### 5. Publish
