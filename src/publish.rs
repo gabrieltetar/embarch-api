@@ -38,6 +38,7 @@ use crate::publish_report::{
     appendix_source, data_section_source, CaptureRow, ProseBlock, ReportInputs, ReportSource, Supersedes,
 };
 use crate::report_pdf::{render_report, vendored_files, RenderOptions, Staging, APPENDIX_FILE, REPORT_FILE, TYPST_VERSION};
+use crate::report_whitelist;
 
 /// The note's name, to Core and in the zip.
 pub const NOTES_NAME: &str = "notes/operator-notes.txt";
@@ -253,6 +254,19 @@ pub async fn run(core: &CoreClient, folder: Option<&Path>, req: &PublishRequest<
                 "publish refuses this report.typ: line {line} draws a picture ({what}). A plot is drawn by the plot helper \
                  from a signed file; any other picture, an embedded image or SVG included, is refused, except `image()` of \
                  a capture Core signed (a `streams/` path)"
+            );
+        }
+    }
+    if let Some(src) = &study_report_text {
+        // The syntax-tree whitelist `verify` runs again on the zip's report.typ
+        // (decision 122): no file read, no other import, no alias or wrapper of an
+        // admitted call, no plot over a file Core does not sign.
+        let verdict = report_whitelist::check(src, &report_whitelist::is_core_file);
+        if let Some(v) = verdict.violations.first() {
+            bail!(
+                "publish refuses this report.typ: line {}: {}. verify refuses the same source (the whitelist of report.typ's syntax tree)",
+                v.line,
+                v.what
             );
         }
     }

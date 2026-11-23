@@ -483,3 +483,29 @@ async fn a_republish_of_a_swept_run_refuses_and_leaves_the_earlier_zip() {
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
     assert!(first.zip.exists());
 }
+
+#[tokio::test]
+async fn a_report_the_syntax_tree_whitelist_refuses_is_refused_before_core_is_asked() {
+    let files = core_files();
+    let mock = MockCore::start(router(&files, ok_text(&files["measurements.json"]))).await;
+    let dir = tmp("whitelist");
+    let h = "#import \"@embarch/report:0.1.0\": minmax-plot\n";
+    for (i, src) in [
+        "#eval(\"1 + 1\")".to_string(),
+        "#let d = read(\"/etc/passwd\")".to_string(),
+        format!("{h}#let p = minmax-plot\n#p(path(\"streams/rate.csv\"))"),
+        "#import \"other.typ\": x".to_string(),
+        format!("{h}#minmax-plot(path(\"mine.csv\"))"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let report = dir.join(format!("w{i}.typ"));
+        std::fs::write(&report, src).unwrap();
+        let err = publish::run(&client(mock.base_url()), Some(&dir), &PublishRequest { run_id: RUN, notes: None, report_typ: Some(&report), prose: &[] }, NOW)
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("publish refuses this report.typ"), "{src}: {err:#}");
+    }
+    assert!(mock.requests().is_empty());
+}

@@ -66,7 +66,7 @@ fn core_files(k: &SigningKey) -> BTreeMap<String, String> {
         "streams": [{ "id": 0, "name": "rate", "encoding": { "Samples": { "unit": "Volts" } } }],
         "measurements": [{ "name": "avg", "reducer": "mean", "tap": 0 }],
     }).to_string());
-    f.insert("events.json".into(), json!({ "study_name": "GATT rate / loss", "steps": [
+    f.insert("events.json".into(), json!({ "study_name": "GATT rate / loss", "provenance": "declared by the study", "steps": [
         { "step_name": "connect", "outcome": "Pass", "started_utc_ms": 1000, "ended_utc_ms": 2000 },
         { "step_name": "read", "outcome": { "Fail": { "reason": "no reply" } } },
     ] }).to_string());
@@ -83,7 +83,7 @@ fn core_files(k: &SigningKey) -> BTreeMap<String, String> {
     let record = json!({ "_type": "https://in-toto.io/Statement/v1", "subject": subjects(&f),
         "predicateType": "urn:embarch:predicate:study-run:v1",
         "predicate": { "schema": 1, "study_id": RUN, "observed": { "behaviours": { "mean": 1 },
-            "declarations": { "witnessed_since_utc_ms": 0, "entries": [] } } } });
+            "image_status": "unverified", "declarations": { "witnessed_since_utc_ms": 0, "entries": [] } } } });
     f.insert("record.dsse.json".into(), envelope(k, &record));
 
     let (run_line, run_hash) = log_line(json!({ "type": "run", "study_id": RUN, "kind": "device", "status": "completed",
@@ -173,7 +173,9 @@ fn write_zip(path: &Path, files: &BTreeMap<String, Vec<u8>>) {
 }
 
 fn tmp(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("embarch-verify-{tag}-{}", std::process::id()));
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let d = std::env::temp_dir().join(format!("embarch-verify-{tag}-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d
@@ -182,14 +184,23 @@ fn tmp(tag: &str) -> PathBuf {
 /// A zip `publish` wrote, its manifest then signed over the hashes of the
 /// embarch-api files it holds. Returns the files.
 async fn published(k: &SigningKey) -> BTreeMap<String, Vec<u8>> {
+    published_with(k, None).await
+}
+
+/// The same, for a Study that brings its own `report.typ`.
+async fn published_with(k: &SigningKey, report: Option<&str>) -> BTreeMap<String, Vec<u8>> {
     let core = core_files(k);
     let mock = MockCore::start(router(&core, &manifest_for(k, &core, &[]))).await;
     let cfg: CoreConfig = serde_json::from_value(json!({ "token": "t", "base_url": mock.base_url() })).unwrap();
     let dir = tmp("pub");
+    let report_path = dir.join("report-src.typ");
+    if let Some(src) = report {
+        std::fs::write(&report_path, src).unwrap();
+    }
     let out = publish::run(
         &CoreClient::new(&cfg).unwrap(),
         Some(&dir),
-        &PublishRequest { run_id: RUN, notes: Some(NOTE), report_typ: None, prose: &[] },
+        &PublishRequest { run_id: RUN, notes: Some(NOTE), report_typ: report.map(|_| report_path.as_path()), prose: &[] },
         NOW,
     )
     .await
@@ -221,14 +232,12 @@ async fn a_published_zip_verifies_and_a_tampered_copy_fails_the_check_that_names
     // The untampered zip, unattested then attested.
     let r = check(&files, "ok", &pub_hex(&k), None);
     assert!(r.ok(), "{}", r.to_text());
-    for id in [0, 1, 5, 7, 8] {
+    for id in [0, 1, 5, 6, 7, 8, 9] {
         assert_eq!(status(&r, id), Status::Pass, "check {id}\n{}", r.to_text());
     }
+    assert_ne!(status(&r, 4), Status::Fail, "{}", r.to_text());
     assert_eq!(status(&r, 2), Status::Partial, "step outcomes are not re-evaluated");
     assert_eq!(status(&r, 3), Status::NotApplicable);
-    for id in [4, 6, 9] {
-        assert_eq!(status(&r, id), Status::NotChecked);
-    }
     assert!(!r.complete());
     assert!(!r.attested && r.to_text().contains("origin unattested") && r.to_text().contains("integrity only"));
     assert!(r.to_text().contains("recomputes to 2.0"), "{}", r.to_text());
@@ -272,4 +281,98 @@ async fn a_published_zip_verifies_and_a_tampered_copy_fails_the_check_that_names
     f.insert("run-log-segment.jsonl".into(), kept.into_bytes());
     let r = check(&f, "log", &pub_hex(&k), None);
     assert_eq!(status(&r, 8), Status::Fail, "{}", r.to_text());
+}
+
+const STUDY_REPORT: &str = "#import \"@embarch/report:0.1.0\": minmax-plot, m\n= Report\nThe mean was #m(\"avg\", path(\"measurements.json\")).\n\n#minmax-plot(path(\"streams/rate.csv\"), x: \"t_s\", y: \"value\", bins: 50)\n";
+
+/// The manifest signed again over the files as they now stand, so a tampered
+/// embarch-api file is caught by the check that names it, not by check 1.
+fn resign(k: &SigningKey, files: &mut BTreeMap<String, Vec<u8>>) {
+    let core = core_files(k);
+    let api: Vec<(String, String)> =
+        files.iter().filter(|(n, _)| !core.contains_key(*n) && *n != "manifest.dsse.json").map(|(n, b)| (n.clone(), sha(b))).collect();
+    files.insert("manifest.dsse.json".into(), manifest_for(k, &core, &api).into_bytes());
+}
+
+fn edit(files: &mut BTreeMap<String, Vec<u8>>, name: &str, from: &str, to: &str) {
+    let text = String::from_utf8(files[name].clone()).unwrap();
+    assert!(text.contains(from), "{name} has no {from:?}");
+    files.insert(name.to_string(), text.replace(from, to).into_bytes());
+}
+
+#[tokio::test]
+async fn a_study_zip_with_a_plot_passes_checks_4_6_and_9() {
+    let k = key(7);
+    let files = published_with(&k, Some(STUDY_REPORT)).await;
+    let r = check(&files, "study-ok", &pub_hex(&k), None);
+    assert!(r.ok(), "{}", r.to_text());
+    for id in [6, 9] {
+        assert_eq!(status(&r, id), Status::Pass, "check {id}\n{}", r.to_text());
+    }
+    assert!(r.to_text().contains("a plot of streams/rate.csv"), "{}", r.to_text());
+    assert!(r.to_text().contains("axis tick derived") && !r.to_text().contains(", 0 an axis tick"), "ticks were read: {}", r.to_text());
+    assert!(r.to_text().contains("a footer's page number") && !r.to_text().contains("0 a footer's"), "{}", r.to_text());
+}
+
+#[tokio::test]
+async fn a_changed_number_in_the_pdf_fails_check_4() {
+    let k = key(7);
+    let mut files = published(&k).await;
+    // The PDF of a report whose appendix prints 2.5 where the signed measurement says 2.0,
+    // shipped beside the appendix.typ that says 2.0.
+    let mut st = embarch_api::report_pdf::Staging::new().unwrap();
+    st.stage_bytes("report.typ", &files["report.typ"]).unwrap();
+    let appendix = String::from_utf8(files["appendix.typ"].clone()).unwrap();
+    let forged = appendix.replace("2.0", "2.5");
+    assert_ne!(appendix, forged, "the appendix prints the measurement");
+    st.stage_bytes("appendix.typ", forged.as_bytes()).unwrap();
+    let pdf = embarch_api::report_pdf::render_report(&st, &embarch_api::report_pdf::RenderOptions { ident: "x".into(), timestamp_unix: NOW }).unwrap();
+    files.insert("report.pdf".into(), pdf);
+    resign(&k, &mut files);
+    let r = check(&files, "pdf-num", &pub_hex(&k), None);
+    assert_eq!(status(&r, 4), Status::Fail, "{}", r.to_text());
+    assert!(r.to_text().contains("2.5"), "{}", r.to_text());
+    assert_eq!(status(&r, 1), Status::Pass, "{}", r.to_text());
+}
+
+#[tokio::test]
+async fn a_picture_an_alias_or_a_package_off_the_list_fails_check_9() {
+    let k = key(7);
+    let files = published_with(&k, Some(STUDY_REPORT)).await;
+    for (tag, from, to) in [
+        ("image", "= Report", "= Report\n#image(\"logo.png\")"),
+        ("alias", "#minmax-plot(path", "#let p = minmax-plot\n#p(path"),
+        ("eval", "= Report", "= Report\n#eval(\"1\")"),
+        ("unsigned", "streams/rate.csv", "mine.csv"),
+    ] {
+        let mut f = files.clone();
+        edit(&mut f, "report.typ", from, to);
+        resign(&k, &mut f);
+        let r = check(&f, tag, &pub_hex(&k), None);
+        assert_eq!(status(&r, 9), Status::Fail, "{tag}\n{}", r.to_text());
+    }
+    let mut f = files.clone();
+    edit(&mut f, "typst-packages/embarch/report/0.1.0/lib.typ", "#let tick-target = 5", "#let tick-target = 6");
+    resign(&k, &mut f);
+    let r = check(&f, "pkg", &pub_hex(&k), None);
+    assert_eq!(status(&r, 9), Status::Fail, "{}", r.to_text());
+    assert!(r.to_text().contains("differs from the package file this build ships"), "{}", r.to_text());
+}
+
+#[tokio::test]
+async fn a_report_data_that_disagrees_with_the_records_fails_check_6() {
+    let k = key(7);
+    let files = published(&k).await;
+    // Core's own signature over report-data stays valid, so only the recompute can catch a record that says otherwise:
+    // here the run log says the run was not clean and the report-data says it was.
+    let mut f = files.clone();
+    let seg = String::from_utf8(f["run-log-segment.jsonl"].clone()).unwrap();
+    assert!(seg.contains("\"clean\":false"));
+    let mut rd: Value = serde_json::from_slice(&f["report-data.json"]).unwrap();
+    rd["steps"]["pass"] = json!(2);
+    rd["steps"]["fail"] = json!(0);
+    f.insert("report-data.json".into(), rd.to_string().into_bytes());
+    let r = check(&f, "rd", &pub_hex(&k), None);
+    assert_eq!(status(&r, 6), Status::Fail, "{}", r.to_text());
+    assert!(r.to_text().contains("steps"), "{}", r.to_text());
 }

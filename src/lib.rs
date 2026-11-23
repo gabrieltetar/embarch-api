@@ -58,6 +58,12 @@ pub mod publish_oracle;
 /// to 121). Behind `pdf` with the exports it regenerates.
 #[cfg(feature = "pdf")]
 pub mod verify;
+/// `verify` checks 4, 6 and 9 (`embarch-api` decisions 122 to 125).
+#[cfg(feature = "pdf")]
+pub mod verify_report;
+/// The whitelist of `report.typ`'s syntax tree, which `publish` and `verify` share.
+#[cfg(feature = "pdf")]
+pub mod report_whitelist;
 /// The Typst sources `publish` generates: the audit appendix and a Study's
 /// data section.
 #[cfg(feature = "pdf")]

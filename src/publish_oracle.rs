@@ -526,6 +526,14 @@ fn measures(ms: Option<&Value>) -> Vec<Measure> {
         .collect()
 }
 
+/// Whether a number written with `sig` significant digits equals some signed
+/// measurement at those digits (a V and an mV reading are one quantity), for
+/// `verify`'s check 4.
+pub fn admits_number(measurements: Option<&Value>, written: f64, sig: usize) -> bool {
+    let t = Token { text: String::new(), value: written, sig };
+    measures(measurements).iter().any(|m| m.equals(&t))
+}
+
 fn strings_of(v: &Value, out: &mut BTreeSet<String>) {
     match v {
         Value::String(s) => {

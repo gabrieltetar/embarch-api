@@ -78,4 +78,6 @@ tempfile = { version = "3", optional = true }
 
 [features]
 default = ["pdf"]
-pdf = ["dep:typst", "dep:typst-pdf", "dep:typst-layout", "dep:typst-as-lib", "dep:include_dir", "dep:tempfile"]
+# `embarch-study-designer/pdf-text` (its decisions 101 to 103) is `verify`'s PDF reader and number
+# grammar; it pulls `lopdf` in, so only a build with `pdf` carries it.
+pdf = ["embarch-study-designer/pdf-text", "dep:typst", "dep:typst-pdf", "dep:typst-layout", "dep:typst-as-lib", "dep:include_dir", "dep:tempfile"]

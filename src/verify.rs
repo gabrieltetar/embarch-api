@@ -7,8 +7,8 @@
 //! says [`Status::NotChecked`], never a pass.
 //!
 //! Checks 4 (the PDF's text), 6 (`report-data.json` recomputed) and 9 (the
-//! syntax-tree whitelist of `report.typ`) belong to `tasks/api/171`; 3 is a
-//! Test's and does not apply to a Study.
+//! syntax-tree whitelist of `report.typ`) are in `verify_report` (decisions 122
+//! to 125); 3 is a Test's and does not apply to a Study.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -23,11 +23,11 @@ use sha2::{Digest, Sha256};
 use crate::publish::{slug, JUNIT_NAME, MANIFEST_NAME, MEASUREMENTS_NAME, OCP_NAME, REPORT_DATA_NAME};
 use crate::publish_export::{junit_xml, ocp_jsonl, ExportInputs, StepRow};
 
-const RECORD_NAME: &str = "record.dsse.json";
+pub(crate) const RECORD_NAME: &str = "record.dsse.json";
 const REPORT_DATA_ENVELOPE: &str = "report-data.dsse.json";
 const SEGMENT_NAME: &str = "run-log-segment.jsonl";
 const PAYLOAD_TYPE: &str = "application/vnd.in-toto+json";
-const GENESIS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+pub(crate) const GENESIS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 /// The words `notes/hil/06` gives an unattested key's result.
 pub const UNATTESTED: &str = "origin unattested: this key does not match an attested fingerprint, so its signatures \
@@ -73,14 +73,14 @@ pub struct Check {
 }
 
 impl Check {
-    fn new(id: u8, name: &'static str) -> Self {
+    pub(crate) fn new(id: u8, name: &'static str) -> Self {
         Check { id, name, status: Status::Pass, compared: Vec::new(), problems: Vec::new() }
     }
-    fn fail(&mut self, why: String) {
+    pub(crate) fn fail(&mut self, why: String) {
         self.status = Status::Fail;
         self.problems.push(why);
     }
-    fn partial(&mut self, why: String) {
+    pub(crate) fn partial(&mut self, why: String) {
         if self.status == Status::Pass {
             self.status = Status::Partial;
         }
@@ -161,7 +161,7 @@ pub struct Options<'a> {
     pub attested_fingerprint: Option<&'a str>,
 }
 
-fn sha(bytes: &[u8]) -> String {
+pub(crate) fn sha(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -233,7 +233,7 @@ fn subjects(statement: &Value) -> BTreeMap<String, String> {
         .unwrap_or_default()
 }
 
-fn json_of(files: &BTreeMap<String, Vec<u8>>, name: &str) -> Option<Value> {
+pub(crate) fn json_of(files: &BTreeMap<String, Vec<u8>>, name: &str) -> Option<Value> {
     serde_json::from_slice(files.get(name)?).ok()
 }
 
@@ -264,12 +264,12 @@ pub fn verify_zip(path: &Path, opts: &Options) -> Result<Report> {
     checks.push(check_manifest(&files, manifest.as_ref()));
     checks.push(check_measurements(&files, record.as_ref()));
     checks.push(Check::fixed(3, "verdicts", Status::NotApplicable, "a Study has no verdict; nothing to recompute"));
-    checks.push(Check::fixed(4, "the PDF's text", Status::NotChecked, "not checked by this version (tasks/api/171)"));
+    checks.push(crate::verify_report::check_pdf_text(&files));
     checks.push(check_labels(&files, manifest.as_ref(), record.as_ref()));
-    checks.push(Check::fixed(6, "the report's other claims", Status::NotChecked, "not checked by this version (tasks/api/171)"));
+    checks.push(crate::verify_report::check_report_claims(&files, manifest.as_ref(), record.as_ref(), &fingerprint));
     checks.push(check_exports(&files));
     checks.push(check_log_segment(&files, manifest.as_ref(), record.as_ref()));
-    checks.push(Check::fixed(9, "the pictures, at the source", Status::NotChecked, "not checked by this version (tasks/api/171)"));
+    checks.push(crate::verify_report::check_pictures(&files));
     checks.sort_by_key(|c| c.id);
 
     Ok(Report {
@@ -587,7 +587,7 @@ fn attribution(kind: &str, scope: &str) -> &'static str {
     }
 }
 
-fn segment_lines(files: &BTreeMap<String, Vec<u8>>) -> Result<Vec<Value>> {
+pub(crate) fn segment_lines(files: &BTreeMap<String, Vec<u8>>) -> Result<Vec<Value>> {
     let text = std::str::from_utf8(files.get(SEGMENT_NAME).ok_or_else(|| anyhow!("{SEGMENT_NAME} is not in the zip"))?)?;
     text.lines()
         .filter(|l| !l.trim().is_empty())
@@ -595,16 +595,12 @@ fn segment_lines(files: &BTreeMap<String, Vec<u8>>) -> Result<Vec<Value>> {
         .collect()
 }
 
-fn check_labels(files: &BTreeMap<String, Vec<u8>>, manifest: Option<&Value>, record: Option<&Value>) -> Check {
-    let mut c = Check::new(5, "the labels");
-    let (Some(rd), Ok(lines)) = (json_of(files, REPORT_DATA_NAME), segment_lines(files)) else {
-        c.fail("report-data.json or the run-log segment cannot be read".into());
-        return c;
-    };
-    let id = rd["study_id"].as_str().unwrap_or("");
+/// The latest adoption of each `(kind, name)` for run `id`, as Core's
+/// `report-data.json` lists them, and the run's own entry.
+pub(crate) fn adoptions<'a>(lines: &'a [Value], id: &str) -> (Vec<Value>, Option<&'a Value>) {
     let mut latest: BTreeMap<(String, String), Value> = BTreeMap::new();
     let mut run: Option<&Value> = None;
-    for l in &lines {
+    for l in lines {
         let e = &l["entry"];
         if e["study_id"] != id {
             continue;
@@ -620,10 +616,17 @@ fn check_labels(files: &BTreeMap<String, Vec<u8>>, manifest: Option<&Value>, rec
             run = Some(e);
         }
     }
-    let expected: Vec<Value> = latest.into_values().collect();
-    if rd["adopted"].as_array().map(Vec::as_slice) != Some(expected.as_slice()) {
-        c.fail("report-data.json's adopted notes and prose are not what the signed log's adoptions say (kind, name, hash, scope, attribution)".into());
-    }
+    (latest.into_values().collect(), run)
+}
+
+fn check_labels(files: &BTreeMap<String, Vec<u8>>, manifest: Option<&Value>, record: Option<&Value>) -> Check {
+    let mut c = Check::new(5, "the labels");
+    let (Some(rd), Ok(lines)) = (json_of(files, REPORT_DATA_NAME), segment_lines(files)) else {
+        c.fail("report-data.json or the run-log segment cannot be read".into());
+        return c;
+    };
+    let id = rd["study_id"].as_str().unwrap_or("");
+    let (expected, run) = adoptions(&lines, id);
     let go_by = run.and_then(|r| r["go_by"].as_str()).unwrap_or("agent");
     let published_by = manifest.and_then(|m| m["predicate"]["published_by"].as_str()).unwrap_or("agent");
     let declared_person = record
