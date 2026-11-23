@@ -112,6 +112,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
 
     // Each of these is exactly one HTTP request; none retries.
     let _ = client.status().await;
+    let _ = client.auth_challenge("00112233445566778899aabbccddeeff").await;
     let _ = client.alerts(3).await;
     let _ = client.list_enrolled().await;
     let _ = client.list_signals().await;
@@ -215,6 +216,13 @@ async fn every_outbound_call_carries_the_bearer_token() {
 
     let expected = format!("Bearer {TOKEN}");
     for request in &requests {
+        // `POST /auth/challenge` takes no token, by design (`embarch-core`
+        // decision 110): the caller is finding out which Core answers before
+        // any token goes to it. It must send none, and nothing else may skip it.
+        if request.route() == ("POST".to_string(), "/auth/challenge".to_string()) {
+            assert!(request.header("authorization").is_none(), "the challenge went out with a token");
+            continue;
+        }
         assert_eq!(
             request.header("authorization"),
             Some(expected.as_str()),
@@ -239,6 +247,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let observed: BTreeSet<(String, String)> = requests.iter().map(|r| r.route()).collect();
     let expected: BTreeSet<(String, String)> = [
         ("GET", "/status"),
+        ("POST", "/auth/challenge"),
         ("GET", "/alerts"),
         ("GET", "/probes/enrolled"),
         ("GET", "/signals"),
@@ -446,7 +455,7 @@ fn the_sweep_calls_every_networked_method() {
 }
 
 /// The one method allowed to authenticate a request and put it on the wire.
-const AUTH_FUNNEL: &str = "dispatch";
+const AUTH_FUNNEL: &str = "dispatch_with";
 
 /// The one file `AUTH_FUNNEL` may live in. Matching the function name alone
 /// would license a free `fn dispatch(...)` anywhere else in the crate that

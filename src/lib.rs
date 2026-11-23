@@ -27,6 +27,9 @@
 //! could never do through this crate's `lib` face — it cannot depend on
 //! this package at all.
 
+/// `core-key`: Core's public key from its challenge, signature checked (decision 129).
+pub mod core_key;
+
 pub use embarch_firmware_build::build;
 
 /// The `--json` surface's single serializer, lifted here for the same

@@ -1015,6 +1015,11 @@ pub enum Commands {
         #[arg(long)]
         attested_fingerprint: Option<String>,
     },
+    /// Print the public key of the Core `status` reaches (64 hex characters,
+    /// the form `verify --public-key` takes) and its SHA-256 fingerprint, after
+    /// checking Core's signature over a fresh nonce's challenge frame. Exits 1,
+    /// saying why, when the signature does not check or Core is unreachable.
+    CoreKey,
     /// Print the hardware-in-the-loop guide embedded in this binary (`guide
     /// hil [live|study|test]`). Needs no config, no Core and no embarch-doc.
     Guide {

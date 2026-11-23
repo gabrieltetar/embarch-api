@@ -52,6 +52,8 @@ embarch-firmware-build = { path = "crates/embarch-firmware-build" }
 embarch-study-designer = { path = "../embarch-study-designer", features = ["alloc", "reducers"] }
 # Ed25519 for `verify` check 0 only: `verify_strict` over a DSSE PAE.
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+# Fresh nonce for `core-key` (decision 126); already in the tree.
+getrandom = "0.4"
 heapless = { version = "0.8", features = ["serde"] }
 ihex = "3.0.0"
 rmcp = { version = "2.2.0", features = ["server", "transport-io"] }

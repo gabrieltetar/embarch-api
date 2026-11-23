@@ -973,6 +973,7 @@ dependencies = [
  "embarch-core-client",
  "embarch-firmware-build",
  "embarch-study-designer",
+ "getrandom 0.4.3",
  "heapless",
  "ihex",
  "include_dir",

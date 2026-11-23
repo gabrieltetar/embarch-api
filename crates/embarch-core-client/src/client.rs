@@ -56,6 +56,16 @@ pub struct CoreClient {
     study_timeout: Duration,
 }
 
+/// `POST /auth/challenge`'s answer, exactly as Core sent it (nothing checked).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChallengeAnswer {
+    pub frame: String,
+    pub core_nonce: String,
+    pub keyid: String,
+    pub public_key: String,
+    pub signature: String,
+}
+
 // `Serialize`/`Clone` added 2026-08-24 (`ProbeInfo`, `StatusResponse`,
 // `EnrolledBoardResponse`, `AlertResponse`, `DevBenchPortResponse`) —
 // `embarch-ui`'s Dashboard/Topology tabs re-serialize what they deserialize
@@ -2082,9 +2092,21 @@ impl CoreClient {
         request: reqwest::RequestBuilder,
         timeout: Option<Duration>,
     ) -> Result<reqwest::Response> {
-        let request = if self.lease_required { self.refuse_without_a_live_lease(request).await? } else { request };
-        let request = request.bearer_auth(&self.token);
-        let request = match self.effective_lease_token() {
+        self.dispatch_with(request, timeout, true).await
+    }
+
+    /// The one funnel (`dispatch` is `bearer = true`). `bearer = false` is for
+    /// `/auth/challenge` alone: it sends neither the token nor the lease token,
+    /// because it runs before the caller knows which Core is answering.
+    pub(crate) async fn dispatch_with(
+        &self,
+        request: reqwest::RequestBuilder,
+        timeout: Option<Duration>,
+        bearer: bool,
+    ) -> Result<reqwest::Response> {
+        let request = if self.lease_required && bearer { self.refuse_without_a_live_lease(request).await? } else { request };
+        let request = if bearer { request.bearer_auth(&self.token) } else { request };
+        let request = match self.effective_lease_token().filter(|_| bearer) {
             Some(token) => {
                 let mut value = reqwest::header::HeaderValue::from_str(&token)
                     .map_err(|_| anyhow!("the bench lease token is not a valid HTTP header value (check {LEASE_TOKEN_ENV})"))?;
@@ -2338,6 +2360,22 @@ impl CoreClient {
                 held.renewed = Some(Instant::now());
             }
         }
+    }
+
+    /// `POST /auth/challenge` (`embarch-core` decision 110): the one route that
+    /// takes **no token**, so none is sent: its point is to learn which Core
+    /// answers before a token goes to it. The answer is unchecked here; see
+    /// `embarch_api::core_key` for the frame and signature check.
+    pub async fn auth_challenge(&self, nonce: &str) -> Result<ChallengeAnswer> {
+        let url = format!("{}/auth/challenge", self.base_url().await?);
+        let request = self.client.post(url).json(&serde_json::json!({ "nonce": nonce }));
+        let response = self.dispatch_with(request, Some(self.status_timeout), false).await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_else(|_| "<no response body>".to_string());
+            return Err(anyhow!("embarch-core returned {status}: {body}"));
+        }
+        response.json::<ChallengeAnswer>().await.context("failed to parse embarch-core's challenge answer as JSON")
     }
 
     pub async fn status(&self) -> Result<StatusResponse> {

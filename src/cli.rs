@@ -18,6 +18,7 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         Commands::ListProjects => list_projects(&config, json),
         Commands::ListTargets { project } => list_targets(&config, &project, json),
         Commands::Status => status(&core, json).await,
+        Commands::CoreKey => core_key(&core, json).await,
         Commands::Build { project, target, options, each: Some(range), same_tree_as, stop_at_first_failure } => {
             build_each(&config, &project, &target, &options, &range, same_tree_as.as_deref(), stop_at_first_failure, json).await
         }
@@ -1018,6 +1019,27 @@ async fn run_host_study(core: &CoreClient, study_file: &Path, json: bool) -> i32
             format!("{} (follow with: embarch-api study-status {} --follow)", accepted.study_id, accepted.study_id),
         ),
         Err(e) => error_result(json, format!("run-host-study failed: {e:#}")),
+    }
+}
+
+/// `core-key`: the challenge against the Core `status` reaches, signature checked (decision 129).
+async fn core_key(core: &CoreClient, json: bool) -> i32 {
+    let nonce = match embarch_api::core_key::fresh_nonce() {
+        Ok(n) => n,
+        Err(e) => return error_result(json, format!("core-key failed: {e:#}")),
+    };
+    let answer = match core.auth_challenge(&nonce).await {
+        Ok(a) => a,
+        Err(e) => return error_result(json, format!("core-key failed: {e:#}")),
+    };
+    match embarch_api::core_key::check(&nonce, &answer) {
+        Ok(k) => finish(
+            json,
+            true,
+            serde_json::json!({ "success": true, "public_key": k.public_key, "fingerprint": k.fingerprint }),
+            format!("public key  {}\nfingerprint {} (SHA-256)", k.public_key, k.fingerprint),
+        ),
+        Err(e) => error_result(json, format!("core-key failed: {e:#}")),
     }
 }
 
@@ -2758,7 +2780,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 61,
+            arms, 62,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."

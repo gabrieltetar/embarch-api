@@ -46,6 +46,7 @@ const EVERY_SUBCOMMAND: &[&[&str]] = &[
     &["verify", "/no/such/zip.zip", "--public-key", "0000000000000000000000000000000000000000000000000000000000000000"],
     &["list-targets", "demo"],
     &["status"],
+    &["core-key"],
     &["build", "no-such-project"],
     &["build", "demo", "--each", "HEAD~1..HEAD"],
     &["flash", "no-such-project"],

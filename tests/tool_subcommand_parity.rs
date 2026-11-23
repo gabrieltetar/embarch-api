@@ -43,6 +43,7 @@ const DOCUMENTED_ASYMMETRIES: &[Asymmetry] = &[
     Asymmetry::CliOnly("stack"),
     Asymmetry::CliOnly("guide"),
     Asymmetry::CliOnly("verify"),
+    Asymmetry::CliOnly("core-key"),
     Asymmetry::ToolReachedAs("study_watch", "study-status"),
     Asymmetry::ToolReachedAs("build_each", "build"),
 ];

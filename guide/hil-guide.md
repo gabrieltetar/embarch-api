@@ -201,12 +201,11 @@ The zip is `<date>-<slug>-<id8>.zip` and is never overwritten: **publishing the 
 `verify` loads no config and calls no Core: it reads the zip and a key. **Copy the zip into an empty folder and run it there**, so nothing but the zip is read:
 
 ```sh
-curl -s -X POST <core>/auth/challenge -H 'Content-Type: application/json' \
-     -d '{"nonce":"00112233445566778899aabbccddeeff"}'      # "public_key": 64 hex digits
+embarch-api core-key                    # "public key": 64 hex digits, and its fingerprint
 embarch-api verify <zip> --public-key <hex> [--json]
 ```
 
-`<core>` is the Core `status` reaches (`http://127.0.0.1:4884` by default). **The key comes from Core, never from the zip.** Exit 0 means no check failed; `--json`'s `complete` says whether every check also ran in full. **Today every result says "origin unattested"**: the signatures prove the zip is intact, and the agent could have read the key that made them. Read each `partial` and `not checked by this version` aloud to the engineer, with what it leaves unchecked.
+`core-key` asks the Core `status` reaches and prints the key only after checking Core's signature over a fresh nonce. **The key comes from Core, never from the zip.** Exit 0 means no check failed; `--json`'s `complete` says whether every check also ran in full. **Today every result says "origin unattested"**: the signatures prove the zip is intact, and the agent could have read the key that made them. Read each `partial` and `not checked by this version` aloud to the engineer, with what it leaves unchecked.
 
 ### 7. Read the report against the claim
 
