@@ -13,7 +13,35 @@ use embarch_study_designer::Outcome;
 use crate::resolve::{self, Resolved, Selection};
 use crate::{Commands, TargetSelection};
 
+/// Runs a subcommand and, when it reached a lease-gated route, appends its line
+/// to the live log (`interfaces/live-log.md`) after Core has answered.
 pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreClient) -> i32 {
+    let debug = format!("{command:?}");
+    let tool = crate::live_log::cli_tool_name(&debug);
+    let ((code, answer), entries) = embarch_core_client::call_trace::scope(crate::live_log::with_cli_answer(run_command(
+        command,
+        json,
+        config.clone(),
+        core.clone(),
+    )))
+    .await;
+    let call = crate::live_log::Call {
+        via: "cli",
+        tool: &tool,
+        sent: serde_json::Value::String(debug),
+        project: None,
+        ok: code == 0,
+        answer: answer.as_ref().map_or("", |(text, _)| text.as_str()),
+        structured: answer.as_ref().map(|(_, value)| value),
+        entries: &entries,
+    };
+    if let Some(notice) = crate::live_log::record(&config, &core, call).await.notice() {
+        eprintln!("{notice}");
+    }
+    code
+}
+
+async fn run_command(command: Commands, json: bool, config: Arc<Config>, core: CoreClient) -> i32 {
     match command {
         Commands::ListProjects => list_projects(&config, json),
         Commands::ListTargets { project } => list_targets(&config, &project, json),
@@ -234,6 +262,7 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
             Err(e) => error_result(json, format!("validate: {e}")),
         },
         Commands::Alerts { limit } => alerts(&core, limit, json).await,
+        Commands::CallLog { seq, from, to } => call_log(&core, seq, from, to, json).await,
         Commands::ListSerialPorts => serial_ports(&core, json).await,
         Commands::DeclareSignal {
             name,
@@ -394,8 +423,15 @@ fn vs_baseline(
 /// through [`study_follow`]'s two NDJSON sites, and all three serialize via
 /// [`json_out`] — which is what makes decision 24's `schema_version`
 /// unconditional rather than a thing each emitter remembers (decision 50).
-fn finish(json: bool, success: bool, value: serde_json::Value, human: String) -> i32 {
+fn finish(json: bool, success: bool, mut value: serde_json::Value, human: String) -> i32 {
+    crate::live_log::note_cli_answer(&human, &value);
     if json {
+        // Core's entries for this call's gated routes, so a caller can cite them
+        // (`interfaces/live-log.md`); absent when the call reached none.
+        let live = crate::live_log::live_entries(&embarch_core_client::call_trace::snapshot()).into_iter().cloned().collect::<Vec<_>>();
+        if let (false, Some(map)) = (live.is_empty(), value.as_object_mut()) {
+            map.insert("core_calls".to_string(), crate::live_log::core_calls(&live));
+        }
         println!("{}", json_out::pretty(value));
     } else if success {
         println!("{human}");
@@ -1549,6 +1585,28 @@ async fn validate(core: &CoreClient, board: embarch_core_client::Board<'_>, json
             ),
             None => error_result(json, format!("validate failed: {e:#}")),
         },
+    }
+}
+
+async fn call_log(core: &CoreClient, seq: Option<usize>, from: Option<usize>, to: Option<usize>, json: bool) -> i32 {
+    let (from, to) = match seq {
+        Some(s) => (Some(s), Some(s + 1)),
+        None => (from, to),
+    };
+    match core.call_log(from, to).await {
+        Ok(r) => {
+            let mut human: Vec<String> = r.entries.iter().map(|e| e.to_string()).collect();
+            human.push(format!(
+                "{} of {} entries (from {}), chain {}{}",
+                r.entries.len(),
+                r.length,
+                r.from,
+                if r.verified { "verified".to_string() } else { format!("NOT verified: {}", r.error.as_deref().unwrap_or("no reason given")) },
+                if r.truncated { ", answer cut at Core's cap" } else { "" }
+            ));
+            finish(json, true, serde_json::json!({ "success": true, "call_log": r }), human.join("\n"))
+        }
+        Err(e) => error_result(json, format!("call-log failed: {e:#}")),
     }
 }
 
@@ -2755,7 +2813,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 62,
+            arms, 63,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."

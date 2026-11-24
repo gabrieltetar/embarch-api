@@ -852,6 +852,17 @@ pub struct AlertsParams {
     pub limit: Option<usize>,
 }
 
+/// `GET /call-log` (`embarch-core` decision 122).
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct CallLogParams {
+    /// The one entry with this seq. Not with from or to.
+    pub seq: Option<usize>,
+    /// First entry of a range, inclusive.
+    pub from: Option<usize>,
+    /// End of the range, exclusive.
+    pub to: Option<usize>,
+}
+
 /// `embarch-topology` decision 18's `POST /signals` — declares (or
 /// re-declares) where a named DUT signal currently goes. Plain strings
 /// rather than the client's own `SignalDirection`/`SignalRoute` enums: those
@@ -2050,6 +2061,21 @@ impl EmbarchApi {
         }
     }
 
+    #[tool(description = "Read entries of embarch-core's hash-chained call log via GET /call-log (embarch-core decision 122): every call to a lease-gated route, a refused one included. seq names the one entry with that seq (an entry's seq is its position); from (inclusive) and to (exclusive) name a range, the whole log by default, at most Core's cap per answer (truncated says so). verified says whether the chain checks out. Each live-log line this server writes cites the entries Core made for its call by seq and hash. Not lease-gated.")]
+    async fn call_log(
+        &self,
+        Parameters(CallLogParams { seq, from, to }): Parameters<CallLogParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let (from, to) = match seq {
+            Some(s) => (Some(s), Some(s + 1)),
+            None => (from, to),
+        };
+        match self.core.call_log(from, to).await {
+            Ok(r) => Self::ok_json(serde_json::json!(r)),
+            Err(e) => Self::err_text(format!("call_log failed: {e:#}")),
+        }
+    }
+
     #[tool(description = "List every USB serial port embarch-core's OWN machine currently enumerates, via GET /serial-ports — not this MCP server's machine, and not dev-bench's link (that's a different question, answered by attach/validate). Use this before serial_log when a project has no configured serial_port, or when a port guessed from the caller's own machine (e.g. a WSL2 /dev/ttyACM0) fails to open: the value serial_log wants is a name Core's OS recognises, a Windows COM name on the suite's own primary topology. An empty list is a real answer — nothing plugged into Core's machine — not an error. Each entry's detected_by is always \"enumerated\" here (unnarrowed); vendor_id/product_id/serial_number/product/interface are whatever Core's OS descriptor read reports, any of which can be null.")]
     async fn list_serial_ports(&self) -> Result<CallToolResult, McpError> {
         match self.core.list_serial_ports().await {
@@ -2731,6 +2757,42 @@ pub fn streams_json(result: &embarch_study_designer::StudyResult) -> serde_json:
 
 #[tool_handler]
 impl ServerHandler for EmbarchApi {
+    /// The router's own dispatch, wrapped so a call that reached a lease-gated
+    /// route appends its line to the live log (`interfaces/live-log.md`) once
+    /// Core has answered. Everything but the dispatch is the macro's default.
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let tool = request.name.to_string();
+        let sent = request.arguments.clone().map(serde_json::Value::Object).unwrap_or(serde_json::Value::Null);
+        let project = sent.get("project").and_then(|p| p.as_str()).map(str::to_string);
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        let (mut result, entries) = embarch_core_client::call_trace::scope(Self::tool_router().call(tcc)).await;
+        let (ok, answer) = match &result {
+            Ok(r) => (
+                r.is_error != Some(true),
+                r.content.iter().filter_map(|c| c.as_text().map(|t| t.text.as_str())).collect::<Vec<_>>().join("\n"),
+            ),
+            Err(e) => (false, e.message.to_string()),
+        };
+        let call = crate::live_log::Call {
+            via: "mcp",
+            tool: &tool,
+            sent,
+            project: project.as_deref(),
+            ok,
+            answer: &answer,
+            structured: None,
+            entries: &entries,
+        };
+        if let (Some(notice), Ok(r)) = (crate::live_log::record(&self.config, &self.core, call).await.notice(), result.as_mut()) {
+            r.content.push(ContentBlock::text(notice));
+        }
+        result
+    }
+
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "embarch-api: build and flash embedded firmware onto hardware owned by embarch-core. \

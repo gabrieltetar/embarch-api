@@ -9,6 +9,7 @@ use anyhow::Result;
 use serde::Deserialize;
 
 pub mod api_log;
+pub mod call_trace;
 pub mod client;
 pub mod lease_gate;
 pub mod sse;

@@ -1339,6 +1339,24 @@ struct MemReadRequest<'a> {
     ranges: Vec<MemReadRange>,
 }
 
+/// `GET /call-log`'s answer: a range of Core's call-log entries and the chain's state.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CallLogResponse {
+    pub verified: bool,
+    #[serde(default)]
+    pub error: Option<String>,
+    pub length: usize,
+    #[serde(default)]
+    pub head: Option<String>,
+    pub from: usize,
+    pub to: usize,
+    #[serde(default)]
+    pub truncated: bool,
+    pub entries: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub pending_fold: Option<serde_json::Value>,
+}
+
 /// One range of a `POST /live/mem-read` reply.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MemReadRangeResponse {
@@ -2182,8 +2200,15 @@ impl CoreClient {
         // `reqwest`'s own error already says "operation timed out", but not
         // *how long it waited*, which is the fact a reader needs to tell a
         // slow-but-alive Core from a dead one without re-running the call.
+        // Collected only inside a `call_trace::scope`, and only for a gated route.
+        let sent = if bearer && crate::call_trace::active() { crate::call_trace::peek(&request) } else { None };
         match request.send().await {
-            Ok(response) => Ok(response),
+            Ok(response) => {
+                if let Some(sent) = sent.filter(|s| crate::lease_gate::is_gated(&s.method, &s.path)) {
+                    crate::call_trace::note(crate::call_trace::entry(sent, response.status(), response.headers()));
+                }
+                Ok(response)
+            }
             Err(err) => {
                 let context = match (err.is_timeout(), timeout) {
                     (true, Some(timeout)) => format!(
@@ -3506,6 +3531,22 @@ impl CoreClient {
         let resp: CoreStateResponse = self.send(self.client.post(url).json(&body), self.reset_timeout).await?;
         board.check_answered(&resp.probe_serial)?;
         Ok(resp)
+    }
+
+    /// `GET /call-log` — Core's hash-chained log of every gated call
+    /// (`embarch-core` decision 122), `from` inclusive to `to` exclusive by
+    /// position (an entry's `seq` is its position), the whole log by default
+    /// and at most Core's cap. Not lease-gated.
+    pub async fn call_log(&self, from: Option<usize>, to: Option<usize>) -> Result<CallLogResponse> {
+        let url = format!("{}/call-log", self.base_url().await?);
+        let mut query: Vec<(&str, String)> = Vec::new();
+        if let Some(f) = from {
+            query.push(("from", f.to_string()));
+        }
+        if let Some(t) = to {
+            query.push(("to", t.to_string()));
+        }
+        self.send(self.client.get(url).query(&query), self.status_timeout).await
     }
 
     /// `POST /dev-bench/link` — declares dev-bench's runtime-link USB

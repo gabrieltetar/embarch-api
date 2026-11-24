@@ -12,6 +12,7 @@ mod host_study;
 mod instrument;
 mod lease;
 mod ledger;
+mod live_log;
 mod logging;
 mod session_desk;
 mod patches;
@@ -753,6 +754,21 @@ pub enum Commands {
         /// How many of the most recent alerts to return.
         #[arg(long, default_value_t = 20)]
         limit: usize,
+    },
+    /// Read entries of embarch-core's call log (`GET /call-log`, `embarch-core`
+    /// decision 122): the one entry `--seq` names, or `--from` (inclusive) to
+    /// `--to` (exclusive), the whole log by default. An entry's `seq` is its
+    /// position. Not lease-gated.
+    CallLog {
+        /// The one entry with this `seq`.
+        #[arg(long, conflicts_with_all = ["from", "to"])]
+        seq: Option<usize>,
+        /// First entry, inclusive.
+        #[arg(long)]
+        from: Option<usize>,
+        /// End of the range, exclusive.
+        #[arg(long)]
+        to: Option<usize>,
     },
     /// List every USB serial port embarch-core's OWN machine currently
     /// enumerates (`GET /serial-ports`) — not this CLI's machine. Use this

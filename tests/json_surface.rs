@@ -86,6 +86,7 @@ const EVERY_SUBCOMMAND: &[&[&str]] = &[
     &["set-role-board", "--role", "dut", "--board", "nrf54l15dk", "--chip", "nRF54L15"],
     &["validate", "--role", "some-role"],
     &["alerts"],
+    &["call-log", "--seq", "0"],
     &["list-serial-ports"],
     &[
         "declare-signal",

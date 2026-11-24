@@ -86,6 +86,15 @@ pub enum Behavior {
         content_type: String,
         body: String,
     },
+    /// [`Behavior::Reply`] plus response headers: Core's `X-Embarch-Call-Seq` and
+    /// `X-Embarch-Call-Hash` on a gated route's answer.
+    ReplyWithHeaders {
+        status: u16,
+        reason: String,
+        content_type: String,
+        body: String,
+        headers: Vec<(String, String)>,
+    },
     /// Accept the connection, read the request, record it, and then never
     /// answer — the fixture for "this endpoint's own timeout is what fires".
     BlackHole,
@@ -144,6 +153,21 @@ impl Behavior {
             reason: reason.to_string(),
             content_type: "text/plain; charset=utf-8".to_string(),
             body: body.to_string(),
+        }
+    }
+
+    /// An answer stamped as Core stamps a gated route's: its call-log entry's
+    /// `seq` and `hash` in the `X-Embarch-Call-*` headers.
+    pub fn stamped(status: u16, reason: &str, content_type: &str, body: &str, seq: u64, hash: &str) -> Behavior {
+        Behavior::ReplyWithHeaders {
+            status,
+            reason: reason.to_string(),
+            content_type: content_type.to_string(),
+            body: body.to_string(),
+            headers: vec![
+                ("X-Embarch-Call-Seq".to_string(), seq.to_string()),
+                ("X-Embarch-Call-Hash".to_string(), hash.to_string()),
+            ],
         }
     }
 
@@ -265,6 +289,21 @@ async fn serve_one(
             let head = format!(
                 "HTTP/1.1 {status} {reason}\r\n\
                  Content-Type: {content_type}\r\n\
+                 Content-Length: {}\r\n\
+                 Connection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes()).await;
+            let _ = stream.write_all(body.as_bytes()).await;
+            let _ = stream.flush().await;
+            let _ = stream.shutdown().await;
+        }
+        Behavior::ReplyWithHeaders { status, reason, content_type, body, headers } => {
+            let extra: String = headers.iter().map(|(k, v)| format!("{k}: {v}\r\n")).collect();
+            let head = format!(
+                "HTTP/1.1 {status} {reason}\r\n\
+                 Content-Type: {content_type}\r\n\
+                 {extra}\
                  Content-Length: {}\r\n\
                  Connection: close\r\n\r\n",
                 body.len()
