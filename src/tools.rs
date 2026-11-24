@@ -1619,7 +1619,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Take the bench lease (embarch-api decision 90, embarch-core decision 93): this session holds BOTH boards until it releases or the ttl runs out, and every other session's flash, reset, bootload, serial_log, signal_exchange, mem_read, validate, run_study and the like is refused 409 naming holder, purpose and expiry. Take it before a sequence of hardware calls and release it after. Refused, with Core's text verbatim, if another session holds it. This server then sends the token on every call and renews it on a timer for as long as it runs, so do not renew by hand. The result carries the token once: to reach a CLI call or embarch-atlas from this session, export it as EMBARCH_LEASE_TOKEN there. ttl_s is 1 to 14400, default 900; it is how long a crashed session keeps the bench.")]
+    #[tool(description = "Take the bench lease (embarch-api decision 90, embarch-core decision 93): this session holds BOTH boards until it releases or the ttl runs out, and every other session's flash, reset, bootload, serial_log, signal_exchange, mem_read, validate, run_study and the like is refused 409 naming holder, purpose and expiry. Take it before a sequence of hardware calls and release it after. Refused, with Core's text verbatim, if another session holds it. This server then sends the token on every call and renews it on a timer for as long as it runs, so do not renew by hand. The result carries the token once: to reach a CLI call or embarch-atlas from this session, export it as EMBARCH_LEASE_TOKEN there. ttl_s is 1 to 14400, default 900; it is how long a crashed session keeps the bench. Core also releases a lease after 30 minutes with no hardware call: this server then drops its token and refuses the next hardware call, before Core, until you take it again with lease_take.")]
     async fn lease_take(&self, Parameters(params): Parameters<LeaseTakeParams>) -> Result<CallToolResult, McpError> {
         let report = crate::lease::take(
             &self.core,
@@ -1641,7 +1641,7 @@ impl EmbarchApi {
         Self::lease_result(crate::lease::release(&self.core).await)
     }
 
-    #[tool(description = "Show the live bench lease (embarch-api decision 90): holder, purpose, start, expiry, never the token; lease is null when none is live. this_process_sends_a_token says whether this server sends one on its calls. this_process_requires_a_lease says whether this server refuses hardware calls while no lease is live (EMBARCH_REQUIRE_LEASE, decision 101). Not refused by a lease, so it works for a session that does not hold it.")]
+    #[tool(description = "Show the live bench lease (embarch-api decision 90): holder, purpose, start, expiry, never the token; lease is null when none is live. Core releases a lease after 30 minutes with no hardware call, and lease is then null. this_process_sends_a_token says whether this server sends one on its calls (false once its lease was released). this_process_requires_a_lease says whether this server refuses hardware calls while no lease is live (EMBARCH_REQUIRE_LEASE, decision 101). Not refused by a lease, so it works for a session that does not hold it.")]
     async fn lease_show(&self) -> Result<CallToolResult, McpError> {
         Self::lease_result(crate::lease::show(&self.core).await)
     }

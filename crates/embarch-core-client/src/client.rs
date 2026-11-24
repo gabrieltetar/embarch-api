@@ -183,6 +183,27 @@ impl std::fmt::Display for LeaseRequiredError {
 
 impl std::error::Error for LeaseRequiredError {}
 
+/// This process's lease is gone (Core answered a renew `404`: released after
+/// 30 minutes with no hardware call, expired, or Core restarted), so a
+/// hardware route is refused here, before Core, until the lease is taken again
+/// (`embarch-api` decisions 90 and 101). `reason` is Core's own text.
+#[derive(Debug)]
+pub struct LeaseGoneError {
+    pub reason: String,
+}
+
+impl std::fmt::Display for LeaseGoneError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "this session's bench lease is gone ({}): take it again with the lease_take tool or `embarch-api lease-take`",
+            self.reason
+        )
+    }
+}
+
+impl std::error::Error for LeaseGoneError {}
+
 /// Core's `409` body for a request without the live lease's token starts
 /// with this (`embarch-core` `lease.rs`, `LeaseView::refusal`). The only
 /// thing that tells it from a study or dev-bench `409`, which share the status.
@@ -199,6 +220,10 @@ struct HeldLease {
     token: Option<String>,
     ttl_s: Option<u64>,
     renewed: Option<Instant>,
+    /// Core's reason when a renew found no lease live. While set, no token is
+    /// sent (`EMBARCH_LEASE_TOKEN` included) and gated routes refuse here.
+    /// Cleared by taking, adopting or releasing a lease.
+    gone: Option<String>,
 }
 
 /// `embarch-api` and Core disagree about `embarch-study-designer`'s host
@@ -2175,7 +2200,7 @@ impl CoreClient {
         timeout: Option<Duration>,
         bearer: bool,
     ) -> Result<reqwest::Response> {
-        let request = if self.lease_required && bearer { self.refuse_without_a_live_lease(request).await? } else { request };
+        let request = if bearer { self.refuse_without_a_live_lease(request).await? } else { request };
         let request = if bearer { request.bearer_auth(&self.token) } else { request };
         let request = match self.effective_lease_token().filter(|_| bearer) {
             Some(token) => {
@@ -2229,11 +2254,24 @@ impl CoreClient {
     /// token left over from an expired lease or a Core restart. `lease_show`
     /// comes back through `dispatch`, and `/lease` is not gated, so this ends
     /// after one level; the box is what lets the two call each other.
+    ///
+    /// A lease that went away under this process (a renew answered `404`,
+    /// [`LeaseGoneError`]) refuses a gated route here whether or not the check
+    /// is on, so a session does not drift into unleased hardware calls.
     async fn refuse_without_a_live_lease(&self, request: reqwest::RequestBuilder) -> Result<reqwest::RequestBuilder> {
+        let gone = self.lease.lock().expect("lease state poisoned").gone.clone();
+        if !self.lease_required && gone.is_none() {
+            return Ok(request);
+        }
         let (client, built) = request.build_split();
         let built = built.context("request to embarch-core failed")?;
-        if crate::lease_gate::is_gated(built.method().as_str(), built.url().path()) && Box::pin(self.lease_show()).await?.is_none() {
-            return Err(anyhow::Error::new(LeaseRequiredError));
+        if crate::lease_gate::is_gated(built.method().as_str(), built.url().path()) {
+            if let Some(reason) = gone {
+                return Err(anyhow::Error::new(LeaseGoneError { reason }));
+            }
+            if Box::pin(self.lease_show()).await?.is_none() {
+                return Err(anyhow::Error::new(LeaseRequiredError));
+            }
         }
         Ok(reqwest::RequestBuilder::from_parts(client, built))
     }
@@ -2336,7 +2374,13 @@ impl CoreClient {
     /// ([`CoreClient::set_lease_token`]), else `EMBARCH_LEASE_TOKEN`, read on
     /// every call so a long-lived process sees a later export. Blank is none.
     pub fn effective_lease_token(&self) -> Option<String> {
-        let held = self.lease.lock().expect("lease state poisoned").token.clone();
+        let held = {
+            let held = self.lease.lock().expect("lease state poisoned");
+            if held.gone.is_some() {
+                return None;
+            }
+            held.token.clone()
+        };
         held.or_else(|| std::env::var(LEASE_TOKEN_ENV).ok())
             .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty())
@@ -2346,7 +2390,7 @@ impl CoreClient {
     /// [`CoreClient::lease_keepalive`] renews it.
     pub fn set_lease_token(&self, token: String) {
         let mut held = self.lease.lock().expect("lease state poisoned");
-        *held = HeldLease { token: Some(token), ttl_s: None, renewed: None };
+        *held = HeldLease { token: Some(token), ttl_s: None, renewed: None, gone: None };
     }
 
     /// `POST /lease`. On success this client holds the token: every later
@@ -2367,6 +2411,7 @@ impl CoreClient {
             token: Some(grant.token.clone()),
             ttl_s: Some(grant.lease.ttl_s),
             renewed: Some(Instant::now()),
+            gone: None,
         };
         Ok(grant)
     }
@@ -2377,7 +2422,18 @@ impl CoreClient {
     pub async fn lease_renew(&self, ttl_s: Option<u64>) -> Result<LeaseView> {
         let url = format!("{}/lease", self.base_url().await?);
         let body = serde_json::json!({ "ttl_s": ttl_s });
-        let view: LeaseView = self.send(self.client.put(url).json(&body), self.status_timeout).await?;
+        let response = self.dispatch(self.client.put(url).json(&body), Some(self.status_timeout)).await?;
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_else(|_| "<no response body>".to_string());
+            if status == reqwest::StatusCode::NOT_FOUND {
+                // No lease is live: drop the token (the env one too) and keep
+                // Core's reason for the next hardware call to refuse with.
+                self.lease.lock().expect("lease state poisoned").gone = Some(text.clone());
+            }
+            return Err(anyhow!("embarch-core returned {status}: {text}"));
+        }
+        let view: LeaseView = response.json().await.context("failed to parse embarch-core's response as JSON")?;
         let mut held = self.lease.lock().expect("lease state poisoned");
         held.ttl_s = Some(view.ttl_s);
         held.renewed = Some(Instant::now());

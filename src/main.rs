@@ -417,7 +417,8 @@ pub enum Commands {
     /// session's hardware call is refused by name. Prints the token once;
     /// export it as EMBARCH_LEASE_TOKEN so every later call, and embarch-atlas,
     /// sends it. Nothing renews a CLI-taken lease: run lease-renew, or take a
-    /// long enough --ttl-s.
+    /// long enough --ttl-s. Core releases a lease after 30 minutes with no
+    /// hardware call.
     LeaseTake {
         /// Who is taking it, shown to anyone refused. Defaults to "embarch-api cli".
         #[arg(long)]
@@ -438,7 +439,8 @@ pub enum Commands {
     /// Release the lease whose token EMBARCH_LEASE_TOKEN carries.
     LeaseRelease,
     /// Show the live bench lease (holder, purpose, expiry; never the token),
-    /// or that there is none.
+    /// or that there is none. Core releases a lease after 30 minutes with no
+    /// hardware call.
     LeaseShow,
     /// Reset a project's target chip via embarch-core.
     Reset {

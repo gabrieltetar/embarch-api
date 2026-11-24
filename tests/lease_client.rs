@@ -389,3 +389,44 @@ async fn a_required_lease_carries_an_upload_through_the_check() {
     assert!(upload.body_text().contains("signed-image-bytes"), "{}", upload.body_text());
     assert!(upload.header("authorization").is_some());
 }
+
+// ------------------------------------------------ a lease released for idleness (decision 90, embarch-core decision 123)
+
+const IDLE_RELEASE: &str = "bench lease of 'sess-a' released after 30 min with no hardware call";
+
+/// A renew answers Core's idle release: the keepalive drops the token, the next
+/// hardware call refuses before Core with Core's reason, `lease_show` says this
+/// process holds no token, and a new take lets hardware calls through again.
+#[tokio::test]
+async fn an_idle_released_lease_refuses_the_next_hardware_call_until_taken_again() {
+    let mock = MockCore::start(Behavior::Router {
+        routes: vec![(
+            "/lease".to_string(),
+            Behavior::Sequence(vec![
+                Behavior::plain_text_error(404, "Not Found", IDLE_RELEASE), // the renew
+                Behavior::plain_text_error(404, "Not Found", IDLE_RELEASE), // lease_show
+                Behavior::json_ok(grant()),                                  // the new take
+            ]),
+        )],
+        otherwise: Box::new(Behavior::json_ok(json!({}))),
+    })
+    .await;
+    let c = client(&mock);
+    c.set_lease_token("handed-token".to_string());
+    let keepalive = c.clone();
+    let task = tokio::spawn(async move { keepalive.lease_keepalive().await });
+    tokio::time::sleep(Duration::from_millis(1800)).await;
+    task.abort();
+    assert_eq!(c.effective_lease_token(), None);
+
+    let refused = c.mem_read("dut", &[(0, 1)]).await.unwrap_err();
+    let text = format!("{refused:#}");
+    assert!(text.contains(IDLE_RELEASE) && text.contains("lease_take"), "{text}");
+    assert!(refused.downcast_ref::<embarch_core_client::LeaseGoneError>().is_some());
+    assert_eq!(asked(&mock, "/live/mem-read"), 0, "a refused call must send nothing to Core");
+
+    assert!(c.lease_show().await.unwrap().is_none());
+    c.lease_take("sess-a", None, 3600).await.unwrap();
+    let _ = c.mem_read("dut", &[(0, 1)]).await;
+    assert_eq!(asked(&mock, "/live/mem-read"), 1);
+}
