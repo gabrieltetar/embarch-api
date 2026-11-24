@@ -501,7 +501,7 @@ pub struct DeclareBootloadPortsParams {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct DeclareInstrumentParams {
-    /// What study steps and instrument_exchange call it: ASCII letters,
+    /// What a study's Instrument step calls it: ASCII letters,
     /// digits, `-`, `_`, `.`.
     pub name: String,
     /// Its USB serial identity, VID:PID or VID:PID:SERIAL in hex (e.g.
@@ -579,22 +579,6 @@ pub struct AnswerPromptParams {
     pub prompt_id: u32,
     /// confirmed or cancelled: exactly what the person said.
     pub answer: String,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct InstrumentExchangeParams {
-    /// A declared instrument's name (see `list_instruments`).
-    pub name: String,
-    /// One command, without a terminator: the instrument's own is added.
-    pub line: String,
-    /// true for a query (its reply is returned); false for a set.
-    #[serde(default)]
-    pub query: bool,
-    /// Core's default is 2000.
-    pub timeout_ms: Option<u64>,
-    /// How long to wait for the instrument's port to appear (a bridge
-    /// powered by the instrument appears only once it is on).
-    pub port_wait_ms: Option<u64>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1707,22 +1691,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Send one SCPI command to a declared bench instrument via embarch-core's POST /instruments/{name}/exchange (embarch-core decision 104) and return its reply raw — the instrument's own prefix kept, nothing parsed. Core opens the port, sends an empty line first and keeps its answer apart as flush_reply (a parser holding a partial line answers the next command as an error), honours the instrument's min_interval_ms, sends the line with the declared terminator, and reads one reply line for a query, or for a set when ack_ok is declared. query=true returns reply and terminated (a whole line came back). A set returns ack: ok, refused or unacknowledged; unacknowledged means the instrument did not confirm it, so treat the action as not carried out. Refused 409 while a study holds the bench or when the port is not enumerated (port_wait_ms waits for it). A command can change the instrument's state — switch a load on, lock its front panel — so send only what the person you are working for asked for.")]
-    async fn instrument_exchange(&self, Parameters(p): Parameters<InstrumentExchangeParams>) -> Result<CallToolResult, McpError> {
-        let req = embarch_core_client::InstrumentExchange {
-            line: p.line,
-            query: p.query,
-            timeout_ms: p.timeout_ms.unwrap_or(embarch_core_client::INSTRUMENT_DEFAULT_TIMEOUT_MS),
-            port_wait_ms: p.port_wait_ms.unwrap_or(0),
-        };
-        match self.core.instrument_exchange(&p.name, &req).await {
-            Ok(r) if r.succeeded() => Self::ok_json(serde_json::json!({ "reply": r })),
-            Ok(r) => Self::err_json(serde_json::json!({ "reply": r })),
-            Err(e) => Self::err_text(format!("instrument_exchange failed: {e:#}")),
-        }
-    }
-
-    #[tool(description = "Run a host study via embarch-core's POST /host-studies (embarch-core decisions 95, 105): Core runs its Exchange (a line to a declared signal), Instrument (one SCPI command), Wait and Prompt steps itself, with no dev bench, then always its teardown. study_file is a HostStudy as JSON, checked here before Core sees it; a Prompt may carry bench_config, the bench configuration it asks for by name, which the surface showing the prompt resolves. Returns study_id at once; the study runs on. Watch it with study_watch, which returns early when a Prompt is waiting for a person (see answer_prompt). Refused 409 while any study holds the bench. A step can switch a supply or a load, so run only a study the person you are working for asked for.")]
+    #[tool(description = "Run a host study via embarch-core's POST /host-studies (embarch-core decisions 95, 105): Core runs its Exchange (a line to a declared signal), Instrument (one SCPI command to a declared instrument: the only way to reach one, since Core refuses the instrument exchange route), Wait and Prompt steps itself, with no dev bench, then always its teardown. study_file is a HostStudy as JSON, checked here before Core sees it; a Prompt may carry bench_config, the bench configuration it asks for by name, which the surface showing the prompt resolves. Returns study_id at once; the study runs on. Watch it with study_watch, which returns early when a Prompt is waiting for a person (see answer_prompt). Refused 409 while any study holds the bench. A step can switch a supply or a load, so run only a study the person you are working for asked for.")]
     async fn run_host_study(&self, Parameters(p): Parameters<RunHostStudyParams>) -> Result<CallToolResult, McpError> {
         let study = match crate::host_study::read_host_study(std::path::Path::new(&p.study_file)) {
             Ok(s) => s,

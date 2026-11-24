@@ -143,9 +143,6 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
         }
         Commands::ListInstruments => list_instruments(&core, json).await,
         Commands::RemoveInstrument { name } => remove_instrument(&core, &name, json).await,
-        Commands::InstrumentExchange { name, line, query, timeout_ms, port_wait_ms } => {
-            instrument_exchange(&core, &name, line, query, timeout_ms, port_wait_ms, json).await
-        }
         Commands::RunHostStudy { study_file } => run_host_study(&core, &study_file, json).await,
         Commands::Publish { run_id, notes, report, prose, prose_author, prose_reviewed_by } => {
             let args = PublishArgs {
@@ -1121,38 +1118,6 @@ async fn answer_prompt(core: &CoreClient, study_id: &str, prompt_id: u32, answer
             format!("prompt {prompt_id} of {study_id}: {answer}, recorded"),
         ),
         Err(e) => error_result(json, format!("answer-prompt failed: {e:#}")),
-    }
-}
-
-async fn instrument_exchange(
-    core: &CoreClient,
-    name: &str,
-    line: String,
-    query: bool,
-    timeout_ms: Option<u64>,
-    port_wait_ms: Option<u64>,
-    json: bool,
-) -> i32 {
-    let req = embarch_core_client::InstrumentExchange {
-        line,
-        query,
-        timeout_ms: timeout_ms.unwrap_or(embarch_core_client::INSTRUMENT_DEFAULT_TIMEOUT_MS),
-        port_wait_ms: port_wait_ms.unwrap_or(0),
-    };
-    match core.instrument_exchange(name, &req).await {
-        Ok(r) => {
-            // A query's reply, or a set's acknowledgement, is the answer; an unacknowledged set
-            // or a query with no whole reply line exits 1 (decision 97).
-            let ok = r.succeeded();
-            let human = match (r.query, r.ack) {
-                (true, _) if r.terminated => r.reply.clone(),
-                (true, _) => format!("no whole reply line from {name} (got '{}')", r.reply),
-                (false, None) => format!("sent '{}' to {name}", r.line),
-                (false, Some(ack)) => format!("{name} answered '{}' ({ack:?})", r.reply),
-            };
-            finish(json, ok, serde_json::json!({ "success": ok, "reply": r }), human)
-        }
-        Err(e) => error_result(json, format!("instrument-exchange failed: {e:#}")),
     }
 }
 
@@ -2790,7 +2755,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 63,
+            arms, 62,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."

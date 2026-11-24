@@ -700,7 +700,7 @@ impl std::error::Error for TopologyMismatchError {}
 // renaming every one of them is churn that buys nothing; a `*Response` suffix
 // is also still an honest name for "the shape `GET /alerts` returns".
 pub use embarch_topology::hardware::{
-    Ack, Alert, BootloadPorts, DetectedPort, EnrolledBoard, Instrument, InstrumentExchange, InstrumentProtocol, InstrumentReply,
+    Ack, Alert, BootloadPorts, DetectedPort, EnrolledBoard, Instrument, InstrumentProtocol,
     Route, SignalDirection, SignalLink, UsbPortId,
 };
 /// The `timeout_ms` Core uses for an instrument command when none is sent (`embarch-topology` decision 49).
@@ -2672,22 +2672,6 @@ impl CoreClient {
             return Ok(false);
         }
         Err(anyhow!("embarch-core returned {status}: {body}"))
-    }
-
-    /// `POST /instruments/{name}/exchange` — one command and its reply. The
-    /// request timeout is the serial one plus the port wait plus a second for
-    /// the flush line and the instrument's pacing, which come before the
-    /// command's own deadline on Core's side.
-    pub async fn instrument_exchange(&self, name: &str, req: &InstrumentExchange) -> Result<InstrumentReply> {
-        let url = format!("{}/instruments/{}/exchange", self.base_url().await?, urlencode(name));
-        let timeout = self.serial_timeout + Duration::from_millis(req.port_wait_ms + 1_000);
-        let response = self.dispatch(self.client.post(url).json(req), Some(timeout)).await?;
-        let status = response.status();
-        if status.is_success() {
-            return response.json().await.context("failed to parse embarch-core's response as JSON");
-        }
-        let body = response.text().await.unwrap_or_default();
-        Err(instrument_route_missing(status, &body).unwrap_or_else(|| anyhow!("embarch-core returned {status}: {body}")))
     }
 
     pub async fn clear_bootload_ports(&self) -> Result<bool> {

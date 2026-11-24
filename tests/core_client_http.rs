@@ -162,8 +162,6 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.declare_instrument(&eload).await;
     let _ = client.instruments().await;
     let _ = client.remove_instrument("eload").await;
-    let idn = embarch_core_client::InstrumentExchange { line: "*IDN?".into(), query: true, timeout_ms: 500, port_wait_ms: 0 };
-    let _ = client.instrument_exchange("eload", &idn).await;
     let host: embarch_study_designer::HostStudy = serde_json::from_value(serde_json::json!({
         "name": "sweep",
         "steps": [{ "name": "w", "action": { "Wait": { "ms": 1 } }, "timeout_ms": 1, "continue_on_fail": false, "delay_before_ms": 0 }],
@@ -280,7 +278,6 @@ async fn every_outbound_call_carries_the_bearer_token() {
         ("PUT", "/instruments"),
         ("GET", "/instruments"),
         ("DELETE", "/instruments/eload"),
-        ("POST", "/instruments/eload/exchange"),
         ("POST", "/lease"),
         ("PUT", "/lease"),
         ("DELETE", "/lease"),

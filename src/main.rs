@@ -272,7 +272,7 @@ pub enum Commands {
     /// electronic load, a supply), or replace the one of the same name.
     /// `--preset et54` fills the line facts of an ET54-series load.
     DeclareInstrument {
-        /// What study steps and instrument-exchange call it.
+        /// What study steps and instrument steps call it.
         name: String,
         /// Its USB serial identity, VID:PID or VID:PID:SERIAL in hex.
         #[arg(long)]
@@ -350,21 +350,6 @@ pub enum Commands {
         /// The person who reviewed and adopted the --prose files.
         #[arg(long)]
         prose_reviewed_by: Option<String>,
-    },
-    /// Send one command to a declared instrument and print its reply, raw.
-    InstrumentExchange {
-        name: String,
-        /// The command, without a terminator.
-        line: String,
-        /// A query: read and print its reply.
-        #[arg(long)]
-        query: bool,
-        /// Core's default is 2000.
-        #[arg(long)]
-        timeout_ms: Option<u64>,
-        /// How long to wait for the instrument's port to appear.
-        #[arg(long)]
-        port_wait_ms: Option<u64>,
     },
     /// Append one row to the project's hardware test ledger
     /// (`embarch/ledger/rows.jsonl`): which test ran, its result, on what
