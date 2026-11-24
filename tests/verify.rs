@@ -145,6 +145,10 @@ fn core_files_with(k: &SigningKey, calls: bool) -> BTreeMap<String, String> {
         "claimed": { "build": null }, "core": { "version": "0.0.0", "keyid": sha(k.verifying_key().as_bytes()) },
         "record_sha256": sha(f["record.dsse.json"].as_bytes()),
     });
+    let mut rd = rd;
+    if calls {
+        rd["observed"]["call_log"] = json!({ "head": entries[2].1, "first_seq": 2, "last_seq": 4, "count": 3 });
+    }
     f.insert("report-data.json".into(), rd.to_string());
     let st = json!({ "_type": "https://in-toto.io/Statement/v1",
         "subject": [{ "name": "report-data.json", "digest": { "sha256": sha(rd.to_string().as_bytes()) } }],
@@ -530,4 +534,51 @@ async fn a_zip_with_no_call_log_segment_reads_no_call_log_and_is_not_failed() {
     let e = call_entries(CALL_BEFORE);
     f.insert("call-log-segment.jsonl".into(), call_segment(&e, CALL_BEFORE, &e[2].1, 2, 4).into_bytes());
     assert_eq!(status(&check(&f, "nocalls-extra", &pub_hex(&k), None), 8), Status::Fail);
+}
+
+#[tokio::test]
+async fn check_6_recomputes_the_call_log_claim_and_the_appendix_prints_it() {
+    let k = key(7);
+    let files = published_full(&k, None, true).await;
+    let r = check(&files, "rd-calls-ok", &pub_hex(&k), None);
+    assert_eq!(status(&r, 6), Status::Pass, "{}", r.to_text());
+
+    let appendix = String::from_utf8(files["appendix.typ"].clone()).unwrap();
+    let rd: Value = serde_json::from_slice(&files["report-data.json"]).unwrap();
+    let head = rd["observed"]["call_log"]["head"].as_str().unwrap();
+    assert!(appendix.contains(head) && appendix.contains("seq 2 to 4") && appendix.contains("Call log entries"), "{appendix}");
+    assert!(appendix.contains("the calls made to Core") && appendix.contains("hardware reached without Core is not in it"), "{appendix}");
+    assert!(!appendix.contains("no call log"), "{appendix}");
+
+    // A changed count fails check 6, naming the field.
+    let mut f = files.clone();
+    let mut bad = rd.clone();
+    bad["observed"]["call_log"]["count"] = json!(4);
+    f.insert("report-data.json".into(), bad.to_string().into_bytes());
+    let r = check(&f, "rd-calls-count", &pub_hex(&k), None);
+    assert_eq!(status(&r, 6), Status::Fail, "{}", r.to_text());
+    assert!(r.to_text().contains("observed.call_log"), "{}", r.to_text());
+
+    // A record naming a range over a report-data with no field fails, naming it.
+    let mut f = files.clone();
+    let mut bad = rd.clone();
+    bad["observed"].as_object_mut().unwrap().remove("call_log");
+    f.insert("report-data.json".into(), bad.to_string().into_bytes());
+    let r = check(&f, "rd-calls-missing", &pub_hex(&k), None);
+    assert_eq!(status(&r, 6), Status::Fail, "{}", r.to_text());
+    assert!(r.to_text().contains("observed.call_log"), "{}", r.to_text());
+
+    // A field the record does not back fails too.
+    let mut f = published(&k).await;
+    let mut bad: Value = serde_json::from_slice(&f["report-data.json"]).unwrap();
+    bad["observed"]["call_log"] = rd["observed"]["call_log"].clone();
+    f.insert("report-data.json".into(), bad.to_string().into_bytes());
+    let r = check(&f, "rd-calls-extra", &pub_hex(&k), None);
+    assert_eq!(status(&r, 6), Status::Fail, "{}", r.to_text());
+
+    // Milestone 1: no field, check 6 passes, the appendix says no call log.
+    let m1 = published(&k).await;
+    assert_eq!(status(&check(&m1, "rd-m1", &pub_hex(&k), None), 6), Status::Pass);
+    let appendix = String::from_utf8(m1["appendix.typ"].clone()).unwrap();
+    assert!(appendix.contains("no call log"), "{appendix}");
 }

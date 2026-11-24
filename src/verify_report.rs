@@ -311,19 +311,31 @@ pub(crate) fn check_report_claims(files: &BTreeMap<String, Vec<u8>>, manifest: O
     let label = if person_acted { "person's acts not protected" } else { "agent-scoped only" };
     let steps = count_outcomes(&events);
     let run_status = if run["clean"] == true { "completed" } else { "step_failed" };
+    let mut observed = json!({ "image_status": record["predicate"]["observed"]["image_status"],
+                               "declarations": record["predicate"]["observed"]["declarations"] });
+    // Present exactly when the signed record carries `observed.call_log`; `count` is the range's length,
+    // which check 8 ties to the segment's entries.
+    let signed_log = &record["predicate"]["observed"]["call_log"];
+    if !signed_log.is_null() {
+        let count = match (signed_log["first_seq"].as_u64(), signed_log["last_seq"].as_u64()) {
+            (Some(f), Some(l)) if l >= f => l - f + 1,
+            _ => 0,
+        };
+        observed["call_log"] = json!({ "head": signed_log["head"], "first_seq": signed_log["first_seq"],
+                                       "last_seq": signed_log["last_seq"], "count": count });
+    }
     let expected = json!({
         "schema": 1, "study_id": id, "kind": run["kind"], "revision": manifest["predicate"]["revision"],
         "run_status": run_status, "steps": steps,
         "subject": { "study_name": events["study_name"], "provenance": events["provenance"] },
         "attestation": { "label": label, "core_attested": false },
         "go_by": go_by, "published_by": published_by, "adopted": adopted,
-        "observed": { "image_status": record["predicate"]["observed"]["image_status"],
-                      "declarations": record["predicate"]["observed"]["declarations"] },
+        "observed": observed,
         "claimed": { "build": record["predicate"]["claimed"]["build"] },
         "core": { "version": manifest["predicate"]["core"]["version"], "keyid": fingerprint },
         "record_sha256": run["record_sha256"],
     });
-    let mut differing: Vec<&str> = Vec::new();
+    let mut differing: Vec<String> = Vec::new();
     for (k, want) in expected.as_object().into_iter().flatten() {
         let have = &rd[k.as_str()];
         let same = if k == "attestation" {
@@ -332,12 +344,21 @@ pub(crate) fn check_report_claims(files: &BTreeMap<String, Vec<u8>>, manifest: O
             have == want
         };
         if !same {
-            differing.push(k);
+            if k == "observed" {
+                // Name the sub-key, so a call-log claim that disagrees is named as such.
+                let keys: std::collections::BTreeSet<&String> =
+                    want.as_object().into_iter().flat_map(|o| o.keys()).chain(have.as_object().into_iter().flat_map(|o| o.keys())).collect();
+                for sub in keys.into_iter().filter(|s| have[s.as_str()] != want[s.as_str()]) {
+                    differing.push(format!("observed.{sub}"));
+                }
+            } else {
+                differing.push(k.clone());
+            }
         }
     }
     for k in rd.as_object().into_iter().flat_map(|o| o.keys()) {
         if expected.get(k.as_str()).is_none() {
-            differing.push(k);
+            differing.push(k.clone());
         }
     }
     if !differing.is_empty() {

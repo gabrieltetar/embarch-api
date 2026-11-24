@@ -246,6 +246,27 @@ pub fn data_section_source(i: &ReportInputs) -> String {
     d.0
 }
 
+/// The appendix's call-log rows: the head, the range and the count Core's report-data
+/// gives, with what the log holds. A zip with no field reads "no call log".
+fn call_log_rows(rd: &Value) -> Vec<(&'static str, String)> {
+    let Some(log) = rd.pointer("/observed/call_log") else {
+        return vec![("Call log", "no call log".to_string())];
+    };
+    let range = match (log["first_seq"].as_u64(), log["last_seq"].as_u64()) {
+        (Some(f), Some(l)) => format!("seq {f} to {l}"),
+        _ => "none (the run made no call)".to_string(),
+    };
+    vec![
+        ("Call log head", show(&log["head"])),
+        ("Call log range", range),
+        ("Call log entries", show(&log["count"])),
+        (
+            "Call log holds",
+            "the calls made to Core during the run; hardware reached without Core is not in it".to_string(),
+        ),
+    ]
+}
+
 /// The fixed audit appendix, the rows of `notes/hil/06-report-and-publish.md`
 /// that apply to a Study. A row Core's data does not yet hold says so.
 pub fn appendix_source(i: &ReportInputs) -> String {
@@ -256,7 +277,7 @@ pub fn appendix_source(i: &ReportInputs) -> String {
     d.para("Appended by embarch-api to every report. Core's signed manifest lists every file of this zip it produced; the files embarch-api made are listed in it as embarch-api's and are checked by verify, not by Core's signature.");
 
     d.heading(2, "Observed by Core");
-    d.kv(&[
+    let mut observed = vec![
         ("Run", at(rd, "/study_id")),
         ("Run status", at(rd, "/run_status")),
         (
@@ -272,10 +293,14 @@ pub fn appendix_source(i: &ReportInputs) -> String {
         ),
         ("DUT image status", at(rd, "/observed/image_status")),
         ("Declarations", at(rd, "/observed/declarations")),
+    ];
+    observed.extend(call_log_rows(rd));
+    observed.extend([
         ("Core version", at(rd, "/core/version")),
         ("Core key id", at(rd, "/core/keyid")),
         ("Signed record SHA-256", at(rd, "/record_sha256")),
     ]);
+    d.kv(&observed);
 
     d.heading(2, "Claimed by the build");
     d.para("What embarch-api reported, which the agent can reach: a claim.");
@@ -364,7 +389,7 @@ pub fn appendix_source(i: &ReportInputs) -> String {
     } else {
         d.table(&["Measurement", "Incomplete"], &lost);
     }
-    d.para("Not carried in milestone 1: a call log (this zip has none), the image readback, an instrument's identity, runs of the same study on the same unit, definition files other than the study file. Each is a claim or an absence, never a pass.");
+    d.para(&format!("Not carried in milestone 1: {}the image readback, an instrument's identity, runs of the same study on the same unit, definition files other than the study file. Each is a claim or an absence, never a pass.", if rd.pointer("/observed/call_log").is_some() { "" } else { "a call log (this zip has none), " }));
 
     d.heading(2, "Hash manifest");
     d.para(&format!("manifest.dsse.json, signed by Core, holds the SHA-256 of every file of this zip. This is revision {}.", i.revision));
