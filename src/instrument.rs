@@ -89,6 +89,7 @@ pub fn build(args: &DeclareArgs<'_>) -> Result<Instrument, String> {
         min_interval_ms: args.min_interval_ms.or(p.as_ref().map(|p| p.min_interval_ms)).unwrap_or(0),
         ack_ok: args.ack_ok.map(str::to_string).or(p.as_ref().map(|p| p.ack_ok.to_string())),
         ack_err: args.ack_err.map(str::to_string).or(p.as_ref().map(|p| p.ack_err.to_string())),
+        safe_off: Vec::new(),
     };
     inst.check()?;
     Ok(inst)

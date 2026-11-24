@@ -1278,7 +1278,7 @@ pub(crate) fn parse_signal_link(
         (Some(role), None) => role,
         (None, Some(_)) => String::new(),
     };
-    Ok(SignalLink { name, origin_role, origin_board, direction, route, baud })
+    Ok(SignalLink { name, origin_role, origin_board, direction, route, baud, safe_off: None })
 }
 
 #[tool_router]

@@ -108,6 +108,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
             interface: None,
         },
         baud: None,
+        safe_off: None,
     };
 
     // Each of these is exactly one HTTP request; none retries.
@@ -159,6 +160,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
         min_interval_ms: 200,
         ack_ok: None,
         ack_err: None,
+        safe_off: Vec::new(),
     };
     let _ = client.declare_instrument(&eload).await;
     let _ = client.instruments().await;
@@ -886,6 +888,7 @@ async fn a_no_content_endpoint_surfaces_its_plain_text_error_too() {
                 tx_pin: "P1.05".to_string(),
             },
             baud: None,
+            safe_off: None,
         })
         .await
         .expect_err("a 400 was reported as success")

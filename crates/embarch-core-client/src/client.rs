@@ -3962,6 +3962,7 @@ mod tests {
             direction: SignalDirection::DutToHost,
             route: SignalRoute::Direct { port_serial: "ABC123".to_string(), interface: None },
             baud: None,
+            safe_off: None,
         }
     }
 
@@ -4259,6 +4260,7 @@ mod tests {
             direction: SignalDirection::DutToHost,
             route: SignalRoute::ViaDevBench { rx_pin: "P0.04".to_string(), tx_pin: "P0.05".to_string() },
             baud: None,
+            safe_off: None,
         };
         let json = serde_json::to_string(&link).unwrap();
         assert!(json.contains(r#""kind":"via-dev-bench""#), "{json}");
