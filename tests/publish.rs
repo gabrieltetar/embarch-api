@@ -69,6 +69,7 @@ fn core_files_rev(revision: u64, extra: &[Value]) -> BTreeMap<String, String> {
     f.insert("report-data.json".to_string(), report_data_rev(revision, extra));
     f.insert("report-data.dsse.json".to_string(), r#"{"payloadType":"rd"}"#.to_string());
     f.insert("run-log-segment.jsonl".to_string(), "{\"n\":0}\n".to_string());
+    f.insert("call-log-segment.jsonl".to_string(), "{\"seq\":0}\n".to_string());
     f
 }
 
@@ -152,7 +153,7 @@ fn tmp(tag: &str) -> std::path::PathBuf {
 
 const EVERY_FILE_A_FIXTURE_RUN_HOLDS: &[&str] = &[
     "report.pdf", "study.json", "events.json", "measurements.json", "record.dsse.json", "report-data.json",
-    "report-data.dsse.json", "manifest.dsse.json", "run-log-segment.jsonl", "streams/rate.bin", "streams/rate.csv",
+    "report-data.dsse.json", "manifest.dsse.json", "run-log-segment.jsonl", "call-log-segment.jsonl", "streams/rate.bin", "streams/rate.csv",
     "streams/console.txt", "exports/junit.xml", "exports/ocp-tv.jsonl", "report.typ", "appendix.typ",
     "notes/operator-notes.txt", "typst-packages/preview/lilaq/0.6.0/typst.toml",
 ];
@@ -489,7 +490,7 @@ fn swept_then_restored_router(revision: u64, files: &BTreeMap<String, String>) -
     // The captures are gone: only the restore routes and the revision's own files answer.
     routes.retain(|(p, _)| !p.starts_with("/stream"));
     routes.insert(0, ("/restore/manifest.dsse.json".into(), Behavior::json_ok(json!({ "restored": "manifest.dsse.json", "sha256": "h" }))));
-    for n in files.keys().filter(|n| !n.starts_with("report-data.") && *n != "run-log-segment.jsonl") {
+    for n in files.keys().filter(|n| !n.starts_with("report-data.") && *n != "run-log-segment.jsonl" && *n != "call-log-segment.jsonl") {
         routes.insert(0, (format!("/restore/{n}"), Behavior::json_ok(json!({ "restored": n, "sha256": "h" }))));
     }
     let gone = Behavior::plain_text_error(404, "Not Found", "swept");
@@ -521,6 +522,8 @@ async fn a_swept_run_republishes_to_r2_from_the_earlier_zip_which_is_unchanged()
     assert_eq!(rate.body_text().as_bytes(), r1["streams/rate.csv"].as_slice());
     // Core's revision outputs and embarch-api's own files are not handed back.
     assert!(!puts.iter().any(|r| r.path().contains("/restore/report-data") || r.path().ends_with("/restore/report.pdf")));
+    assert!(r1.contains_key("call-log-segment.jsonl"), "the earlier zip's manifest names the call-log segment");
+    assert!(!puts.iter().any(|r| r.path().contains("call-log-segment")), "the call-log segment is rebuilt by Core, not restored");
     // The restore came before the second report-data, which is what signs the revision.
     let last_rd = reqs.iter().rposition(|r| r.path().ends_with("/report-data")).unwrap();
     assert!(reqs.iter().rposition(|r| r.method == "PUT").unwrap() < last_rd);

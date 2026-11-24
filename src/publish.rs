@@ -52,7 +52,11 @@ pub const REPORT_DATA_NAME: &str = "report-data.json";
 pub const MANIFEST_NAME: &str = "manifest.dsse.json";
 /// The files Core writes into a revision's directory (`embarch-core`
 /// decision 116), fetched beside whatever the manifest names.
-const CORE_PUBLISH_FILES: [&str; 4] = [REPORT_DATA_NAME, "report-data.dsse.json", "run-log-segment.jsonl", MANIFEST_NAME];
+const CORE_PUBLISH_FILES: [&str; 5] =
+    [REPORT_DATA_NAME, "report-data.dsse.json", "run-log-segment.jsonl", CALL_LOG_SEGMENT_NAME, MANIFEST_NAME];
+/// Core's call-log segment for the run (`embarch-core` decision 111): written
+/// by a revision, named in its signed manifest, never restored.
+pub const CALL_LOG_SEGMENT_NAME: &str = "call-log-segment.jsonl";
 
 /// What `publish` refuses with no folder configured, and the way out.
 pub const NO_FOLDER_MESSAGE: &str = "publish refuses: no publish folder is configured, and there is no default. \
@@ -620,6 +624,12 @@ mod tests {
         assert_eq!(slug("!!!"), "study");
         assert_eq!(zip_name("2025-11-21", "gatt", "0123456789abcdef", 1), "2025-11-21-gatt-01234567.zip");
         assert_eq!(zip_name("2025-11-21", "gatt", "0123456789abcdef", 2), "2025-11-21-gatt-01234567-r2.zip");
+    }
+
+    #[test]
+    fn the_files_core_writes_include_the_call_log_segment() {
+        assert!(CORE_PUBLISH_FILES.contains(&"call-log-segment.jsonl"));
+        assert_eq!(CORE_PUBLISH_FILES.len(), 5);
     }
 
     #[test]
