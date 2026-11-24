@@ -26,6 +26,7 @@ use crate::publish_export::{junit_xml, ocp_jsonl, ExportInputs, StepRow};
 pub(crate) const RECORD_NAME: &str = "record.dsse.json";
 const REPORT_DATA_ENVELOPE: &str = "report-data.dsse.json";
 const SEGMENT_NAME: &str = "run-log-segment.jsonl";
+const CALL_SEGMENT_NAME: &str = "call-log-segment.jsonl";
 const PAYLOAD_TYPE: &str = "application/vnd.in-toto+json";
 pub(crate) const GENESIS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -796,13 +797,119 @@ fn check_log_segment(files: &BTreeMap<String, Vec<u8>>, manifest: Option<&Value>
     }
     let types: Vec<String> = mine.iter().filter_map(|e| e["type"].as_str().map(str::to_string)).collect();
     c.compared.push(format!("entries keyed on this run: {}", types.join(", ")));
-    let _ = record;
-    c.compared.push("the call log: no call log (this zip has none)".into());
+    check_call_log(&mut c, files, record);
     c.compared.push(
         "the publish's own entry and any later revision are after the segment's head and cannot be checked offline: ask Core, or a log head supplied with the zip"
             .into(),
     );
     c
+}
+
+/// Check 8's second half: `call-log-segment.jsonl` against the `observed.call_log`
+/// range the signed record names (`embarch-core` decisions 111, 116, 117). The
+/// hash rule is Core's `CallLog::segment_bytes`: the SHA-256 of the entry's
+/// `serde_json` bytes, `prev` the entry before's hash (the header's `prev` for
+/// the first), `seq` from `first_seq` upward.
+///
+/// A zip with no segment and no range in its record reads "no call log" and is
+/// not failed. **Not yet Core's:** the record's `observed.call_log.cites`, an
+/// array of `{seq, hash}`, is how a signed record will cite an entry; no record
+/// cites one yet, so the key is this check's reading of what the Test phase
+/// will write.
+fn check_call_log(c: &mut Check, files: &BTreeMap<String, Vec<u8>>, record: Option<&Value>) {
+    let range = record.map(|r| &r["predicate"]["observed"]["call_log"]).filter(|r| !r.is_null());
+    let Some(bytes) = files.get(CALL_SEGMENT_NAME) else {
+        if range.is_some() {
+            c.fail(format!("the signed record names a call-log range, and {CALL_SEGMENT_NAME} is not in the zip"));
+        } else {
+            c.compared.push("the call log: no call log (this zip has none)".into());
+        }
+        return;
+    };
+    let Some(range) = range else {
+        c.fail(format!("{CALL_SEGMENT_NAME} is in the zip and the signed record names no call-log range: it is another run's"));
+        return;
+    };
+    let Some(text) = std::str::from_utf8(bytes).ok() else {
+        c.fail(format!("{CALL_SEGMENT_NAME} is not text"));
+        return;
+    };
+    let parsed: Result<Vec<Value>, _> = text.lines().filter(|l| !l.trim().is_empty()).map(serde_json::from_str::<Value>).collect();
+    let Ok(lines) = parsed else {
+        c.fail(format!("a {CALL_SEGMENT_NAME} line is not JSON"));
+        return;
+    };
+    let Some((header, entries)) = lines.split_first().map(|(h, e)| (&h["call_log_segment"], e)).filter(|(h, _)| !h.is_null()) else {
+        c.fail(format!("{CALL_SEGMENT_NAME} has no call_log_segment header line"));
+        return;
+    };
+    for k in ["prev", "head", "first_seq", "last_seq"] {
+        if header[k] != range[k] {
+            c.fail(format!("the segment's {k} is not the signed record's call_log.{k}: the segment is another run's, or was cut"));
+            return;
+        }
+    }
+    let (Some(mut prev), Some(head)) = (range["prev"].as_str().map(str::to_string), range["head"].as_str()) else {
+        c.fail("the signed record's call_log has no prev or head".into());
+        return;
+    };
+    let first = range["first_seq"].as_u64();
+    let want = match (first, range["last_seq"].as_u64()) {
+        (Some(f), Some(l)) if l >= f => (l - f + 1) as usize,
+        (None, None) => 0,
+        _ => {
+            c.fail("the signed record's call_log first_seq and last_seq are not a range".into());
+            return;
+        }
+    };
+    if entries.len() != want {
+        c.fail(format!("the segment holds {} entries, the signed range names {want}: an entry was dropped or added", entries.len()));
+        return;
+    }
+    for (i, l) in entries.iter().enumerate() {
+        let (entry, hash) = (&l["entry"], l["hash"].as_str().unwrap_or(""));
+        let seq = first.map(|f| f + i as u64);
+        if entry.is_null() || sha(&serde_json::to_vec(entry).unwrap_or_default()) != hash {
+            c.fail(format!("call-log entry {}: it does not match its hash: it was altered", i + 1));
+            return;
+        }
+        if entry["prev"].as_str() != Some(prev.as_str()) {
+            c.fail(format!("call-log entry {}: its prev is not the previous entry's hash: an entry was removed, added or reordered", i + 1));
+            return;
+        }
+        if entry["seq"].as_u64() != seq {
+            c.fail(format!("call-log entry {}: its seq is not the {} the signed range puts here", i + 1, seq.unwrap_or(0)));
+            return;
+        }
+        prev = hash.to_string();
+    }
+    if prev != head {
+        c.fail("the call-log segment does not end at the head the signed record names".into());
+        return;
+    }
+    if let (Some(l), Some(len)) = (range["last_seq"].as_u64(), range["length"].as_u64()) {
+        if len != l + 1 {
+            c.fail(format!("the signed record's call_log length {len} is not last_seq {l} + 1"));
+            return;
+        }
+    }
+    c.compared.push(format!(
+        "the call log: {} entries, seq {}, every hash, prev and seq recomputes from the signed prev to the signed head",
+        entries.len(),
+        match (first, range["last_seq"].as_u64()) {
+            (Some(f), Some(l)) => format!("{f} to {l}"),
+            _ => "none (an empty range)".into(),
+        }
+    ));
+    let cites = range["cites"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    for cite in cites {
+        let found = entries.iter().find(|l| l["entry"]["seq"] == cite["seq"]);
+        if found.is_none_or(|l| l["hash"] != cite["hash"]) {
+            c.fail(format!("the signed record cites call-log entry {} and the segment does not hold it with that hash", cite["seq"]));
+            return;
+        }
+    }
+    c.compared.push(format!("{} call-log entries the signed record cites are in the segment, by seq and hash", cites.len()));
 }
 
 /// Reads `path` and verifies it; the CLI's entry.

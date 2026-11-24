@@ -60,6 +60,39 @@ fn log_line(entry: Value) -> (String, String) {
 /// Core's run files, signed by `k`, with a run log of two entries. The manifest
 /// is the placeholder `publish` is served; `resign` replaces it.
 fn core_files(k: &SigningKey) -> BTreeMap<String, String> {
+    core_files_with(k, false)
+}
+
+/// Three invented call-log entries after two earlier ones (seq 2 to 4), hash-chained
+/// from `before`, the hash of the entry at seq 1.
+fn call_entries(before: &str) -> Vec<(String, String)> {
+    let mut prev = before.to_string();
+    let mut out = Vec::new();
+    for seq in 2..5u64 {
+        let (line, hash) = log_line(json!({ "type": "call", "method": "POST", "route": "/live/flash", "status": 200,
+            "prev": prev, "seq": seq }));
+        prev = hash.clone();
+        out.push((line, hash));
+    }
+    out
+}
+
+const CALL_BEFORE: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+
+/// A call-log segment's bytes: the header, then the lines.
+fn call_segment(entries: &[(String, String)], prev: &str, head: &str, first: u64, last: u64) -> String {
+    let header = json!({ "call_log_segment": { "prev": prev, "head": head, "first_seq": first, "last_seq": last } });
+    let mut out = format!("{header}\n");
+    for (l, _) in entries {
+        out.push_str(&format!("{l}\n"));
+    }
+    out
+}
+
+/// `core_files`, with `calls`: the signed record names a call-log range (seq 2
+/// to 4 of a log five long) and a citation of the entry at seq 3, and the zip
+/// holds the segment.
+fn core_files_with(k: &SigningKey, calls: bool) -> BTreeMap<String, String> {
     let mut f = BTreeMap::new();
     f.insert("study.json".into(), json!({
         "name": "GATT rate / loss",
@@ -80,10 +113,16 @@ fn core_files(k: &SigningKey) -> BTreeMap<String, String> {
             "method": { "kind": "reducer", "name": "mean", "behaviour": 1, "window": {} },
             "resolution": null, "uncertainty": null, "u_source": "undeclared", "declared_by": [], "incomplete": [] }],
     }).to_string());
-    let record = json!({ "_type": "https://in-toto.io/Statement/v1", "subject": subjects(&f),
+    let entries = call_entries(CALL_BEFORE);
+    let mut record = json!({ "_type": "https://in-toto.io/Statement/v1", "subject": subjects(&f),
         "predicateType": "urn:embarch:predicate:study-run:v1",
         "predicate": { "schema": 1, "study_id": RUN, "observed": { "behaviours": { "mean": 1 },
             "image_status": "unverified", "declarations": { "witnessed_since_utc_ms": 0, "entries": [] } } } });
+    if calls {
+        record["predicate"]["observed"]["call_log"] = json!({ "prev": CALL_BEFORE, "head": entries[2].1, "length": 5,
+            "first_seq": 2, "last_seq": 4, "cites": [{ "seq": 3, "hash": entries[1].1 }] });
+        f.insert("call-log-segment.jsonl".into(), call_segment(&entries, CALL_BEFORE, &entries[2].1, 2, 4));
+    }
     f.insert("record.dsse.json".into(), envelope(k, &record));
 
     let (run_line, run_hash) = log_line(json!({ "type": "run", "study_id": RUN, "kind": "device", "status": "completed",
@@ -189,7 +228,12 @@ async fn published(k: &SigningKey) -> BTreeMap<String, Vec<u8>> {
 
 /// The same, for a Study that brings its own `report.typ`.
 async fn published_with(k: &SigningKey, report: Option<&str>) -> BTreeMap<String, Vec<u8>> {
-    let core = core_files(k);
+    published_full(k, report, false).await
+}
+
+/// The same, with the signed record naming a call-log range and the zip holding its segment.
+async fn published_full(k: &SigningKey, report: Option<&str>, calls: bool) -> BTreeMap<String, Vec<u8>> {
+    let core = core_files_with(k, calls);
     let mock = MockCore::start(router(&core, &manifest_for(k, &core, &[]))).await;
     let cfg: CoreConfig = serde_json::from_value(json!({ "token": "t", "base_url": mock.base_url() })).unwrap();
     let dir = tmp("pub");
@@ -375,4 +419,115 @@ async fn a_report_data_that_disagrees_with_the_records_fails_check_6() {
     let r = check(&f, "rd", &pub_hex(&k), None);
     assert_eq!(status(&r, 6), Status::Fail, "{}", r.to_text());
     assert!(r.to_text().contains("steps"), "{}", r.to_text());
+}
+
+fn check8_text(r: &Report) -> String {
+    let c = r.checks.iter().find(|c| c.id == 8).unwrap();
+    format!("{}\n{}", c.compared.join("\n"), c.problems.join("\n"))
+}
+
+/// A call-log segment's lines, as the zip holds it.
+fn seg_lines(f: &BTreeMap<String, Vec<u8>>) -> Vec<String> {
+    String::from_utf8(f["call-log-segment.jsonl"].clone()).unwrap().lines().map(str::to_string).collect()
+}
+
+fn put_seg(f: &mut BTreeMap<String, Vec<u8>>, lines: &[String]) {
+    let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    f.insert("call-log-segment.jsonl".into(), text.into_bytes());
+}
+
+#[tokio::test]
+async fn check_8_recomputes_the_call_log_segment_against_the_signed_range() {
+    let k = key(7);
+    let files = published_full(&k, None, true).await;
+    assert!(files.contains_key("call-log-segment.jsonl"));
+
+    let r = check(&files, "calls-ok", &pub_hex(&k), None);
+    assert_eq!(status(&r, 8), Status::Pass, "{}", r.to_text());
+    let t = check8_text(&r);
+    assert!(t.contains("the call log: 3 entries, seq 2 to 4"), "{t}");
+    assert!(t.contains("1 call-log entries the signed record cites"), "{t}");
+    assert!(!t.contains("no call log"), "{t}");
+
+    // An entry dropped from the middle.
+    let mut f = files.clone();
+    let mut l = seg_lines(&f);
+    l.remove(2);
+    put_seg(&mut f, &l);
+    let r = check(&f, "calls-drop", &pub_hex(&k), None);
+    assert_eq!(status(&r, 8), Status::Fail, "{}", r.to_text());
+    assert!(check8_text(&r).contains("dropped or added"), "{}", check8_text(&r));
+
+    // An entry altered.
+    let mut f = files.clone();
+    edit(&mut f, "call-log-segment.jsonl", "/live/flash", "/live/reset");
+    let r = check(&f, "calls-alter", &pub_hex(&k), None);
+    assert_eq!(status(&r, 8), Status::Fail, "{}", r.to_text());
+    assert!(check8_text(&r).contains("altered"), "{}", check8_text(&r));
+
+    // A segment from another run: a chain that is valid in itself, from another prev.
+    let mut f = files.clone();
+    let other = call_entries("2222222222222222222222222222222222222222222222222222222222222222");
+    f.insert("call-log-segment.jsonl".into(), call_segment(&other, "2222222222222222222222222222222222222222222222222222222222222222", &other[2].1, 2, 4).into_bytes());
+    let r = check(&f, "calls-other", &pub_hex(&k), None);
+    assert_eq!(status(&r, 8), Status::Fail, "{}", r.to_text());
+    assert!(check8_text(&r).contains("another run's"), "{}", check8_text(&r));
+
+    // A header naming the signed range over entries that are another's.
+    let mut f = files.clone();
+    f.insert("call-log-segment.jsonl".into(), call_segment(&other, CALL_BEFORE, &other[2].1, 2, 4).into_bytes());
+    let r = check(&f, "calls-forged-header", &pub_hex(&k), None);
+    assert_eq!(status(&r, 8), Status::Fail, "{}", r.to_text());
+
+    // A header that matches the record and a segment cut short at the end.
+    let mut f = files.clone();
+    let mut l = seg_lines(&f);
+    l.pop();
+    put_seg(&mut f, &l);
+    assert_eq!(status(&check(&f, "calls-short", &pub_hex(&k), None), 8), Status::Fail);
+
+    // The segment missing from a zip whose record names a range.
+    let mut f = files.clone();
+    f.remove("call-log-segment.jsonl");
+    let r = check(&f, "calls-missing", &pub_hex(&k), None);
+    assert_eq!(status(&r, 8), Status::Fail, "{}", r.to_text());
+
+    // A citation of an entry the segment does not hold, and one whose hash differs.
+    let sig = |cites: Value| {
+        let mut core = core_files_with(&k, true);
+        let rec: Value = serde_json::from_slice(
+            &base64::engine::general_purpose::STANDARD
+                .decode(serde_json::from_str::<Value>(&core["record.dsse.json"]).unwrap()["payload"].as_str().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        let mut rec = rec;
+        rec["predicate"]["observed"]["call_log"]["cites"] = cites;
+        core.insert("record.dsse.json".into(), envelope(&k, &rec));
+        core
+    };
+    for (tag, cites) in [("calls-cite-absent", json!([{ "seq": 9, "hash": "x" }])), ("calls-cite-hash", json!([{ "seq": 3, "hash": "x" }]))] {
+        let core = sig(cites);
+        let mut f: BTreeMap<String, Vec<u8>> = files.clone();
+        f.insert("record.dsse.json".into(), core["record.dsse.json"].clone().into_bytes());
+        let r = check(&f, tag, &pub_hex(&k), None);
+        assert_eq!(status(&r, 8), Status::Fail, "{tag}\n{}", r.to_text());
+        assert!(check8_text(&r).contains("cites call-log entry"), "{tag} {}", check8_text(&r));
+    }
+}
+
+#[tokio::test]
+async fn a_zip_with_no_call_log_segment_reads_no_call_log_and_is_not_failed() {
+    let k = key(7);
+    let files = published(&k).await;
+    assert!(!files.contains_key("call-log-segment.jsonl"));
+    let r = check(&files, "nocalls", &pub_hex(&k), None);
+    assert_eq!(status(&r, 8), Status::Pass, "{}", r.to_text());
+    assert!(check8_text(&r).contains("no call log"), "{}", check8_text(&r));
+
+    // A segment in a zip whose record names no range is another run's.
+    let mut f = files.clone();
+    let e = call_entries(CALL_BEFORE);
+    f.insert("call-log-segment.jsonl".into(), call_segment(&e, CALL_BEFORE, &e[2].1, 2, 4).into_bytes());
+    assert_eq!(status(&check(&f, "nocalls-extra", &pub_hex(&k), None), 8), Status::Fail);
 }
