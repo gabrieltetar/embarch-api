@@ -1,6 +1,6 @@
 # The HIL guide
 
-**Status:** active, 2026-11-23. HIL milestone 1, unit M1.13 (EMB-228): what every mode shares, and the Study. Live and Test are not written yet. Written for the agent first, readable by an engineer. `embarch-api` embeds a pinned copy of this file and serves it: `embarch-api guide hil` prints "Every mode", and `embarch-api guide hil study` prints "Study". The design behind it is `embarch-hil-proposal.md` and `notes/hil/` in `embarch-doc`.
+**Status:** active, 2026-11-24. What every mode shares and the Study (HIL M1.13, EMB-228), and Live (EMB-270). Test is not written yet. Written for the agent first, readable by an engineer. `embarch-api` embeds a pinned copy of this file and serves it: `embarch-api guide hil` prints "Every mode", and `embarch-api guide hil study` prints "Study". The design behind it is `embarch-hil-proposal.md` and `notes/hil/` in `embarch-doc`.
 
 ## Every mode
 
@@ -82,7 +82,38 @@ Each with the layer that stops it, or "procedure" where nothing does:
 
 ## Live
 
-**Not written yet.** Live is exploration during development: an answer now, a live log, findings written back. Say so to the engineer and stop short of inventing a procedure. The design is `notes/hil/05-live.md` in `embarch-doc`.
+**Live is an instant read or action on the DUT or a bench board during development**: an answer now, a line in the live log, and, when the answer settles something the documents left open, a fact written back to the atlas. No study, no report. Read "Every mode" (`embarch-api guide hil`) first. **A Live answer is development evidence: when it is about to be cited in a PR, a ticket or a report, redo it as a Study or a Test.** Not yet run end to end on a bench: everything below was tested against a fake Core.
+
+### Reach, and what asks
+
+- **Reach: the DUT and the bench boards.** An instrument is reached only through a Study or a Test step: Core refuses `instrument_exchange` outside a run, and embarch-api has no such tool.
+- **Free:** reads (`mem_read`, `core_state`, `serial_log`, `validate`), resets (`reset`, `reset_dev_bench`), and any shell command on the DUT or a bench board (`signal_exchange`, `bench_exchange`), plus the atlas's `reg_read`, `core_state`, `live_stacks`, `shell` and `shell_run`. A free shell command can still put power or traffic on the DUT (a PD partner asking for 20 V): say what it does before you send it.
+- **Asks every time:** flashing and bootloading, the atlas's `reg_read_clear` (a read that clears what it reads) and `reg_read_bank` (a read that writes a page select).
+- **Never during a run:** while a study runs, Core refuses every hardware call that is not the run's own, reads included, but its cancel.
+
+### The lease
+
+Take it with `lease_take` and a purpose; the MCP server renews it. **Core releases a lease after 30 minutes with no hardware call, whatever renews it**, and a study run in flight is not idle. After a release, embarch-api refuses the next hardware call and says why: take a new lease, never work around it. Release it with `lease_release` when the session ends.
+
+### With and without an atlas
+
+| | With an atlas | Without one |
+|---|---|---|
+| Registers | `reg_read`: decoded by field, read-to-clear guarded | `mem_read`: raw words |
+| Where the core is | `core_state`, decoded to functions and lines | `core_state`: raw words |
+| Shell | `shell`, `shell_run`: the console picked from the build | `signal_exchange` on a declared signal |
+| Stacks | `live_stacks` | the shell's thread stacks, raw |
+| Write-back | yes | no |
+
+### The call log and the live log
+
+**Every hardware call is an entry in Core's call log, the record.** The answer names its entry (`--json` adds `core_calls`); identical reads in a row fold into one entry with a repeat count. `call_log` (MCP) or `embarch-api call-log` reads entries by `seq` or range, and `verified` says the chain checks out.
+
+**`embarch/live/<date>-<session>.jsonl` in the firmware repo is the readable mirror**, untracked: one line per call, from embarch-api (raw) and the atlas (decoded), each with what was sent, the board, the image hash Core last flashed ("unknown" is not "nothing flashed"), the answer and Core's entry. Where a line and Core's entry disagree, Core's entry wins.
+
+### Writing a finding back
+
+**An answer that settles what the datasheet or schematic left open becomes a `measured` fact in the atlas**: `embarch-atlas live write-back` (MCP `write_back`), `via: live`, its receipt read from Core's call-log entries, never typed by you. An entry Core does not hold is refused. A finding measured on another build than the atlas's pinned one is written and flagged, never refused. The fact is shown beside the datasheet's claim as development evidence, and a disagreement becomes a check finding: report it to the engineer, do not resolve it.
 
 ## Study
 
