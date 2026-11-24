@@ -503,7 +503,10 @@ pub async fn run(core: &CoreClient, folder: Option<&Path>, req: &PublishRequest<
         core_files.insert(name.clone(), bytes.to_vec());
     }
     for name in CORE_PUBLISH_FILES {
-        if name == MANIFEST_NAME {
+        // The call-log segment exists only where the manifest names it: a run
+        // sealed before Core recorded its call-log range, or published by a
+        // Core older than that, has none (`embarch-core` decision 111).
+        if name == MANIFEST_NAME || name == CALL_LOG_SEGMENT_NAME {
             continue;
         }
         if !core_files.contains_key(name) {
