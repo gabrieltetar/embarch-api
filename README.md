@@ -2,12 +2,12 @@
 
 Part of the [EmbArch](https://github.com/gabrieltetar/embarch-doc) suite — a set of tools for firmware engineers that spans from software to the physical hardware bench.
 
-`embarch-api` is the layer between an MCP client (e.g. [Claude Code](https://claude.com/claude-code), or any other MCP-speaking agent or tool) — or a human directly at a terminal, via its own CLI — and [`embarch-core`](https://github.com/gabrieltetar/embarch-core). Core owns the debug probe and serial connection and exposes four bearer-token-authed HTTP endpoints (`/status`, `/flash`, `/reset`, `/serial-log`); `embarch-api` gives those endpoints meaning to an agent or a human, and adds the one capability Core intentionally doesn't have — running a project's build and handing the resulting artifact to Core's `/flash`.
+`embarch-api` is the layer between an MCP client (e.g. [Claude Code](https://claude.com/claude-code), or any other MCP-speaking agent or tool) — or a human directly at a terminal, via its own CLI — and [`embarch-core`](https://github.com/gabrieltetar/embarch-core). Core owns the debug probe and serial connection and exposes a bearer-token-authed HTTP API; `embarch-api` gives it meaning to an agent or a human, and adds the one capability Core intentionally doesn't have — running a project's build and handing the resulting artifact to Core's flash endpoint. Core's endpoints are specified in [embarch-core's interface docs](https://github.com/gabrieltetar/embarch-doc/tree/main/embarch-core).
 
 ## What it does
 
-- **MCP server** (stdio transport): exposes `list_projects`, `status`, `build`, `flash`, `build_and_flash`, `reset`, and `serial_log` as MCP tools, for any MCP client — Claude Code included.
-- **CLI**: the identical operations, invoked directly by a human at a terminal (kebab-case there — `list-projects`, `build-and-flash`, `serial-log` — while the MCP tools above are snake_case) (`embarch-api build my-project`, `embarch-api flash my-project --firmware-path ...`, etc.) — no agent required.
+- **MCP server** (stdio transport): exposes the project, build, flash, reset, serial and bench operations as MCP tools, for any MCP client — Claude Code included. The tools and their arguments are specified in [the tools interface doc](https://github.com/gabrieltetar/embarch-doc/blob/main/embarch-api/interfaces/tools.md).
+- **CLI**: the same operations, invoked directly by a human at a terminal (kebab-case there, while the MCP tools are snake_case) — no agent required. `embarch-api --help` is authoritative.
 - **Build orchestrator**: runs a project's configured build command (`west`, `arduino-cli`, or anything else — it's toolchain-agnostic) as a subprocess, checks the resulting artifact is actually fresh, and hands it to Core's `/flash`.
 
 Both front-ends — MCP and CLI — converge on the same underlying modules; there's no privileged or special code path for either.
@@ -28,7 +28,7 @@ MCP client --stdio(spawn)--> embarch-api --HTTP+Bearer--> embarch-core --probe-r
 
 ## Getting started
 
-Requires a running [`embarch-core`](https://github.com/gabrieltetar/embarch-core) instance and its `EMBARCH_TOKEN`.
+This repo is the build-from-source path. To **use** EmbArch, follow [the user guide](https://github.com/gabrieltetar/embarch-doc/blob/main/suite/user-guide.md): download the release archive, run `embarch setup` to install Core and the binaries, then `embarch init` inside your firmware repo to create `embarch/embarch.toml`. `init` writes the project config and Core is found automatically, so there is no config to copy and no token to export by hand.
 
 **This repo does not build on its own.** Two sibling repos must be cloned into the
 same parent directory, because they are depended on by relative path:
@@ -48,31 +48,29 @@ oversight: `embarch-study-designer` decision 8 and `embarch-topology` decision 1
 
 ```sh
 cargo build --release
-cp config.example.toml ~/.config/embarch/api.toml
-# edit ~/.config/embarch/api.toml: set core.base_url, EMBARCH_TOKEN (via token_env),
-# and add a [[projects]] entry per project you want to build/flash.
 ```
+
+With the binary on your `PATH` and `embarch init` run in your firmware repo, the config is found by searching upward from the current directory for `embarch/embarch.toml`; outside a repo, pass `--config <path>` or set `EMBARCH_API_CONFIG`.
 
 Run as an MCP server (no subcommand — this is what an MCP client spawns):
 
 ```sh
-embarch-api --config ~/.config/embarch/api.toml
+embarch-api
 ```
 
-Run directly from a terminal, no MCP client involved:
+Run directly from a terminal, no MCP client involved (see the user guide's section on using it from a terminal):
 
 ```sh
-embarch-api --config ~/.config/embarch/api.toml list-projects
-embarch-api --config ~/.config/embarch/api.toml build my-project
-embarch-api --config ~/.config/embarch/api.toml build-and-flash my-project
-embarch-api --config ~/.config/embarch/api.toml --json build my-project   # machine-readable output
+embarch-api list-projects
+embarch-api build-and-flash my-project
+embarch-api --json status    # machine-readable output
 ```
 
-See [config.example.toml](config.example.toml) for the full configuration schema with inline documentation.
+The configuration schema is owned by [the config interface doc](https://github.com/gabrieltetar/embarch-doc/blob/main/embarch-api/interfaces/config.md); [config.example.toml](config.example.toml) is an annotated example.
 
 ## Design doc
 
-The full design record — current truth, open questions, architecture decisions, configuration schema reference, MCP tool surface, and CLI subcommand surface — lives in [embarch-doc/embarch-api/spec.md](https://github.com/gabrieltetar/embarch-doc/blob/main/embarch-api/spec.md) and its linked `decisions/`, `open.md` and `interfaces/` files, treated as the durable source of truth ahead of any chat history that produced it.
+The full design record — current truth, open questions, architecture decisions, configuration schema reference, tool surface, and CLI subcommand surface — lives in [embarch-doc/embarch-api/spec.md](https://github.com/gabrieltetar/embarch-doc/blob/main/embarch-api/spec.md) and its linked `decisions/`, `open.md` and `interfaces/` files, treated as the durable source of truth ahead of any chat history that produced it.
 
 ## License
 
