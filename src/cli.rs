@@ -154,7 +154,17 @@ async fn run_command(command: Commands, json: bool, config: Arc<Config>, core: C
             min_interval_ms,
             ack_ok,
             ack_err,
+            safe_off,
+            clear_safe_off,
         } => {
+            let no_lines: [String; 0] = [];
+            let safe_off = if clear_safe_off {
+                Some(&no_lines[..])
+            } else if safe_off.is_empty() {
+                None
+            } else {
+                Some(&safe_off[..])
+            };
             let args = crate::instrument::DeclareArgs {
                 name: &name,
                 port: &port,
@@ -166,6 +176,7 @@ async fn run_command(command: Commands, json: bool, config: Arc<Config>, core: C
                 min_interval_ms,
                 ack_ok: ack_ok.as_deref(),
                 ack_err: ack_err.as_deref(),
+                safe_off,
             };
             declare_instrument(&core, &args, json).await
         }
@@ -275,7 +286,8 @@ async fn run_command(command: Commands, json: bool, config: Arc<Config>, core: C
             rx_pin,
             tx_pin,
             baud,
-        } => declare_signal(&core, name, origin_role, origin_board, &direction, &route_kind, port_serial, interface, rx_pin, tx_pin, baud, json).await,
+            safe_off,
+        } => declare_signal(&core, name, origin_role, origin_board, &direction, &route_kind, port_serial, interface, rx_pin, tx_pin, baud, safe_off, json).await,
         Commands::SignalExchange { name, write, until, timeout_ms, no_newline, port_wait_ms, match_after_echo, clean } => {
             signal_exchange(&core, &name, &write, until.as_deref(), timeout_ms, port_wait_ms, match_after_echo, !no_newline, clean, json).await
         }
@@ -1003,10 +1015,13 @@ async fn clear_bootload_ports(core: &CoreClient, json: bool) -> i32 {
 }
 
 async fn declare_instrument(core: &CoreClient, args: &crate::instrument::DeclareArgs<'_>, json: bool) -> i32 {
-    let inst = match crate::instrument::build(args) {
+    let mut inst = match crate::instrument::build(args) {
         Ok(i) => i,
         Err(e) => return error_result(json, e),
     };
+    if let Err(e) = crate::instrument::carry_stored_safe_off(core, &mut inst, args).await {
+        return error_result(json, e);
+    }
     match core.declare_instrument(&inst).await {
         Ok(stored) => {
             let human = format!("declared {}", crate::instrument::describe(&stored));
@@ -1697,12 +1712,17 @@ async fn declare_signal(
     rx_pin: Option<String>,
     tx_pin: Option<String>,
     baud: Option<u32>,
+    safe_off: Option<String>,
     json: bool,
 ) -> i32 {
-    let link = match crate::tools::parse_signal_link(name, origin_role, origin_board, direction, route_kind, port_serial, interface, rx_pin, tx_pin, baud) {
+    let requested = safe_off.clone();
+    let mut link = match crate::tools::parse_signal_link(name, origin_role, origin_board, direction, route_kind, port_serial, interface, rx_pin, tx_pin, baud, safe_off) {
         Ok(l) => l,
         Err(e) => return error_result(json, e),
     };
+    if let Err(e) = crate::tools::carry_stored_signal_safe_off(core, &mut link, &requested).await {
+        return error_result(json, e);
+    }
     match core.declare_signal(&link).await {
         Ok(()) => finish(
             json,

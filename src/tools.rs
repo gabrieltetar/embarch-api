@@ -526,6 +526,12 @@ pub struct DeclareInstrumentParams {
     pub ack_ok: Option<String>,
     /// What a refused set answers.
     pub ack_err: Option<String>,
+    /// The commands that switch the instrument's output off, one per line
+    /// (the terminator is added): Core sends them at a study's start and at a
+    /// graceful stop. Omitted, the stored declaration's list is kept; an
+    /// empty list clears it. A declaration without one is listed, not refused.
+    #[serde(default)]
+    pub safe_off: Option<Vec<String>>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -918,6 +924,12 @@ pub struct DeclareSignalParams {
     /// USB CDC ACM port, which ignores it.
     #[serde(default)]
     pub baud: Option<u32>,
+    /// The one command that switches this signal's output off (the terminator
+    /// is added): Core sends it at a study's start and at a graceful stop.
+    /// Omitted, the stored declaration's line is kept; an empty string clears
+    /// it. A declaration without one is listed, not refused.
+    #[serde(default)]
+    pub safe_off: Option<String>,
 }
 
 /// `embarch-core` decision 79's `POST /signals/{name}/exchange`.
@@ -1228,6 +1240,7 @@ pub(crate) fn parse_signal_link(
     rx_pin: Option<String>,
     tx_pin: Option<String>,
     baud: Option<u32>,
+    safe_off: Option<String>,
 ) -> Result<embarch_core_client::SignalLink, String> {
     use embarch_core_client::{SignalDirection, SignalLink, SignalRoute};
 
@@ -1278,7 +1291,29 @@ pub(crate) fn parse_signal_link(
         (Some(role), None) => role,
         (None, Some(_)) => String::new(),
     };
-    Ok(SignalLink { name, origin_role, origin_board, direction, route, baud, safe_off: None })
+    Ok(SignalLink { name, origin_role, origin_board, direction, route, baud, safe_off: safe_off.filter(|s| !s.is_empty()) })
+}
+
+/// `POST /signals` replaces a signal by name, so a declaration that leaves
+/// `safe_off` out would drop one declared by another path (decision 97). When
+/// the caller gave none (`requested` is `None`), copy the stored signal's
+/// into `link`; a given line, empty (clear) included, was already applied by
+/// [`parse_signal_link`]. An unreadable stored table is an error.
+pub(crate) async fn carry_stored_signal_safe_off(
+    core: &embarch_core_client::CoreClient,
+    link: &mut embarch_core_client::SignalLink,
+    requested: &Option<String>,
+) -> Result<(), String> {
+    if requested.is_some() {
+        return Ok(());
+    }
+    let stored = core.list_signals().await.map_err(|e| {
+        format!("could not read the stored signal `{}` to carry its safe_off over the re-declare (pass safe_off, empty to clear): {e:#}", link.name)
+    })?;
+    if let Some(old) = stored.into_iter().find(|s| s.name == link.name) {
+        link.safe_off = old.safe_off;
+    }
+    Ok(())
 }
 
 #[tool_router]
@@ -1662,7 +1697,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Declare a bench instrument Core drives over a USB serial line — an electronic load, a lab supply — via embarch-core's PUT /instruments (embarch-api decision 97, embarch-topology decision 49), or replace the one of the same name. port is VID:PID[:SERIAL] in hex; declared, never detected, so check list_serial_ports first. preset \"et54\" fills an ET54-series load's measured line facts; otherwise give baud, and terminators default to LF out and CR LF back. Declare ack_ok when the instrument acknowledges a set: every set is then checked and an unacknowledged one fails. Core refuses a second instrument one port could match together with the first: declare serials or interfaces that differ. Touches no hardware.")]
+    #[tool(description = "Declare a bench instrument Core drives over a USB serial line — an electronic load, a lab supply — via embarch-core's PUT /instruments (embarch-api decision 97, embarch-topology decision 49), or replace the one of the same name. port is VID:PID[:SERIAL] in hex; declared, never detected, so check list_serial_ports first. preset \"et54\" fills an ET54-series load's measured line facts; otherwise give baud, and terminators default to LF out and CR LF back. Declare ack_ok when the instrument acknowledges a set: every set is then checked and an unacknowledged one fails. Core refuses a second instrument one port could match together with the first: declare serials or interfaces that differ. safe_off is the list of commands, one per line, that switch the output off; Core sends them at a study's start and at a graceful stop, and a declaration without one is listed, not refused. Omit safe_off on a re-declare and the stored one is kept (PUT replaces by name); pass [] to clear it. Touches no hardware.")]
     async fn declare_instrument(&self, Parameters(p): Parameters<DeclareInstrumentParams>) -> Result<CallToolResult, McpError> {
         let args = crate::instrument::DeclareArgs {
             name: &p.name,
@@ -1675,11 +1710,15 @@ impl EmbarchApi {
             min_interval_ms: p.min_interval_ms,
             ack_ok: p.ack_ok.as_deref(),
             ack_err: p.ack_err.as_deref(),
+            safe_off: p.safe_off.as_deref(),
         };
-        let inst = match crate::instrument::build(&args) {
+        let mut inst = match crate::instrument::build(&args) {
             Ok(i) => i,
             Err(e) => return Self::err_text(e),
         };
+        if let Err(e) = crate::instrument::carry_stored_safe_off(&self.core, &mut inst, &args).await {
+            return Self::err_text(e);
+        }
         match self.core.declare_instrument(&inst).await {
             Ok(stored) => Self::ok_json(serde_json::json!({ "declared": stored })),
             Err(e) => Self::err_text(format!("declare_instrument failed: {e:#}")),
@@ -2094,7 +2133,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Declare (or re-declare) where a named DUT signal currently goes, via embarch-core's POST /signals (embarch-topology decision 18, wrapped per embarch-api decision 67). Idempotent by name: re-declaring an existing name overwrites it, which is the migration path for moving a signal from a Direct route (straight to a serial port, port_serial from list_serial_ports) onto dev-bench pins (via-dev-bench, rx_pin/tx_pin) or back — no saved Study changes, since a study names the signal and never its carrier. direction is one of dut-to-host, host-to-dut, bidirectional. route_kind is direct (needs port_serial) or via-dev-bench (needs rx_pin and tx_pin). interface, direct only, names the USB interface carrying the signal when port_serial's device exposes several serial ports under one serial (list_serial_ports shows each); without it Core refuses that device as ambiguous rather than guess. baud sets the signal's own line rate (e.g. 115200 for a DUT console); without it Core uses its default. The signal comes out of origin_role (a role, e.g. dut) or origin_board (a role-less bench board, by its enrolled name or probe serial; Core resolves it to the probe serial and refuses a board that is not enrolled or holds a role), exactly one; a reset or core-state read resolved from the signal then reaches that board.")]
+    #[tool(description = "Declare (or re-declare) where a named DUT signal currently goes, via embarch-core's POST /signals (embarch-topology decision 18, wrapped per embarch-api decision 67). Idempotent by name: re-declaring an existing name overwrites it, which is the migration path for moving a signal from a Direct route (straight to a serial port, port_serial from list_serial_ports) onto dev-bench pins (via-dev-bench, rx_pin/tx_pin) or back — no saved Study changes, since a study names the signal and never its carrier. direction is one of dut-to-host, host-to-dut, bidirectional. route_kind is direct (needs port_serial) or via-dev-bench (needs rx_pin and tx_pin). interface, direct only, names the USB interface carrying the signal when port_serial's device exposes several serial ports under one serial (list_serial_ports shows each); without it Core refuses that device as ambiguous rather than guess. baud sets the signal's own line rate (e.g. 115200 for a DUT console); without it Core uses its default. The signal comes out of origin_role (a role, e.g. dut) or origin_board (a role-less bench board, by its enrolled name or probe serial; Core resolves it to the probe serial and refuses a board that is not enrolled or holds a role), exactly one; a reset or core-state read resolved from the signal then reaches that board. safe_off is the one command that switches the signal's output off; Core sends it at a study's start and at a graceful stop, and a declaration without one is listed, not refused. Omit safe_off on a re-declare and the stored one is kept; pass \"\" to clear it.")]
     async fn declare_signal(
         &self,
         Parameters(DeclareSignalParams {
@@ -2108,12 +2147,17 @@ impl EmbarchApi {
             rx_pin,
             tx_pin,
             baud,
+            safe_off,
         }): Parameters<DeclareSignalParams>,
     ) -> Result<CallToolResult, McpError> {
-        let link = match parse_signal_link(name, origin_role, origin_board, &direction, &route_kind, port_serial, interface, rx_pin, tx_pin, baud) {
+        let requested = safe_off.clone();
+        let mut link = match parse_signal_link(name, origin_role, origin_board, &direction, &route_kind, port_serial, interface, rx_pin, tx_pin, baud, safe_off) {
             Ok(l) => l,
             Err(e) => return Self::err_text(e),
         };
+        if let Err(e) = carry_stored_signal_safe_off(&self.core, &mut link, &requested).await {
+            return Self::err_text(e);
+        }
         match self.core.declare_signal(&link).await {
             Ok(()) => Self::ok_json(serde_json::json!({ "declared": true, "signal": link })),
             Err(e) => Self::err_text(format!("declare_signal failed: {e:#}")),
@@ -2900,6 +2944,7 @@ mod signal_tests {
                 None,
                 None,
                 Some(115_200),
+                None,
             )
         };
         let on_board = link(None, Some("pd-bench")).unwrap();
@@ -2936,6 +2981,7 @@ mod signal_tests {
                 None,
                 None,
                 baud,
+                None,
             )
         };
         assert_eq!(link(Some(115_200)).unwrap().baud, Some(115_200));
@@ -2957,6 +3003,7 @@ mod signal_tests {
                 interface,
                 Some("P0.04".to_string()),
                 Some("P0.05".to_string()),
+                None,
                 None,
             )
         };

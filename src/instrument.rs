@@ -19,6 +19,10 @@ pub struct DeclareArgs<'a> {
     pub min_interval_ms: Option<u32>,
     pub ack_ok: Option<&'a str>,
     pub ack_err: Option<&'a str>,
+    /// The commands that switch the output off, one per line. `None` keeps
+    /// what Core already stores under the name ([`carry_stored_safe_off`]);
+    /// `Some(&[])` clears it.
+    pub safe_off: Option<&'a [String]>,
 }
 
 /// The presets this crate knows, by name. Each is a set of line facts seen on
@@ -89,10 +93,30 @@ pub fn build(args: &DeclareArgs<'_>) -> Result<Instrument, String> {
         min_interval_ms: args.min_interval_ms.or(p.as_ref().map(|p| p.min_interval_ms)).unwrap_or(0),
         ack_ok: args.ack_ok.map(str::to_string).or(p.as_ref().map(|p| p.ack_ok.to_string())),
         ack_err: args.ack_err.map(str::to_string).or(p.as_ref().map(|p| p.ack_err.to_string())),
-        safe_off: Vec::new(),
+        safe_off: args.safe_off.map(<[String]>::to_vec).unwrap_or_default(),
     };
     inst.check()?;
     Ok(inst)
+}
+
+/// `PUT /instruments` replaces an instrument by name, so a declaration that
+/// leaves `safe_off` out would drop one declared by another path (decision
+/// 97). When the caller gave none (`args.safe_off` is `None`), copy the
+/// stored instrument's into `inst`; an explicit list, empty included, is
+/// sent as given. A stored value that cannot be read is an error, never a
+/// silent drop.
+pub async fn carry_stored_safe_off(core: &embarch_core_client::CoreClient, inst: &mut Instrument, args: &DeclareArgs<'_>) -> Result<(), String> {
+    if args.safe_off.is_some() {
+        return Ok(());
+    }
+    let stored = core
+        .instruments()
+        .await
+        .map_err(|e| format!("could not read the stored `{}` to carry its safe_off over the re-declare (pass safe_off, empty to clear): {e:#}", inst.name))?;
+    if let Some(old) = stored.into_iter().find(|i| i.name == inst.name) {
+        inst.safe_off = old.safe_off;
+    }
+    Ok(())
 }
 
 /// One line describing a declaration, for the CLI's human output.
@@ -111,7 +135,10 @@ pub fn describe(inst: &Instrument) -> String {
             (Some(ok), None) => format!("a set acknowledged by '{ok}'"),
             _ => "a set not acknowledged".to_string(),
         }
-    )
+    ) + &match inst.safe_off.len() {
+        0 => ", no safe-off".to_string(),
+        n => format!(", safe-off of {n} command{}", if n == 1 { "" } else { "s" }),
+    }
 }
 
 #[cfg(test)]
@@ -141,6 +168,18 @@ mod tests {
         assert!(build(&DeclareArgs { preset: Some("hp34401"), ..args("dmm", "0483:5740") }).unwrap_err().contains("known: et54"));
         assert!(build(&DeclareArgs { baud: Some(9600), ..args("bad name", "0483:5740") }).is_err());
         assert!(build(&DeclareArgs { baud: Some(9600), ..args("psu", "zz") }).is_err());
+    }
+
+    #[test]
+    fn safe_off_is_carried_as_given_and_empty_when_omitted() {
+        let lines = vec!["INP OFF".to_string(), "CURR 0".to_string()];
+        let i = build(&DeclareArgs { baud: Some(9600), safe_off: Some(&lines), ..args("eload", "1a86:7523") }).unwrap();
+        assert_eq!(i.safe_off, lines);
+        assert!(describe(&i).ends_with("safe-off of 2 commands"));
+        let i = build(&DeclareArgs { baud: Some(9600), ..args("eload", "1a86:7523") }).unwrap();
+        assert!(i.safe_off.is_empty() && describe(&i).ends_with("no safe-off"));
+        let bad = vec!["a\nb".to_string()];
+        assert!(build(&DeclareArgs { baud: Some(9600), safe_off: Some(&bad), ..args("eload", "1a86:7523") }).unwrap_err().contains("safe_off"));
     }
 
     #[test]

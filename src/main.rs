@@ -302,6 +302,16 @@ pub enum Commands {
         /// What a refused set answers.
         #[arg(long)]
         ack_err: Option<String>,
+        /// One command that switches the output off (repeat the flag for
+        /// several, sent in order): Core sends them at a study's start and a
+        /// graceful stop. Left out, the stored declaration's list is kept;
+        /// `--clear-safe-off` drops it.
+        #[arg(long)]
+        safe_off: Vec<String>,
+        /// Clear a stored safe-off (with no --safe-off, the declaration then
+        /// has none).
+        #[arg(long, conflicts_with = "safe_off")]
+        clear_safe_off: bool,
     },
     /// List the declared bench instruments.
     ListInstruments,
@@ -827,6 +837,11 @@ pub enum Commands {
         /// without it Core uses its default.
         #[arg(long)]
         baud: Option<u32>,
+        /// The command that switches this signal's output off: Core sends it
+        /// at a study's start and a graceful stop. Left out, the stored
+        /// line is kept; an empty value (`--safe-off ""`) clears it.
+        #[arg(long)]
+        safe_off: Option<String>,
     },
     /// Write a line to a declared host-to-dut or bidirectional signal and
     /// print what came back, via embarch-core (`embarch-core` decision 79).
