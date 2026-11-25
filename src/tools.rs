@@ -167,6 +167,48 @@ pub struct LedgerShowParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct TestProposeParams {
+    /// `test`, `capability` or `hook`.
+    pub kind: String,
+    /// The definition: a test (`embarch-study-designer` interfaces/hil-tests.md), a capability `{name, value, provenance}` with provenance measured, decoded, confirmed or declared, or a hook mapping `{hook, target}`.
+    pub definition: serde_json::Value,
+    /// A test's host study. With `bench`, the definition-time checks run; leave `study.hash` out of the definition and it is filled.
+    #[serde(default)]
+    pub study: Option<serde_json::Value>,
+    /// The suite bench the test runs on `{name, description, boards}`; goes with `study`.
+    #[serde(default)]
+    pub bench: Option<serde_json::Value>,
+    /// Who measures each limited measurement: `{<measurement>: {by: bench|dut|person, source, range_min, range_max, resolution, u}}`.
+    #[serde(default)]
+    pub measured: Option<serde_json::Value>,
+    /// A custom suite to write the test under, `embarch/tests/suites/<suite>/`.
+    #[serde(default)]
+    pub suite: Option<String>,
+    /// A project name, or omit for this session's desk's firmware repo.
+    #[serde(default)]
+    pub project: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct TestPlanParams {
+    /// The plan's file name under `embarch/tests/plans/`, without `.json`.
+    #[serde(default)]
+    pub plan: Option<String>,
+    /// List this suite's applicable tests grouped by bench (a custom suite in the repo, or a premade one Core reads).
+    #[serde(default)]
+    pub suite: Option<String>,
+    /// A plan to write or update (`suite`, `select`, `dut`, `stop_on_fail`, `bench_order`); needs `plan`. Writing it selects its suite.
+    #[serde(default)]
+    pub definition: Option<serde_json::Value>,
+    /// The DUT's capabilities `[{name, value, provenance}]` to list against, when no plan is named.
+    #[serde(default)]
+    pub capabilities: Option<serde_json::Value>,
+    /// A project name, or omit for this session's desk's firmware repo.
+    #[serde(default)]
+    pub project: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct LedgerPendingParams {
     /// A project name, or omit for this session's desk's firmware repo.
     #[serde(default)]
@@ -2534,6 +2576,30 @@ impl EmbarchApi {
             p.attached,
             p.image_path.as_deref(),
             p.image_hash.as_deref(),
+        )
+        .await;
+        Self::lease_result(report)
+    }
+
+    #[tool(description = "Propose a HIL test, a DUT capability (with its provenance: measured, decoded, confirmed or declared) or a hook mapping for the engineer to confirm (embarch-api decision 134). embarch-study-designer checks it first, and with a study and bench the definition-time checks too, so a proposal it refuses is refused before Core is called, with its reason. Then it goes to Core's POST /definitions, and the answer gives the hash and says it waits for the engineer's confirmation on the card or in the terminal: you cannot confirm it. A test given a suite is also written under embarch/tests/suites/<suite>/. Project omitted means this session's desk's firmware repo.")]
+    async fn test_propose(&self, Parameters(p): Parameters<TestProposeParams>) -> Result<CallToolResult, McpError> {
+        let project = self.project(&p.project)?;
+        let report = crate::hil_repo::propose(
+            &project.source_path,
+            &self.core,
+            crate::hil_repo::ProposeArgs { kind: &p.kind, definition: p.definition, study: p.study, bench: p.bench, measured: p.measured, suite: p.suite.as_deref() },
+        )
+        .await;
+        Self::lease_result(report)
+    }
+
+    #[tool(description = "Write, update or read a test plan (a saved selection) under embarch/tests/plans/<plan>.json, or, given a suite and no plan to write, list its applicable tests grouped by bench for the DUT's capabilities. Writing a plan selects the suite it names: the suite's benches are copied into embarch/topologies/ as saved benches and never overwrite one, a name already taken with other content is left alone and reported with its diff. Project omitted means this session's desk's firmware repo.")]
+    async fn test_plan(&self, Parameters(p): Parameters<TestPlanParams>) -> Result<CallToolResult, McpError> {
+        let project = self.project(&p.project)?;
+        let report = crate::hil_repo::plan(
+            &project.source_path,
+            &self.core,
+            crate::hil_repo::PlanArgs { plan: p.plan.as_deref(), suite: p.suite.as_deref(), definition: p.definition, capabilities: p.capabilities },
         )
         .await;
         Self::lease_result(report)

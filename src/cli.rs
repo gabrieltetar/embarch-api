@@ -119,6 +119,49 @@ async fn run_command(command: Commands, json: bool, config: Arc<Config>, core: C
                 crate::ledger::pending_view(&proj.source_path, &core, attached, image.as_deref(), image_hash.as_deref()).await;
             finish(json, report.success, report.value, report.human)
         }
+        Commands::TestPropose { kind, definition_file, study_file, bench_file, measured_file, suite, project } => {
+            let proj = match lookup_project(&config, &project) {
+                Ok(p) => p,
+                Err(e) => return error_result(json, e),
+            };
+            let read = |p: &PathBuf| -> Result<serde_json::Value, String> {
+                let b = std::fs::read(p).map_err(|e| format!("reading {}: {e}", p.display()))?;
+                serde_json::from_slice(&b).map_err(|e| format!("{} is not JSON: {e}", p.display()))
+            };
+            let opt = |p: &Option<PathBuf>| p.as_ref().map(&read).transpose();
+            let (definition, study, bench, measured) = match (read(&definition_file), opt(&study_file), opt(&bench_file), opt(&measured_file)) {
+                (Ok(d), Ok(s), Ok(b), Ok(m)) => (d, s, b, m),
+                (Err(e), ..) | (_, Err(e), ..) | (_, _, Err(e), _) | (_, _, _, Err(e)) => return error_result(json, e),
+            };
+            let report = crate::hil_repo::propose(
+                &proj.source_path,
+                &core,
+                crate::hil_repo::ProposeArgs { kind: &kind, definition, study, bench, measured, suite: suite.as_deref() },
+            )
+            .await;
+            finish(json, report.success, report.value, report.human)
+        }
+        Commands::TestPlan { plan, suite, definition_file, capabilities_file, project } => {
+            let proj = match lookup_project(&config, &project) {
+                Ok(p) => p,
+                Err(e) => return error_result(json, e),
+            };
+            let read = |p: &PathBuf| -> Result<serde_json::Value, String> {
+                let b = std::fs::read(p).map_err(|e| format!("reading {}: {e}", p.display()))?;
+                serde_json::from_slice(&b).map_err(|e| format!("{} is not JSON: {e}", p.display()))
+            };
+            let (definition, capabilities) = match (definition_file.as_ref().map(&read).transpose(), capabilities_file.as_ref().map(&read).transpose()) {
+                (Ok(d), Ok(c)) => (d, c),
+                (Err(e), _) | (_, Err(e)) => return error_result(json, e),
+            };
+            let report = crate::hil_repo::plan(
+                &proj.source_path,
+                &core,
+                crate::hil_repo::PlanArgs { plan: plan.as_deref(), suite: suite.as_deref(), definition, capabilities },
+            )
+            .await;
+            finish(json, report.success, report.value, report.human)
+        }
         Commands::LeaseTake { holder, purpose, ttl_s } => {
             let report = crate::lease::take(
                 &core,
@@ -2958,7 +3001,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 65,
+            arms, 67,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."

@@ -49,7 +49,9 @@ embarch-firmware-build = { path = "crates/embarch-firmware-build" }
 # would pull `alloc` in anyway, so it has to ask for it by name.
 # `reducers` (decisions 92 to 94 there) is what `verify` re-runs a measurement
 # with (`embarch-api` decision 118); the registry keeps every behaviour shipped.
-embarch-study-designer = { path = "../embarch-study-designer", features = ["alloc", "reducers"] }
+# `hil-test` (2026-11-25, decision 134): the HIL test, suite and plan shapes and the definition-time
+# checks `test_propose` runs before Core is called.
+embarch-study-designer = { path = "../embarch-study-designer", features = ["alloc", "reducers", "hil-test"] }
 # Ed25519 for `verify` check 0 only: `verify_strict` over a DSSE PAE.
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 # Fresh nonce for `core-key` (decision 126); already in the tree.

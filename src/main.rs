@@ -9,6 +9,7 @@ mod cli;
 mod dev_bench;
 mod dev_bench_link;
 mod guide;
+mod hil_repo;
 mod host_study;
 mod instrument;
 mod lease;
@@ -422,6 +423,51 @@ pub enum Commands {
         image: Option<PathBuf>,
         #[arg(long)]
         image_hash: Option<String>,
+    },
+    /// Propose a test, a capability or a hook for the engineer to confirm
+    /// (decision 134). The crate checks it first; a proposal it refuses never
+    /// reaches Core. Core keeps it and answers its hash; the engineer confirms
+    /// it on the card in embarch-ui or in the terminal.
+    TestPropose {
+        /// test, capability or hook.
+        kind: String,
+        /// The definition, a JSON file.
+        #[arg(long)]
+        definition_file: PathBuf,
+        /// The test's host study, a JSON file; goes with --bench-file.
+        #[arg(long)]
+        study_file: Option<PathBuf>,
+        /// The suite bench the test runs on, a JSON file.
+        #[arg(long)]
+        bench_file: Option<PathBuf>,
+        /// `{<measurement>: {by, source, range_min, range_max, resolution, u}}`, a JSON file.
+        #[arg(long)]
+        measured_file: Option<PathBuf>,
+        /// A custom suite under `embarch/tests/suites/` to write the test into.
+        #[arg(long)]
+        suite: Option<String>,
+        #[arg(long, default_value = "desk")]
+        project: String,
+    },
+    /// Write or read a test plan under `embarch/tests/plans/`, or list a
+    /// suite's applicable tests grouped by bench. Writing a plan selects its
+    /// suite: the suite's benches are copied into `embarch/topologies/`,
+    /// never over a saved bench (decision 134).
+    TestPlan {
+        /// The plan's file name, without `.json`.
+        #[arg(long)]
+        plan: Option<String>,
+        /// List this suite's applicable tests, by bench.
+        #[arg(long)]
+        suite: Option<String>,
+        /// A plan to write, a JSON file; needs --plan.
+        #[arg(long)]
+        definition_file: Option<PathBuf>,
+        /// The DUT's capabilities to list against, a JSON array file.
+        #[arg(long)]
+        capabilities_file: Option<PathBuf>,
+        #[arg(long, default_value = "desk")]
+        project: String,
     },
     /// Take the bench lease (embarch-core decision 93): this session holds
     /// both boards until it releases or the TTL runs out, and every other

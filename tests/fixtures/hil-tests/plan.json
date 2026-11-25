@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "suite": { "id": "usb-pd-r3.2", "version": "0.1.0", "commit": "0123456789abcdef0123456789abcdef01234567" },
+  "select": { "kind": "some", "tests": ["vbus-5v-source-voltage"], "tags": ["swap"] },
+  "dut": {
+    "capabilities": [
+      { "name": "role", "value": "source", "provenance": "declared" },
+      { "name": "pdos", "value": [ { "kind": "fixed", "mv": 5000, "ma": 3000 } ], "provenance": "measured" }
+    ],
+    "hooks": [
+      { "hook": "dut.request_pr_swap", "target": { "kind": "shell", "command": "pd swap pr" } },
+      { "hook": "dut.press_button", "target": { "kind": "prompt", "text": "Press the button" } }
+    ]
+  },
+  "stop_on_fail": false
+}

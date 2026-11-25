@@ -3644,6 +3644,30 @@ impl CoreClient {
         Ok(())
     }
 
+    /// `POST /definitions` — a proposed test, capability or hook for the engineer to
+    /// confirm (`embarch-core` decision 133). `body` is `{kind, definition, study?,
+    /// bench?, measured?}`; the answer is `{hash, kind, kept, checked, confirmation}`,
+    /// `201` when new and `200` when already kept. A `422` is the crate's reason, one
+    /// refusal per line, and comes back as the error text; nothing was kept.
+    ///
+    /// Reuses `status_timeout`: a file write on Core's side, no hardware touched.
+    pub async fn post_definition(&self, body: &serde_json::Value) -> Result<serde_json::Value> {
+        let url = format!("{}/definitions", self.base_url().await?);
+        self.send(self.client.post(url).json(body), self.status_timeout).await
+    }
+
+    /// `GET /definitions/{hash}` — a kept definition and its confirmation standing.
+    pub async fn definition(&self, hash: &str) -> Result<serde_json::Value> {
+        let url = format!("{}/definitions/{}", self.base_url().await?, urlencode(hash));
+        self.send(self.client.get(url), self.status_timeout).await
+    }
+
+    /// `GET /suites` — the premade suites Core reads now, each with its tests' hashes.
+    pub async fn suites(&self) -> Result<serde_json::Value> {
+        let url = format!("{}/suites", self.base_url().await?);
+        self.send(self.client.get(url), self.status_timeout).await
+    }
+
     /// `GET /signals` — every declared signal link.
     ///
     /// An empty list is the normal starting state, not a failure: nothing has

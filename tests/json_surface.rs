@@ -63,6 +63,8 @@ const EVERY_SUBCOMMAND: &[&[&str]] = &[
     &["ledger-add", "some-test", "pass", "--project", "no-such-project"],
     &["ledger-show", "--project", "no-such-project"],
     &["ledger-pending", "--project", "no-such-project"],
+    &["test-propose", "test", "--definition-file", "no-such-definition.json", "--project", "no-such-project"],
+    &["test-plan", "--plan", "p", "--project", "no-such-project"],
     &["lease-take"],
     &["lease-renew"],
     &["lease-release"],

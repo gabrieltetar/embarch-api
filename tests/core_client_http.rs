@@ -131,6 +131,9 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.serial_log("COM7", 115_200, 250).await;
     let _ = client.serial_log_signal("console", None, 250, Some(1000)).await;
     let _ = client.declare_signal(&signal).await;
+    let _ = client.post_definition(&json!({ "kind": "capability", "definition": {} })).await;
+    let _ = client.definition(&"0".repeat(64)).await;
+    let _ = client.suites().await;
     let _ = client.remove_signal("outpost").await;
     let _ = client.signal_exchange_with("console", "help\n", Some("uart:~$ "), Some(500), Some(1000), Some(false)).await;
     let _ = client.signal_capture_start("console", Some(30), None).await;
@@ -269,6 +272,9 @@ async fn every_outbound_call_carries_the_bearer_token() {
         ("GET", "/serial-log"),
         ("POST", "/signals"),
         ("DELETE", "/signals/outpost"),
+        ("POST", "/definitions"),
+        ("GET", "/definitions/0000000000000000000000000000000000000000000000000000000000000000"),
+        ("GET", "/suites"),
         ("POST", "/signals/console/exchange"),
         ("POST", "/signals/console/capture"),
         ("GET", "/signals/console/capture"),
