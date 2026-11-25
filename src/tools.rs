@@ -1380,10 +1380,13 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Get embarch-core's status: whether it's reachable and what debug probes it currently sees. Also lease (who holds the bench, until when, or null; embarch-api decision 90) and last_images: per chip, the last image Core flashed or bootloaded since it started, with its sha256 and flashed_at — compare sha256 with your own image before reflashing. An absent chip means unknown, NOT nothing flashed: the record is in memory and a flash by another tool does not appear. Also api_build: this embarch-api's own version, commit and dirty flag — an MCP server keeps the binary it was started with until the client reconnects, so compare commit with the checkout's HEAD when behaviour looks older than the code.")]
+    #[tool(description = "Get embarch-core's status: whether it's reachable and what debug probes it currently sees. Also lease (who holds the bench, until when, or null; embarch-api decision 90) and last_images: per chip, the last image Core flashed or bootloaded since it started, with its sha256 and flashed_at — compare sha256 with your own image before reflashing. An absent chip means unknown, NOT nothing flashed: the record is in memory and a flash by another tool does not appear. Also attestation: the token mode (unattested, matched, development, explicit), the fingerprint of the Core answering and whether it matches the installed one. Also api_build: this embarch-api's own version, commit and dirty flag — an MCP server keeps the binary it was started with until the client reconnects, so compare commit with the checkout's HEAD when behaviour looks older than the code.")]
     async fn status(&self) -> Result<CallToolResult, McpError> {
         match self.core.status().await {
             Ok(status) => Self::ok_json(serde_json::json!({
+                // Decision 109: which token this client sends (mode), the fingerprint of the
+                // Core answering and whether it is the installed one.
+                "attestation": self.core.attestation().await,
                 "status": status.status,
                 "probes": status.probes.iter().map(|p| serde_json::json!({
                     "identifier": p.identifier,

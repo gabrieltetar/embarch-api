@@ -9,6 +9,7 @@ use anyhow::Result;
 use serde::Deserialize;
 
 pub mod api_log;
+pub mod attest;
 pub mod call_trace;
 pub mod client;
 pub mod lease_gate;
@@ -133,6 +134,16 @@ impl CoreConfig {
                 self.person_token_env.clone(),
             ),
         }
+    }
+
+    /// Whether the token for `scope` is one the caller named (config or its
+    /// named env var) rather than discovered from the machine-wide file.
+    pub fn token_is_explicit(&self, scope: TokenScope) -> bool {
+        let (token, env) = match scope {
+            TokenScope::Agent => (&self.token, &self.token_env),
+            TokenScope::Person => (&self.person_token, &self.person_token_env),
+        };
+        token.is_some() || env.as_ref().is_some_and(|v| std::env::var(v).is_ok()) || (scope == TokenScope::Person && token_discovery::person_env_set())
     }
 
     /// Is Core's address to be discovered rather than declared?

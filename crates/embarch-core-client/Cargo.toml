@@ -15,6 +15,10 @@ license = "MIT"
 [dependencies]
 anyhow = "1.0.103"
 bytes = "1"
+# `attest.rs`: the challenge check moved here from `embarch-api` (decision 109).
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+getrandom = "0.4"
+sha2 = "0.10"
 # `alloc` for the host-study types (`HostList`, `HostStepResult`, `HostStudy`)
 # that `POST /host-studies` and its events carry (`embarch-core` decision 105).
 # Every consumer already turned it on by unification; this crate built alone

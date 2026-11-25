@@ -36,6 +36,16 @@ pub struct CoreClient {
     /// uploads bytes instead of sending a path for those classes.
     resolved: Arc<OnceCell<(String, TopologyClass)>>,
     token: String,
+    /// `token` came from config or a named env var, not from the machine-wide
+    /// file: it wins over the development token, but still waits for a challenge.
+    token_explicit: bool,
+    /// Where the fingerprint and development token are read from; `None` is the
+    /// real discovery. Only [`CoreClient::with_store_dirs`] sets it.
+    store_dirs: Option<(PathBuf, PathBuf)>,
+    /// What the last challenge decided, cleared when the connection drops so a
+    /// reconnect asks again. Held across the challenge, so concurrent first
+    /// requests make one.
+    trust: Arc<tokio::sync::Mutex<Option<Trust>>>,
     /// Which of Core's two tokens `token` is. Fixed at construction.
     scope: TokenScope,
     /// The bench lease this process holds or was handed (decision 93 of
@@ -54,6 +64,13 @@ pub struct CoreClient {
     bootload_timeout: Duration,
     serial_timeout: Duration,
     study_timeout: Duration,
+}
+
+/// The token chosen after a challenge, and what chose it.
+#[derive(Clone)]
+struct Trust {
+    token: String,
+    attestation: crate::attest::Attestation,
 }
 
 /// `POST /auth/challenge`'s answer, exactly as Core sent it (nothing checked).
@@ -2094,7 +2111,30 @@ impl CoreClient {
     /// A client sending the token of `scope`. The scope is chosen once, here;
     /// no method switches it afterwards.
     pub fn new_with_scope(config: &CoreConfig, scope: TokenScope) -> Result<CoreClient> {
-        let token = config.resolve_token_for(scope)?;
+        Self::build(config, scope, None)
+    }
+
+    /// [`CoreClient::new_with_scope`] reading the machine-wide token, the
+    /// `core-fingerprint` and the development token from these directories
+    /// instead of Core's real ones. For tests: the real discovery is the only
+    /// one a shipped caller has. A token named in `config` still wins.
+    pub fn new_with_stores(config: &CoreConfig, scope: TokenScope, machine_dir: PathBuf, dev_dir: PathBuf) -> Result<CoreClient> {
+        Self::build(config, scope, Some((machine_dir, dev_dir)))
+    }
+
+    fn build(config: &CoreConfig, scope: TokenScope, store_dirs: Option<(PathBuf, PathBuf)>) -> Result<CoreClient> {
+        let token_explicit = config.token_is_explicit(scope);
+        let token = match (&store_dirs, token_explicit) {
+            (Some((machine, _)), false) => {
+                let name = match scope {
+                    TokenScope::Agent => "token",
+                    TokenScope::Person => "person-token",
+                };
+                crate::token_discovery::read_optional_token(&machine.join(name))
+                    .ok_or_else(|| anyhow!("no token file {name} in {}", machine.display()))?
+            }
+            _ => config.resolve_token_for(scope)?,
+        };
         let client = reqwest::Client::builder()
             .build()
             .context("failed to build reqwest client")?;
@@ -2112,6 +2152,9 @@ impl CoreClient {
             address: Arc::new(address),
             resolved: Arc::new(OnceCell::new()),
             token,
+            token_explicit,
+            store_dirs,
+            trust: Arc::new(tokio::sync::Mutex::new(None)),
             scope,
             lease: Arc::new(Mutex::new(HeldLease::default())),
             lease_required: false,
@@ -2246,8 +2289,14 @@ impl CoreClient {
         timeout: Option<Duration>,
         bearer: bool,
     ) -> Result<reqwest::Response> {
+        // The token is chosen by a verified challenge first (decision 109);
+        // nothing below reads `self.token` directly.
+        let token = if bearer { Some(Box::pin(self.attested()).await?.token) } else { None };
         let request = if bearer { self.refuse_without_a_live_lease(request).await? } else { request };
-        let request = if bearer { request.bearer_auth(&self.token) } else { request };
+        let request = match &token {
+            Some(t) => request.bearer_auth(t),
+            None => request,
+        };
         let request = match self.effective_lease_token().filter(|_| bearer) {
             Some(token) => {
                 let mut value = reqwest::header::HeaderValue::from_str(&token)
@@ -2281,6 +2330,9 @@ impl CoreClient {
                 Ok(response)
             }
             Err(err) => {
+                if bearer && err.is_connect() {
+                    *self.trust.lock().await = None;
+                }
                 let context = match (err.is_timeout(), timeout) {
                     (true, Some(timeout)) => format!(
                         "request to embarch-core failed (request timeout {}s)",
@@ -2542,10 +2594,121 @@ impl CoreClient {
         }
     }
 
+    fn machine_path(&self, name: &str) -> Result<PathBuf> {
+        match &self.store_dirs {
+            Some((m, _)) => Ok(m.join(name)),
+            None => crate::token_discovery::machine_file(name),
+        }
+    }
+
+    fn dev_path(&self, name: &str) -> Result<PathBuf> {
+        match &self.store_dirs {
+            Some((_, d)) => Ok(d.join(name)),
+            None => crate::token_discovery::dev_file(name),
+        }
+    }
+
+    /// Challenge Core and check the answer; the key it proved it holds.
+    async fn challenged(&self) -> Result<crate::attest::CoreKey> {
+        let nonce = crate::attest::fresh_nonce()?;
+        let answer = self.auth_challenge(&nonce).await?;
+        crate::attest::check(&nonce, &answer)
+    }
+
+    /// The token to send, chosen once per connection (decision 109). With a
+    /// `core-fingerprint` beside the token file, Core is challenged first: a
+    /// match sends the machine-wide token, a mismatch the development token
+    /// or nothing. Without one, no Core here is attested and the token goes
+    /// as it always did. An explicit token waits for a good challenge too.
+    async fn attested(&self) -> Result<Trust> {
+        use crate::attest::{Attestation, AttestationRefused, TokenMode};
+        let mut held = self.trust.lock().await;
+        if let Some(t) = held.as_ref() {
+            return Ok(t.clone());
+        }
+        let installed = match self.machine_path("core-fingerprint") {
+            Ok(p) => crate::token_discovery::read_fingerprint(&p),
+            Err(e) => {
+                tracing::warn!("cannot locate core-fingerprint, treating this machine as unattested: {e:#}");
+                None
+            }
+        };
+        let Some(installed) = installed else {
+            let t = Trust {
+                token: self.token.clone(),
+                attestation: Attestation { mode: TokenMode::Unattested, fingerprint: None, installed_fingerprint: None, matches: None, error: None },
+            };
+            *held = Some(t.clone());
+            return Ok(t);
+        };
+        let key = self.challenged().await.map_err(|e| {
+            anyhow::Error::new(AttestationRefused {
+                core_fingerprint: None,
+                installed_fingerprint: installed.clone(),
+                message: format!("a core-fingerprint is installed, but Core did not pass its challenge, so no token was sent: {e:#}"),
+            })
+        })?;
+        let matches = key.fingerprint == installed;
+        let (token, mode) = if self.token_explicit {
+            (self.token.clone(), TokenMode::Explicit)
+        } else if matches {
+            (self.token.clone(), TokenMode::Matched)
+        } else {
+            let path = self.dev_path(self.scope_file_name()).ok();
+            match path.as_deref().and_then(crate::token_discovery::read_optional_token) {
+                Some(t) => (t, TokenMode::Development),
+                None => {
+                    return Err(anyhow::Error::new(AttestationRefused {
+                        message: format!(
+                            "the Core answering has fingerprint {} but the installed Core's is {installed}, and there is no development token{}; no token was sent",
+                            key.fingerprint,
+                            path.map(|p| format!(" at {}", p.display())).unwrap_or_default()
+                        ),
+                        core_fingerprint: Some(key.fingerprint),
+                        installed_fingerprint: installed,
+                    }))
+                }
+            }
+        };
+        let t = Trust {
+            token,
+            attestation: Attestation { mode, fingerprint: Some(key.fingerprint), installed_fingerprint: Some(installed), matches: Some(matches), error: None },
+        };
+        *held = Some(t.clone());
+        Ok(t)
+    }
+
+    fn scope_file_name(&self) -> &'static str {
+        match self.scope {
+            TokenScope::Agent => "token",
+            TokenScope::Person => "person-token",
+        }
+    }
+
+    /// Which token this client sends and the fingerprint of the Core it
+    /// reaches, for `status`. With no `core-fingerprint` nothing is challenged, so
+    /// no fingerprint is shown.
+    pub async fn attestation(&self) -> crate::attest::Attestation {
+        use crate::attest::{Attestation, AttestationRefused, TokenMode};
+        match self.attested().await {
+            Ok(t) => t.attestation,
+            Err(e) => {
+                let refused = e.downcast_ref::<AttestationRefused>();
+                Attestation {
+                    mode: TokenMode::Refused,
+                    matches: refused.and_then(|r| r.core_fingerprint.as_ref().map(|c| *c == r.installed_fingerprint)),
+                    fingerprint: refused.and_then(|r| r.core_fingerprint.clone()),
+                    installed_fingerprint: refused.map(|r| r.installed_fingerprint.clone()),
+                    error: Some(format!("{e:#}")),
+                }
+            }
+        }
+    }
+
     /// `POST /auth/challenge` (`embarch-core` decision 110): the one route that
     /// takes **no token**, so none is sent: its point is to learn which Core
     /// answers before a token goes to it. The answer is unchecked here; see
-    /// `embarch_api::core_key` for the frame and signature check.
+    /// `crate::attest` for the frame and signature check.
     pub async fn auth_challenge(&self, nonce: &str) -> Result<ChallengeAnswer> {
         let url = format!("{}/auth/challenge", self.base_url().await?);
         let request = self.client.post(url).json(&serde_json::json!({ "nonce": nonce }));

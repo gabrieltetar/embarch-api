@@ -80,6 +80,53 @@ pub fn resolve_token_for(
     read_token_file(&path).map_err(|_| no_token_error(scope, &path))
 }
 
+/// Whether `EMBARCH_PERSON_TOKEN` is set and non-blank: the person's token is then
+/// one the caller supplied, not a file's.
+pub(crate) fn person_env_set() -> bool {
+    std::env::var("EMBARCH_PERSON_TOKEN").is_ok_and(|v| !v.trim().is_empty())
+}
+
+/// Path of `file_name` in Core's machine-wide data directory (`token`,
+/// `person-token`, `core-fingerprint`), the same discovery for all.
+pub(crate) fn machine_file(file_name: &str) -> Result<PathBuf> {
+    discover_token_path(file_name)
+}
+
+/// Path of `file_name` in Core's development store: `%LOCALAPPDATA%\embarch\dev`
+/// (through WSL2 when running there), `~/.local/state/embarch/dev` on Linux.
+pub(crate) fn dev_file(file_name: &str) -> Result<PathBuf> {
+    #[cfg(windows)]
+    {
+        let local = std::env::var("LOCALAPPDATA").context("LOCALAPPDATA is not set")?;
+        Ok(Path::new(&local).join("embarch").join("dev").join(file_name))
+    }
+    #[cfg(unix)]
+    {
+        if is_wsl2() {
+            let local = run_shellout("cmd.exe", &["/C", "echo", "%LOCALAPPDATA%"])
+                .filter(|v| !v.is_empty() && !v.contains('%'))
+                .or_else(|| run_shellout("powershell.exe", &["-NoProfile", "-Command", "$env:LOCALAPPDATA"]).filter(|v| !v.is_empty()))
+                .context("could not determine Windows %LOCALAPPDATA% from within WSL2")?;
+            Ok(translate_windows_path_to_wsl(&local)?.join("embarch").join("dev").join(file_name))
+        } else {
+            let home = std::env::var("HOME").context("HOME is not set")?;
+            Ok(Path::new(&home).join(".local/state/embarch/dev").join(file_name))
+        }
+    }
+}
+
+/// The token in `path`, or `None` when the file is absent or empty.
+pub(crate) fn read_optional_token(path: &Path) -> Option<String> {
+    read_token_file(path).ok()
+}
+
+/// The fingerprint in `path`, lowercased; `None` when the file is absent.
+pub(crate) fn read_fingerprint(path: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let t = raw.trim().to_ascii_lowercase();
+    (!t.is_empty()).then_some(t)
+}
+
 fn read_token_file(path: &Path) -> Result<String> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read token file at {}", path.display()))?;

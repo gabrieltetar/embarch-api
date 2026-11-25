@@ -657,7 +657,8 @@ async fn status(core: &CoreClient, json: bool) -> i32 {
                     .collect();
                 format!("core status: {}\n{}", status.status, probe_lines.join("\n"))
             };
-            let human = format!("{human}\nembarch-api {}", crate::build_info::VERSION_LINE);
+            let attestation = core.attestation().await;
+            let human = format!("{human}\n{}\nembarch-api {}", attestation.human(), crate::build_info::VERSION_LINE);
 
             finish(
                 json,
@@ -667,6 +668,8 @@ async fn status(core: &CoreClient, json: bool) -> i32 {
                     "lease": status.lease, "last_images": status.last_images,
                     // Decision 93: the build answering, beside Core's own.
                     "api_build": crate::build_info::json(),
+                    // Decision 109: which token this client sends and why.
+                    "attestation": attestation,
                 }),
                 human,
             )

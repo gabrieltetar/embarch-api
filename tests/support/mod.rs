@@ -127,6 +127,48 @@ pub enum Behavior {
     /// repeats forever. The fixture for a study that is still running the
     /// first time it is polled and finished the third.
     Sequence(Vec<Behavior>),
+    /// `POST /auth/challenge` as a Core holding the Ed25519 key `[seed; 32]`
+    /// would answer the nonce in the request body (`embarch-api` decision 109),
+    /// spoiled as `fault` says. Route it with [`Behavior::Router`].
+    Challenge { seed: u8, fault: ChallengeFault },
+}
+
+/// How a [`Behavior::Challenge`] answer is spoiled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChallengeFault {
+    None,
+    /// Signed by a different key than the one the answer names.
+    BadSignature,
+    /// Signs a frame over some other nonce.
+    ForeignFrame,
+}
+
+/// The SHA-256 fingerprint of the key `[seed; 32]`, as a Core would publish it.
+pub fn challenge_fingerprint(seed: u8) -> String {
+    use sha2::{Digest, Sha256};
+    let pk = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]).verifying_key().to_bytes();
+    Sha256::digest(pk).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn challenge_reply(seed: u8, fault: ChallengeFault, request_body: &[u8]) -> Behavior {
+    use ed25519_dalek::{Signer, SigningKey};
+    use sha2::{Digest, Sha256};
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    let nonce = serde_json::from_slice::<serde_json::Value>(request_body)
+        .ok()
+        .and_then(|v| v["nonce"].as_str().map(str::to_string))
+        .unwrap_or_default();
+    let core_nonce = "ab".repeat(32);
+    let signed_nonce = if fault == ChallengeFault::ForeignFrame { "ff".repeat(16) } else { nonce };
+    let frame = format!("embarch-core-auth-v1\n{core_nonce}\n{signed_nonce}");
+    let key = SigningKey::from_bytes(&[seed; 32]);
+    let signer = if fault == ChallengeFault::BadSignature { SigningKey::from_bytes(&[seed.wrapping_add(1); 32]) } else { key.clone() };
+    let pk = key.verifying_key().to_bytes();
+    let body = serde_json::json!({
+        "frame": frame, "core_nonce": core_nonce, "keyid": hex(&Sha256::digest(pk)),
+        "public_key": hex(&pk), "signature": hex(&signer.sign(frame.as_bytes()).to_bytes()),
+    });
+    Behavior::json_ok(body)
 }
 
 /// How a [`Behavior::EventStream`] ends.
@@ -273,11 +315,15 @@ async fn serve_one(
         return;
     };
     let path = request.path().to_string();
+    let request_body = request.body.clone();
     sink.lock()
         .expect("mock Core request log poisoned")
         .push(request);
 
-    let behavior = resolve(behavior, &path, &counters);
+    let behavior = match resolve(behavior, &path, &counters) {
+        Behavior::Challenge { seed, fault } => challenge_reply(seed, fault, &request_body),
+        other => other,
+    };
 
     match behavior {
         Behavior::Reply {
@@ -357,7 +403,7 @@ async fn serve_one(
             }
         }
         // Both are containers; `resolve` has already reduced them.
-        Behavior::Router { .. } | Behavior::Sequence(..) => unreachable!(),
+        Behavior::Router { .. } | Behavior::Sequence(..) | Behavior::Challenge { .. } => unreachable!(),
     }
 }
 
