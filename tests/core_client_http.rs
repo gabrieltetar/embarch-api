@@ -134,6 +134,9 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.post_definition(&json!({ "kind": "capability", "definition": {} })).await;
     let _ = client.definition(&"0".repeat(64)).await;
     let _ = client.suites().await;
+    let _ = client.pending_confirmations().await;
+    let _ = client.confirmation_card(&"0".repeat(64)).await;
+    let _ = client.confirm(&"0".repeat(64), "nonce", Some("ui")).await;
     let _ = client.remove_signal("outpost").await;
     let _ = client.signal_exchange_with("console", "help\n", Some("uart:~$ "), Some(500), Some(1000), Some(false)).await;
     let _ = client.signal_capture_start("console", Some(30), None).await;
@@ -276,6 +279,9 @@ async fn every_outbound_call_carries_the_bearer_token() {
         ("POST", "/definitions"),
         ("GET", "/definitions/0000000000000000000000000000000000000000000000000000000000000000"),
         ("GET", "/suites"),
+        ("GET", "/confirmations/pending"),
+        ("GET", "/confirmations/0000000000000000000000000000000000000000000000000000000000000000/card"),
+        ("POST", "/confirmations"),
         ("POST", "/signals/console/exchange"),
         ("POST", "/signals/console/capture"),
         ("GET", "/signals/console/capture"),
@@ -977,6 +983,22 @@ async fn the_mock_sees_the_json_body_a_post_sent() {
         body.contains("nrf52840"),
         "POST /resolve-chip arrived without its body: {body:?}"
     );
+}
+
+/// `confirm` sends `{hash, nonce, surface}` and a refusal returns Core's text.
+#[tokio::test]
+async fn confirm_sends_its_body_and_a_refusal_returns_cores_text() {
+    let mock = MockCore::start(Behavior::plain_text_error(403, "Forbidden", "nonce spent")).await;
+    let client = CoreClient::new(&config(json!({ "base_url": mock.base_url() })))
+        .expect("client did not build");
+
+    let err = client.confirm(&"a".repeat(64), "n1", Some("ui")).await.expect_err("403 must be an error");
+    let text = format!("{err:#}");
+    assert!(text.contains("403") && text.contains("nonce spent"), "refusal lost Core's text: {text}");
+
+    let requests = mock.requests();
+    let body: serde_json::Value = serde_json::from_str(&requests[0].body_text()).expect("body is JSON");
+    assert_eq!(body, json!({ "hash": "a".repeat(64), "nonce": "n1", "surface": "ui" }));
 }
 
 /// `bootload` sends the image and every declared DUT fact as multipart parts

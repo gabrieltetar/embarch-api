@@ -3693,6 +3693,36 @@ impl CoreClient {
         self.send(self.client.get(url), self.status_timeout).await
     }
 
+    /// `GET /confirmations/pending` — what waits for the engineer's confirmation:
+    /// `{pending: [{hash, kind, name}]}`, no card data and no nonce. Either token may list.
+    pub async fn pending_confirmations(&self) -> Result<serde_json::Value> {
+        let url = format!("{}/confirmations/pending", self.base_url().await?);
+        self.send(self.client.get(url), self.status_timeout).await
+    }
+
+    /// `GET /confirmations/{hash}/card` — the card to show and, when the definition
+    /// still waits, a one-use `nonce` with `expires_utc_ms`: `{card, confirmation,
+    /// nonce, expires_utc_ms}`. Core refuses the agent's token `403`; the refusal
+    /// comes back as the error text. Only the person's surface calls this.
+    pub async fn confirmation_card(&self, hash: &str) -> Result<serde_json::Value> {
+        let url = format!("{}/confirmations/{}/card", self.base_url().await?, urlencode(hash));
+        self.send(self.client.get(url), self.status_timeout).await
+    }
+
+    /// `POST /confirmations` with `{hash, nonce, surface}` — the person's confirmation
+    /// of exactly what the card showed. `surface` labels where they acted (`ui`,
+    /// `cli`); Core records it and never trusts it. A refusal (`403` nonce unknown,
+    /// spent, expired or for another card; `409` needs no confirmation; `404`) comes
+    /// back as `embarch-core returned {status}: {body}`. The nonce is spent by the attempt.
+    pub async fn confirm(&self, hash: &str, nonce: &str, surface: Option<&str>) -> Result<serde_json::Value> {
+        let url = format!("{}/confirmations", self.base_url().await?);
+        let mut body = serde_json::json!({ "hash": hash, "nonce": nonce });
+        if let Some(surface) = surface {
+            body["surface"] = serde_json::Value::from(surface);
+        }
+        self.send(self.client.post(url).json(&body), self.status_timeout).await
+    }
+
     /// `GET /signals` — every declared signal link.
     ///
     /// An empty list is the normal starting state, not a failure: nothing has
