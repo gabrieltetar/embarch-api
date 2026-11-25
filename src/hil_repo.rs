@@ -103,7 +103,15 @@ fn pretty(v: &impl serde::Serialize) -> Vec<u8> {
 /// Writes `bytes` as one `kind` file through the person writer (decision 132): no link
 /// followed, a hard-linked target refused, a temp file and a rename. `overwrite` false
 /// refuses an existing file. Returns whether it replaced one.
+///
+/// A repo with no `embarch/` yet gets one, as `api/196`'s writer did; the person writer
+/// opens only an existing folder, and it still refuses a link put in its place.
 fn write_under_embarch(repo: &Path, kind: Kind, name: &str, bytes: &[u8], overwrite: bool) -> Result<bool, String> {
+    match std::fs::create_dir(repo.join("embarch")) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(format!("creating {}/embarch: {e}", repo.display())),
+    }
     let w = ConfinedWriter::open(repo).map_err(|e| format!("{e:#}"))?;
     w.write_with(kind, name, bytes, overwrite).map(|(_, replaced)| replaced).map_err(|e| format!("{e:#}"))
 }
