@@ -978,6 +978,7 @@ dependencies = [
  "ihex",
  "include_dir",
  "rmcp",
+ "rustix",
  "schemars",
  "serde",
  "serde_json",
@@ -992,6 +993,7 @@ dependencies = [
  "typst-as-lib",
  "typst-layout",
  "typst-pdf",
+ "windows-sys 0.61.2",
  "zip",
 ]
 

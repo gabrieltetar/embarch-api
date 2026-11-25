@@ -33,6 +33,10 @@ pub mod audio_export;
 /// `core-key`: Core's public key from its challenge, signature checked (decision 129).
 pub mod core_key;
 
+/// The confined writer for the person's `embarch/` folder (decision 132). In the
+/// library so `tests/` can reach it; no command uses it yet.
+pub mod person_writer;
+
 pub use embarch_firmware_build::build;
 
 /// The `--json` surface's single serializer, lifted here for the same

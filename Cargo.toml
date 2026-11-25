@@ -78,6 +78,15 @@ typst-as-lib = { version = "0.18.0", optional = true, default-features = false, 
 include_dir = { version = "0.7.4", optional = true }
 tempfile = { version = "3", optional = true }
 
+# 2026-11-25 (api decision 132): `person_writer` opens each path step relative
+# to the last without following a link. `rustix` is that on Unix (`openat`
+# with `O_NOFOLLOW`); on Windows `windows-sys` reads a file's link count.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
 [features]
 default = ["pdf"]
 # `embarch-study-designer/pdf-text` (its decisions 101 to 103) is `verify`'s PDF reader and number
