@@ -162,6 +162,49 @@ async fn run_command(command: Commands, json: bool, config: Arc<Config>, core: C
             .await;
             finish(json, report.success, report.value, report.human)
         }
+        Commands::RunTest {
+            plan, suite, tests, tags, all, capabilities_file, hooks_file, stop_on_fail, commit,
+            standard_name, standard_revision, declared_serial, board_revision, hardware_id, project,
+        } => {
+            let proj = match lookup_project(&config, &project) {
+                Ok(p) => p,
+                Err(e) => return error_result(json, e),
+            };
+            let read = |p: &PathBuf| -> Result<serde_json::Value, String> {
+                let b = std::fs::read(p).map_err(|e| format!("reading {}: {e}", p.display()))?;
+                serde_json::from_slice(&b).map_err(|e| format!("{} is not JSON: {e}", p.display()))
+            };
+            let (capabilities, hooks) = match (capabilities_file.as_ref().map(&read).transpose(), hooks_file.as_ref().map(&read).transpose()) {
+                (Ok(c), Ok(h)) => (c, h),
+                (Err(e), _) | (_, Err(e)) => return error_result(json, e),
+            };
+            let report = crate::hil_run::prepare(
+                &proj.source_path,
+                &core,
+                crate::hil_run::RunTestArgs {
+                    plan: plan.as_deref(),
+                    suite: suite.as_deref(),
+                    tests,
+                    tags,
+                    all,
+                    capabilities,
+                    hooks,
+                    stop_on_fail,
+                    commit: commit.as_deref(),
+                    standard_name: standard_name.as_deref(),
+                    standard_revision: standard_revision.as_deref(),
+                    declared_serial: declared_serial.as_deref(),
+                    board_revision: board_revision.as_deref(),
+                    hardware_id: hardware_id.as_deref(),
+                },
+            )
+            .await;
+            finish(json, report.success, report.value, report.human)
+        }
+        Commands::TestStatus { run_id, studies } => {
+            let report = crate::hil_run::status(&core, &run_id, studies).await;
+            finish(json, report.success, report.value, report.human)
+        }
         Commands::LeaseTake { holder, purpose, ttl_s } => {
             let report = crate::lease::take(
                 &core,
@@ -1323,7 +1366,10 @@ async fn answer_prompt(core: &CoreClient, study_id: &str, prompt_id: u32, answer
             serde_json::json!({ "success": true, "answer": r }),
             format!("prompt {prompt_id} of {study_id}: {answer}, recorded"),
         ),
-        Err(e) => error_result(json, format!("answer-prompt failed: {e:#}")),
+        Err(e) => {
+            let text = format!("{e:#}");
+            error_result(json, format!("answer-prompt failed: {text}{}", crate::hil_run::prompt_refusal_hint(&text)))
+        }
     }
 }
 
@@ -3009,7 +3055,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 68,
+            arms, 70,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."

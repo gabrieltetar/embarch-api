@@ -3723,6 +3723,31 @@ impl CoreClient {
         self.send(self.client.post(url).json(&body), self.status_timeout).await
     }
 
+    /// `POST /test-runs` with `{run, plan, suite?, studies}` — prepares a Test run and
+    /// starts nothing (core decision 134): Core re-expands `run.json` from its
+    /// definitions and refuses one it does not reproduce. `201 {run_id, run_hash,
+    /// lease_holder, duration_bound_ms}`; a refusal (`422` naming the first differing
+    /// key, `409` the id is prepared, `400`) comes back as `embarch-core returned
+    /// {status}: {body}`. There is no method for the go: it takes the person's token.
+    pub async fn prepare_test_run(&self, body: &serde_json::Value) -> Result<serde_json::Value> {
+        let url = format!("{}/test-runs", self.base_url().await?);
+        self.send(self.client.post(url).json(body), self.status_timeout).await
+    }
+
+    /// `GET /test-runs/{run_id}` — `{run_id, run_hash, state, bench, test, verdicts,
+    /// waiting_prompt}`; either token may read it.
+    pub async fn test_run_status(&self, run_id: &str) -> Result<serde_json::Value> {
+        let url = format!("{}/test-runs/{}", self.base_url().await?, urlencode(run_id));
+        self.send(self.client.get(url), self.status_timeout).await
+    }
+
+    /// `GET /test-runs/{run_id}/card` — the go card rendered from Core's record of the
+    /// run. `nonce` and `expires_utc_ms` come back `null` for the agent's token.
+    pub async fn test_run_card(&self, run_id: &str) -> Result<serde_json::Value> {
+        let url = format!("{}/test-runs/{}/card", self.base_url().await?, urlencode(run_id));
+        self.send(self.client.get(url), self.status_timeout).await
+    }
+
     /// `GET /signals` — every declared signal link.
     ///
     /// An empty list is the normal starting state, not a failure: nothing has

@@ -10,6 +10,7 @@ mod dev_bench;
 mod dev_bench_link;
 mod guide;
 mod hil_repo;
+mod hil_run;
 mod host_study;
 mod instrument;
 mod lease;
@@ -474,6 +475,58 @@ pub enum Commands {
         capabilities_file: Option<PathBuf>,
         #[arg(long, default_value = "desk")]
         project: String,
+    },
+    /// Prepare a HIL Test run and show its card (decision 135). Nothing is
+    /// started: the engineer gives the go on the card or in their terminal.
+    /// With --suite and no --test, --tag or --all, lists the applicable tests.
+    RunTest {
+        /// A saved plan under `embarch/tests/plans/`, without `.json`.
+        #[arg(long)]
+        plan: Option<String>,
+        /// A suite, a repo one or a premade one Core reads.
+        #[arg(long)]
+        suite: Option<String>,
+        /// A test id to run; repeat for more.
+        #[arg(long = "test")]
+        tests: Vec<String>,
+        /// A tag; every test carrying it runs. Repeat for more.
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        /// Every test of the suite that applies.
+        #[arg(long)]
+        all: bool,
+        /// The DUT's capabilities `[{name, value, provenance}]`, a JSON file.
+        #[arg(long)]
+        capabilities_file: Option<PathBuf>,
+        /// The hook mappings `[{hook, target}]`, a JSON file.
+        #[arg(long)]
+        hooks_file: Option<PathBuf>,
+        /// End the run at the first fail.
+        #[arg(long)]
+        stop_on_fail: bool,
+        /// The suite pin's commit for a plan built from --suite.
+        #[arg(long)]
+        commit: Option<String>,
+        #[arg(long)]
+        standard_name: Option<String>,
+        #[arg(long)]
+        standard_revision: Option<String>,
+        #[arg(long)]
+        declared_serial: Option<String>,
+        #[arg(long)]
+        board_revision: Option<String>,
+        #[arg(long)]
+        hardware_id: Option<String>,
+        #[arg(long, default_value = "desk")]
+        project: String,
+    },
+    /// A Test run's state, current bench and test, verdicts so far and any
+    /// waiting prompt (embarch-core decision 136).
+    TestStatus {
+        run_id: String,
+        /// Each study's own status underneath.
+        #[arg(long)]
+        studies: bool,
     },
     /// Take the bench lease (embarch-core decision 93): this session holds
     /// both boards until it releases or the TTL runs out, and every other

@@ -60,6 +60,8 @@ const EVERY_SUBCOMMAND: &[&[&str]] = &[
     &["run-host-study", "--study-file", "no-such-host-study.json"],
     &["answer-prompt", "no-such-study", "1", "confirmed"],
     &["cancel-study", "no-such-study"],
+    &["run-test", "--suite", "s", "--project", "no-such-project"],
+    &["test-status", "no-such-run"],
     &["publish", "no-such-run"],
     &["ledger-add", "some-test", "pass", "--project", "no-such-project"],
     &["ledger-show", "--project", "no-such-project"],

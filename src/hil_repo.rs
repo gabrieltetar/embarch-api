@@ -42,7 +42,7 @@ pub fn tests_dir(source_path: &Path) -> PathBuf {
     source_path.join("embarch").join("tests")
 }
 
-fn failed(message: impl Into<String>) -> Report {
+pub(crate) fn failed(message: impl Into<String>) -> Report {
     let message = message.into();
     Report { success: false, value: json!({ "success": false, "error": message }), human: message }
 }
@@ -418,7 +418,7 @@ pub async fn plan(source_path: &Path, core: &CoreClient, a: PlanArgs<'_>) -> Rep
     }
 }
 
-fn read_plan(path: &Path) -> Result<Plan, String> {
+pub(crate) fn read_plan(path: &Path) -> Result<Plan, String> {
     let b = std::fs::read(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
     serde_json::from_slice(&b).map_err(|e| format!("{} is not a plan: {e}", path.display()))
 }
@@ -459,7 +459,7 @@ async fn write_plan(repo: &Path, core: &CoreClient, name: &str, def: &Value) -> 
 // ---------------------------------------------------------------- selection
 
 /// Where a suite's manifest was read.
-async fn load_manifest(repo: &Path, core: &CoreClient, id: &str) -> Result<(SuiteManifest, &'static str), String> {
+pub(crate) async fn load_manifest(repo: &Path, core: &CoreClient, id: &str) -> Result<(SuiteManifest, &'static str), String> {
     if is_slug(id) {
         let path = tests_dir(repo).join("suites").join(id).join("suite.json");
         if let Ok(b) = std::fs::read(&path) {
@@ -579,7 +579,7 @@ fn unmet(c: &embarch_study_designer::hil_test::Condition, caps: &[Capability]) -
     }
 }
 
-async fn suite_tests(repo: &Path, core: &CoreClient, suite: &str, manifest: &SuiteManifest, source: &str) -> Result<Vec<TestDef>, String> {
+pub(crate) async fn suite_tests(repo: &Path, core: &CoreClient, suite: &str, manifest: &SuiteManifest, source: &str) -> Result<Vec<TestDef>, String> {
     let mut out = Vec::new();
     for t in &manifest.tests {
         if source == "repo" {
