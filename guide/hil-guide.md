@@ -39,7 +39,7 @@
 These words mean exactly this here. A firmware's unit tests are never called tests without "unit", and the hardware test ledger's rows are "ledger tests".
 
 - **Bench**: zero or one DUT, zero or one dev bench, and any number of **bench boards** (the dev bench, a USB PD partner) and **instruments** (a load, a supply). A **saved bench** is its description in the firmware repo's `embarch/topologies/`; a **live bench** is that description bound to real probes and ports.
-- **Study** (the mode): a custom question answered by measurement on exactly one bench. **A study** (the file) is the steps a runner executes: `run_study` on the dev bench, or `run_host_study` on Core's own runner.
+- **Study** (the mode; **a study** is its file): a custom question answered by measurement on one bench, run by `run_study` or `run_host_study`. EmbArch's glossary row **Study** is the definition.
 - **Test** (the mode): technical conformance with a verdict per test, on one or more benches. A **test suite** holds **tests**; a **test plan** is a saved selection from a suite.
 - **Run**: one execution of a study or a Test selection, with an id in Core's run log. A **resolved run** (`run.json`) is a Test selection with every input substituted, hashed.
 - **Measurement**: a named value with a unit, a resolution, an uncertainty, who measured it (`bench`, `dut` or `person`) and the file and rows it came from, computed by Core.
