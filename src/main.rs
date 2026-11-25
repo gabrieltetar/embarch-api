@@ -7,6 +7,7 @@ mod bundle;
 mod capacity;
 mod cli;
 mod dev_bench;
+mod dev_bench_link;
 mod guide;
 mod host_study;
 mod instrument;
@@ -1015,11 +1016,12 @@ pub enum Commands {
         /// The declared signal's name, as given to declare-signal.
         name: String,
     },
-    /// Declare dev-bench's runtime-link USB serial port via embarch-core,
-    /// by the bridge's own USB serial number and/or which interface of it.
-    /// At least one of --serial/--interface must be given. dev-bench must
-    /// already be enrolled via enroll-probe first — this only ever amends
-    /// that existing row.
+    /// Declare dev-bench's runtime link via embarch-core: the bridge's own
+    /// USB serial number and/or which interface of it, and/or a CDC control
+    /// port's USB identity (--control-vid/--control-pid, hexadecimal, with
+    /// or without 0x), and/or --clear-control-port. At least one must be
+    /// given. dev-bench must already be enrolled via enroll-probe first —
+    /// this only ever amends that existing row.
     DevBenchLink {
         /// The link bridge's own USB serial number.
         #[arg(long)]
@@ -1029,6 +1031,22 @@ pub enum Commands {
         /// (the nRF54L15DK's own case, interface 2).
         #[arg(long)]
         interface: Option<u8>,
+        /// USB vendor ID of a CDC control port, hexadecimal (2fe3 or 0x2fe3).
+        /// Detection then finds the bench by it, not by the SEGGER VID.
+        #[arg(long, requires = "control_pid")]
+        control_vid: Option<String>,
+        /// USB product ID of the control port, hexadecimal.
+        #[arg(long, requires = "control_vid")]
+        control_pid: Option<String>,
+        /// The control port's own USB serial number.
+        #[arg(long, requires = "control_vid")]
+        control_serial: Option<String>,
+        /// Which interface of a composite device is the control port.
+        #[arg(long, requires = "control_vid")]
+        control_interface: Option<u8>,
+        /// Forget a recorded control port; detection returns to the SEGGER VID.
+        #[arg(long, conflicts_with = "control_vid")]
+        clear_control_port: bool,
     },
     /// Print the version numbers compiled into THIS binary: its crate
     /// version, the commit it was built from (and whether that build had

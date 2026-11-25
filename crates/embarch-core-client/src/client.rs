@@ -395,6 +395,10 @@ struct SetDevBenchLinkRequest {
     serial: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     interface: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    control_port: Option<UsbPortId>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    clear_control_port: bool,
 }
 
 /// `embarch-core`'s `POST /probes/enroll` — the
@@ -3605,28 +3609,41 @@ impl CoreClient {
         self.send(self.client.get(url).query(&query), self.status_timeout).await
     }
 
-    /// `POST /dev-bench/link` — declares dev-bench's runtime-link USB
-    /// serial, by the bridge's own USB serial number and/or which interface
-    /// of it (`embarch-core`'s `set_dev_bench_link_handler`). At least one of
-    /// `serial`/`interface` must be given — checked here rather than making
-    /// a doomed round trip, since Core's own 400 for neither says exactly
-    /// this.
+    /// `POST /dev-bench/link` — declares dev-bench's runtime link: the link
+    /// bridge's USB serial and/or which interface of it, and/or (Core
+    /// decision 124) the USB identity of a CDC control port, which detection
+    /// then finds the bench by instead of by the SEGGER VID.
+    /// `clear_control_port` forgets a recorded one. At least one of the four
+    /// must be given, and `control_port` with `clear_control_port` is a
+    /// contradiction — both checked here rather than making a doomed round
+    /// trip, since Core's own 400 says exactly this.
     ///
     /// dev-bench must already be enrolled via [`CoreClient::enroll_probe`]
     /// first — this only ever amends that existing row, same posture
     /// [`CoreClient::declare_signal`] documents for its own write. Reuses
     /// `status_timeout`: a plain enrollment-file write on Core's side, no
     /// hardware touched.
-    pub async fn set_dev_bench_link(&self, serial: Option<&str>, interface: Option<u8>) -> Result<()> {
-        if serial.is_none() && interface.is_none() {
+    pub async fn set_dev_bench_link(
+        &self,
+        serial: Option<&str>,
+        interface: Option<u8>,
+        control_port: Option<&UsbPortId>,
+        clear_control_port: bool,
+    ) -> Result<()> {
+        if serial.is_none() && interface.is_none() && control_port.is_none() && !clear_control_port {
             return Err(anyhow!(
-                "set_dev_bench_link needs at least one of serial or interface"
+                "set_dev_bench_link needs at least one of serial, interface, control_port or clear_control_port"
             ));
+        }
+        if control_port.is_some() && clear_control_port {
+            return Err(anyhow!("control_port and clear_control_port contradict each other"));
         }
         let url = format!("{}/dev-bench/link", self.base_url().await?);
         let body = SetDevBenchLinkRequest {
             serial: serial.map(str::to_string),
             interface,
+            control_port: control_port.cloned(),
+            clear_control_port,
         };
         self.send_no_content(self.client.post(url).json(&body), self.status_timeout)
             .await

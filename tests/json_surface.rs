@@ -112,6 +112,7 @@ const EVERY_SUBCOMMAND: &[&[&str]] = &[
     &["mem-read", "--range", "0x4002103C"],
     &["core-state", "--halt"],
     &["dev-bench-link", "--interface", "2"],
+    &["dev-bench-link", "--control-vid", "2fe3", "--control-pid", "0100"],
     &["versions"],
     &["patches", "import", "--scratch", "no-such-scratch-dir"],
     &["stack", "fold", "--repo", "no-such-repo-dir"],

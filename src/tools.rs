@@ -1225,8 +1225,8 @@ pub struct UnenrollProbeParams {
 }
 
 /// `embarch-core`'s `POST /dev-bench/link` — declares dev-bench's
-/// runtime-link USB serial, by the bridge's own USB serial number and/or
-/// which interface of it. At least one of the two must be given.
+/// runtime link: the bridge's USB serial and/or interface, and/or a CDC
+/// control port's USB identity. At least one of the four must be given.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct DevBenchLinkParams {
     /// The link bridge's own USB serial number.
@@ -1237,6 +1237,16 @@ pub struct DevBenchLinkParams {
     /// nRF54L15DK's own case, interface 2).
     #[serde(default)]
     pub interface: Option<u8>,
+    /// The USB identity of a bench whose control link is a CDC ACM port (an
+    /// nRF52840 DK's own USB port): vid and pid in hexadecimal, optionally
+    /// serial and interface. Detection finds the bench by it, not by the
+    /// SEGGER VID.
+    #[serde(default)]
+    pub control_port: Option<crate::dev_bench_link::ControlPortArg>,
+    /// Forget a recorded control_port and return to detection by the SEGGER
+    /// VID. Cannot be combined with control_port.
+    #[serde(default)]
+    pub clear_control_port: bool,
 }
 
 /// Shared by `declare_signal`'s tool and CLI subcommand: turns the string
@@ -2333,14 +2343,18 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Declare dev-bench's runtime-link USB serial port via embarch-core's POST /dev-bench/link, by the bridge's own USB serial number and/or which interface of it. At least one of serial/interface must be given. dev-bench must already be enrolled via enroll_probe first — this only ever amends that existing row. interface answers a question serial structurally cannot: a debug probe exposing two VCOM ports gives both the same USB serial, so only the interface number picks between them (the nRF54L15DK's own case: zephyr,console is uart20, wired to VCOM1 at interface 2).")]
+    #[tool(description = "Declare dev-bench's runtime link via embarch-core's POST /dev-bench/link: the link bridge's USB serial and/or which interface of it, and/or (control_port) the USB identity of a CDC control port, and/or clear_control_port. At least one must be given; control_port with clear_control_port is refused. dev-bench must already be enrolled via enroll_probe first — this only ever amends that existing row. interface answers a question serial structurally cannot: a debug probe exposing two VCOM ports gives both the same USB serial, so only the interface number picks between them (the nRF54L15DK's own case: zephyr,console is uart20, wired to VCOM1 at interface 2). control_port {vid, pid, serial?, interface?} is for a bench whose control link is a native USB CDC port (an nRF52840 DK's own USB port, not its J-Link UART): vid and pid are hexadecimal strings, with or without 0x (decimal is not accepted: 4660 reads as 0x4660), and detection then finds the bench by that identity instead of by the SEGGER VID. Propose the identity to the person and wait for confirmation before enrolling, as enroll_probe does.")]
     async fn dev_bench_link(
         &self,
-        Parameters(DevBenchLinkParams { serial, interface }): Parameters<DevBenchLinkParams>,
+        Parameters(DevBenchLinkParams { serial, interface, control_port, clear_control_port }): Parameters<DevBenchLinkParams>,
     ) -> Result<CallToolResult, McpError> {
-        match self.core.set_dev_bench_link(serial.as_deref(), interface).await {
-            Ok(()) => Self::ok_json(serde_json::json!({ "linked": true, "serial": serial, "interface": interface })),
-            Err(e) => Self::err_text(format!("dev_bench_link failed: {e:#}")),
+        let args = crate::dev_bench_link::LinkArgs { serial, interface, control_port, clear_control_port };
+        match crate::dev_bench_link::apply(&self.core, &args).await {
+            Ok(mut v) => {
+                v["linked"] = serde_json::json!(true);
+                Self::ok_json(v)
+            }
+            Err(e) => Self::err_text(format!("dev_bench_link failed: {e}")),
         }
     }
 

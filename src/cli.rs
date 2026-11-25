@@ -319,8 +319,23 @@ async fn run_command(command: Commands, json: bool, config: Arc<Config>, core: C
         },
         Commands::ListSignals => list_signals(&core, json).await,
         Commands::RemoveSignal { name } => remove_signal(&core, &name, json).await,
-        Commands::DevBenchLink { serial, interface } => {
-            dev_bench_link(&core, serial, interface, json).await
+        Commands::DevBenchLink {
+            serial,
+            interface,
+            control_vid,
+            control_pid,
+            control_serial,
+            control_interface,
+            clear_control_port,
+        } => {
+            let control_port = control_vid.zip(control_pid).map(|(vid, pid)| crate::dev_bench_link::ControlPortArg {
+                vid,
+                pid,
+                serial: control_serial,
+                interface: control_interface,
+            });
+            let args = crate::dev_bench_link::LinkArgs { serial, interface, control_port, clear_control_port };
+            dev_bench_link(&core, &args, json).await
         }
         // Normally intercepted by `main` before a config is even looked for
         // (decision 52). Kept here so the subcommand surface is exhaustive
@@ -2010,15 +2025,13 @@ async fn remove_signal(core: &CoreClient, name: &str, json: bool) -> i32 {
     }
 }
 
-async fn dev_bench_link(core: &CoreClient, serial: Option<String>, interface: Option<u8>, json: bool) -> i32 {
-    match core.set_dev_bench_link(serial.as_deref(), interface).await {
-        Ok(()) => finish(
-            json,
-            true,
-            serde_json::json!({ "success": true, "serial": serial, "interface": interface }),
-            "dev-bench link updated".to_string(),
-        ),
-        Err(e) => error_result(json, format!("dev-bench-link failed: {e:#}")),
+async fn dev_bench_link(core: &CoreClient, args: &crate::dev_bench_link::LinkArgs, json: bool) -> i32 {
+    match crate::dev_bench_link::apply(core, args).await {
+        Ok(mut v) => {
+            v["success"] = serde_json::json!(true);
+            finish(json, true, v, "dev-bench link updated".to_string())
+        }
+        Err(e) => error_result(json, format!("dev-bench-link failed: {e}")),
     }
 }
 

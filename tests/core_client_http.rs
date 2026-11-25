@@ -138,7 +138,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.signal_capture_stop("console", None, None, None).await;
     let _ = client.mem_read_board(embarch_core_client::Board::Probe("0671FF"), &[(0x2000_0000, 1)]).await;
     let _ = client.core_state_board(embarch_core_client::Board::Probe("0671FF"), false, 8).await;
-    let _ = client.set_dev_bench_link(Some("MOCK-BRIDGE-0001"), Some(2)).await;
+    let _ = client.set_dev_bench_link(Some("MOCK-BRIDGE-0001"), Some(2), None, false).await;
     let _ = client.call_log(Some(1), Some(2)).await;
     // `bootload` reads its image off disk before it sends anything, so it
     // needs one to exist; the bytes themselves never matter to the mock.
