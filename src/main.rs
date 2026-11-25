@@ -689,7 +689,7 @@ pub enum Commands {
     /// it, before any publish: every entry's value, unit, by, u_source and
     /// declared_by unchanged. Writes to stdout, or to --out. A refusal is
     /// reported by name: no-such-run (404), still-running (409),
-    /// no-measurements (422: none declared, not completed, or a host study) or
+    /// no-measurements (422: none declared, not completed, or a host study with no parse step) or
     /// files-gone (410: discarded or swept by retention).
     StudyMeasurements {
         study_id: String,

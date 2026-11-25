@@ -1927,7 +1927,9 @@ pub enum MeasurementsRefusal {
     NoSuchRun { study_id: String, body: String },
     /// 409: the study is still running; its file is written as it ends.
     StillRunning { study_id: String, body: String },
-    /// 422: the run is there but wrote no `measurements.json`.
+    /// 422: the run is there but wrote no `measurements.json`. Recognised by
+    /// the status, never by Core's wording: a body `code` of
+    /// `"no_measurements"` (newer Core) or none (older Core) are the same.
     NoMeasurements { study_id: String, body: String },
     /// 410: the run's files are gone (discarded or swept by retention).
     FilesGone { study_id: String, body: String },

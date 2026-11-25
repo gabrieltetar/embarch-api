@@ -2894,7 +2894,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Read a finished run's own measurements.json, exactly as embarch-core wrote it, BEFORE publishing: the file is returned unchanged (no summary, no reshaping), so cite each measurement's value, unit, by, u_source and declared_by as written. Use it to write a Study's prose, instead of publishing a throwaway first revision to get at the file. Core's refusals come back by name in the error: no-such-run (404: the run log has no run of that id), still-running (409: its measurements are written as it ends), no-measurements (422: the study declared none, did not complete, or is a host study) and files-gone (410: discarded or swept by retention). Needs no bench lease.")]
+    #[tool(description = "Read a finished run's own measurements.json, exactly as embarch-core wrote it, BEFORE publishing: the file is returned unchanged (no summary, no reshaping), so cite each measurement's value, unit, by, u_source and declared_by as written. Use it to write a Study's prose, instead of publishing a throwaway first revision to get at the file. Core's refusals come back by name in the error: no-such-run (404: the run log has no run of that id), still-running (409: its measurements are written as it ends), no-measurements (422: the study declared no measurements, did not complete, or is a host study with no parse step) and files-gone (410: discarded or swept by retention). Needs no bench lease.")]
     async fn study_measurements(
         &self,
         Parameters(StudyIdParams { study_id }): Parameters<StudyIdParams>,

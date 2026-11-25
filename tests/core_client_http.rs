@@ -1117,7 +1117,9 @@ async fn study_measurements_returns_the_file_unchanged_and_names_each_refusal() 
     for (status, reason, name, body) in [
         (404, "Not Found", "no-such-run", "the run log has no run study-1"),
         (409, "Conflict", "still-running", "study study-1 is still running: its measurements are written as it ends"),
-        (422, "Unprocessable Entity", "no-measurements", "study study-1 has no measurements.json: it declared no measurements, did not complete, or is a host study"),
+        (422, "Unprocessable Entity", "no-measurements", "study study-1 has no measurements.json"),
+        // Core's stable code, with a message that shares nothing with the old wording.
+        (422, "Unprocessable Entity", "no-measurements", r#"{"code":"no_measurements","error":"some entirely new sentence"}"#),
         (410, "Gone", "files-gone", "study study-1's files are gone (discarded or swept by retention)"),
     ] {
         let mock = MockCore::start(Behavior::plain_text_error(status, reason, body)).await;
