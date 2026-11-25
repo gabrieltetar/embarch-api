@@ -338,6 +338,12 @@ pub enum Commands {
         /// confirmed or cancelled.
         answer: String,
     },
+    /// Ask a running study, host or device, to stop. Core answers at once and
+    /// the study ends after its teardown (or the bench's stop); follow it with
+    /// `study-status <id>`.
+    CancelStudy {
+        study_id: String,
+    },
     /// Publish a finished Study run as one zip in the configured publish
     /// folder: the PDF, the run's signed files from Core, both exports and the
     /// sources the PDF was built from. Refuses until `[publish] folder` is set

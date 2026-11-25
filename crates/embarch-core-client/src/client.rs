@@ -2075,6 +2075,14 @@ pub struct PromptAnswered {
     pub status: String,
 }
 
+/// `POST /study/{id}/cancel`'s `202` body.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StudyCancelled {
+    pub study_id: String,
+    /// `cancelling`: the stop is asked for, not yet done.
+    pub status: String,
+}
+
 /// `GET /study/{id}`'s body as a [`StudyStatusResponse`]. A host study's
 /// `result` is its own record (`kind: "host"`), not a bench `StudyResult`, so
 /// it moves to `host_result` before the typed parse rather than failing it.
@@ -3453,6 +3461,23 @@ impl CoreClient {
             return Err(anyhow!(
                 "embarch-core returned {status} for POST /study/{{id}}/prompt: it predates prompts (embarch-core decision 105); update Core"
             ));
+        }
+        Err(anyhow!("embarch-core returned {status}: {body}"))
+    }
+
+    /// `POST /study/{id}/cancel` — ask the running study, host or device, to
+    /// stop (`embarch-core` decision 128). `202` at once; the run ends later.
+    /// A `409` (not running) or `404` (unknown id) comes back as Core's text.
+    pub async fn cancel_study(&self, study_id: &str) -> Result<StudyCancelled> {
+        let url = format!("{}/study/{}/cancel", self.base_url().await?, urlencode(study_id));
+        let response = self.dispatch(self.client.post(url), Some(self.status_timeout)).await?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_else(|_| "<no response body>".to_string());
+        if let Some(held) = lease_refusal(status, &body) {
+            return Err(held);
+        }
+        if status.is_success() {
+            return serde_json::from_str::<StudyCancelled>(&body).context("failed to parse embarch-core's response as JSON");
         }
         Err(anyhow!("embarch-core returned {status}: {body}"))
     }

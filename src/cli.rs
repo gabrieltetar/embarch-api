@@ -237,6 +237,7 @@ async fn run_command(command: Commands, json: bool, config: Arc<Config>, core: C
             };
             publish(&config, &core, &args, json).await
         }
+        Commands::CancelStudy { study_id } => cancel_study(&core, &study_id, json).await,
         Commands::AnswerPrompt { study_id, prompt_id, answer } => answer_prompt(&core, &study_id, prompt_id, &answer, json).await,
         Commands::SerialLog {
             project,
@@ -1300,6 +1301,13 @@ async fn publish(config: &Config, core: &CoreClient, args: &PublishArgs<'_>, jso
 #[cfg(not(feature = "pdf"))]
 async fn publish(_config: &Config, _core: &CoreClient, _args: &PublishArgs<'_>, json: bool) -> i32 {
     error_result(json, "publish failed: this build has no `pdf` feature, which the report needs".to_string())
+}
+
+async fn cancel_study(core: &CoreClient, study_id: &str, json: bool) -> i32 {
+    match core.cancel_study(study_id).await {
+        Ok(r) => finish(json, true, serde_json::json!({ "success": true, "cancel": r }), format!("study {study_id}: {}", r.status)),
+        Err(e) => error_result(json, format!("cancel-study failed: {e:#}")),
+    }
 }
 
 async fn answer_prompt(core: &CoreClient, study_id: &str, prompt_id: u32, answer: &str, json: bool) -> i32 {
@@ -3001,7 +3009,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 67,
+            arms, 68,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."

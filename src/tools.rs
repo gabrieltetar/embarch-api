@@ -630,6 +630,12 @@ pub struct AnswerPromptParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CancelStudyParams {
+    /// The study_id run_study or run_host_study returned.
+    pub study_id: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SerialLogParams {
     /// PREFERRED: a declared signal's name (see `list_signals`). Core resolves
     /// its USB serial to the port's current name, reads at the signal's baud and
@@ -1864,6 +1870,14 @@ impl EmbarchApi {
         match self.core.answer_prompt(&p.study_id, &req).await {
             Ok(r) => Self::ok_json(serde_json::json!({ "answer": r })),
             Err(e) => Self::err_text(format!("answer_prompt failed: {e:#}")),
+        }
+    }
+
+    #[tool(description = "Ask a running study, host or device, to stop, via embarch-core's POST /study/{id}/cancel (embarch-core decision 128). Core answers 202 {status: \"cancelling\"} at once and the study ends afterwards: a host study finishes its step in flight and runs its teardown, a device study is sent a stop and ends on the bench's answer or a 5 s bound. Watch it end with study_status. Cancel only a study the person you are working for asked to stop, since a session's data up to now is all it keeps. An unknown study_id (404) or one that is not running (409) is refused with Core's text. During a Test run this is the one study route Core admits. Takes the bench lease token like every gated call.")]
+    async fn cancel_study(&self, Parameters(p): Parameters<CancelStudyParams>) -> Result<CallToolResult, McpError> {
+        match self.core.cancel_study(&p.study_id).await {
+            Ok(r) => Self::ok_json(serde_json::json!({ "cancel": r })),
+            Err(e) => Self::err_text(format!("cancel_study failed for '{}': {e:#}", p.study_id)),
         }
     }
 

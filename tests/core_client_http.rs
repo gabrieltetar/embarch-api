@@ -179,6 +179,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.post_host_study_claiming(&host, &BuildClaims::default()).await;
     let answer = embarch_core_client::PromptAnswerRequest { prompt_id: 1, answer: "confirmed".into(), answered_by: "cli".into(), run_fields: vec![] };
     let _ = client.answer_prompt("study-1", &answer).await;
+    let _ = client.cancel_study("study-1").await;
     let _ = client.lease_take("sweep", Some("sweep"), 60).await;
     let _ = client.lease_renew(None).await;
     let _ = client.lease_release().await;
@@ -306,6 +307,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
         ("POST", "/study"),
         ("POST", "/host-studies"),
         ("POST", "/study/study-1/prompt"),
+        ("POST", "/study/study-1/cancel"),
         ("POST", "/study/study-1/adopt"),
         ("POST", "/study/study-1/report-data"),
         ("POST", "/study/study-1/publish"),
