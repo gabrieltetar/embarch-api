@@ -161,6 +161,8 @@ async fn every_outbound_call_carries_the_bearer_token() {
         ack_ok: None,
         ack_err: None,
         safe_off: Vec::new(),
+        metrology: Vec::new(),
+        calibration: None,
     };
     let _ = client.declare_instrument(&eload).await;
     let _ = client.instruments().await;

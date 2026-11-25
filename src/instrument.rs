@@ -94,6 +94,8 @@ pub fn build(args: &DeclareArgs<'_>) -> Result<Instrument, String> {
         ack_ok: args.ack_ok.map(str::to_string).or(p.as_ref().map(|p| p.ack_ok.to_string())),
         ack_err: args.ack_err.map(str::to_string).or(p.as_ref().map(|p| p.ack_err.to_string())),
         safe_off: args.safe_off.map(<[String]>::to_vec).unwrap_or_default(),
+        metrology: Vec::new(),
+        calibration: None,
     };
     inst.check()?;
     Ok(inst)
