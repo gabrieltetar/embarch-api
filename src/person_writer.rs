@@ -3,7 +3,7 @@
 //! It writes only under `<repo>/embarch`, only a file of a known kind, under a
 //! name from a fixed set, and follows no link at any step. It runs nothing: this
 //! module starts no process, and a test reads its own source to say so.
-//! No command uses it yet; `ledger.rs` and `live_log.rs` still join paths.
+//! `hil_repo` writes the test layout through it; `ledger.rs` and `live_log.rs` still join paths.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -18,8 +18,13 @@ const NAME_MAX: usize = 100;
 pub enum Kind {
     Study,
     HostStudy,
+    /// `tests/suites/<suite>/<id>/test.json`; the name is `<suite>/<id>`.
     Test,
+    /// A test's study beside it, `tests/suites/<suite>/<id>/<file>`; the name is `<suite>/<id>/<file>`.
+    TestStudy,
+    /// `tests/suites/<suite>/suite.json`; the name is the suite's.
     Suite,
+    /// `tests/plans/<plan>.json`.
     Plan,
     TestResults,
     SavedBench,
@@ -38,6 +43,7 @@ impl Kind {
             "study" => Kind::Study,
             "host_study" => Kind::HostStudy,
             "test" => Kind::Test,
+            "test_study" => Kind::TestStudy,
             "suite" => Kind::Suite,
             "plan" => Kind::Plan,
             "test_results" => Kind::TestResults,
@@ -55,11 +61,10 @@ impl Kind {
         match self {
             Kind::Study => ("studies", ".study.json"),
             Kind::HostStudy => ("studies", ".host-study.json"),
-            Kind::Test => ("tests", ".test.toml"),
-            Kind::Suite => ("tests", ".suite.toml"),
-            Kind::Plan => ("tests", ".plan.toml"),
+            Kind::Test | Kind::TestStudy | Kind::Suite => ("tests", ""),
+            Kind::Plan => ("tests", ".json"),
             Kind::TestResults => ("tests", ".results.json"),
-            Kind::SavedBench => ("topologies", ".json"),
+            Kind::SavedBench => ("topologies", ".toml"),
             Kind::AtlasMeasured => ("atlas", ".json"),
             Kind::LiveLog => ("live", ".jsonl"),
             Kind::ReportTyp => ("studies", ".typ"),
@@ -85,6 +90,15 @@ struct Target {
     file: String,
 }
 
+/// A name of exactly `N` slash-separated parts, or a refusal saying the shape.
+fn parts<'a, const N: usize>(name: &'a str, what: &str, shape: &str) -> Result<[&'a str; N]> {
+    let v: Vec<&str> = name.split('/').collect();
+    match <[&str; N]>::try_from(v) {
+        Ok(a) => Ok(a),
+        Err(_) => bail!("refused: a {what} name is {shape}"),
+    }
+}
+
 fn resolve(kind: Kind, name: &str) -> Result<Target> {
     let (folder, ext) = kind.folder_and_ext();
     let check = |n: &str| -> Result<()> {
@@ -97,6 +111,27 @@ fn resolve(kind: Kind, name: &str) -> Result<Target> {
         Kind::ReportTyp => {
             check(name)?;
             Ok(Target { folders: vec![folder.into(), name.into()], file: format!("report{ext}") })
+        }
+        Kind::Test => {
+            let [suite, id] = parts(name, "test", "`<suite>/<id>`")?;
+            check(suite)?;
+            check(id)?;
+            Ok(Target { folders: vec![folder.into(), "suites".into(), suite.into(), id.into()], file: "test.json".into() })
+        }
+        Kind::TestStudy => {
+            let [suite, id, file] = parts(name, "test study", "`<suite>/<id>/<file>`")?;
+            check(suite)?;
+            check(id)?;
+            check(file)?;
+            Ok(Target { folders: vec![folder.into(), "suites".into(), suite.into(), id.into()], file: file.into() })
+        }
+        Kind::Suite => {
+            check(name)?;
+            Ok(Target { folders: vec![folder.into(), "suites".into(), name.into()], file: "suite.json".into() })
+        }
+        Kind::Plan => {
+            check(name)?;
+            Ok(Target { folders: vec![folder.into(), "plans".into()], file: format!("{name}{ext}") })
         }
         Kind::Prose => {
             let Some((study, run)) = name.split_once('/') else {
@@ -127,15 +162,21 @@ impl ConfinedWriter {
     /// Writes `bytes` as one file of `kind`, atomically, and returns the path
     /// below `embarch/` it landed at.
     pub fn write(&self, kind: Kind, name: &str, bytes: &[u8]) -> Result<String> {
+        Ok(self.write_with(kind, name, bytes, true)?.0)
+    }
+
+    /// Like `write`; `overwrite` false refuses an existing file. Also returns
+    /// whether the write replaced one.
+    pub fn write_with(&self, kind: Kind, name: &str, bytes: &[u8], overwrite: bool) -> Result<(String, bool)> {
         let t = resolve(kind, name)?;
-        sys::write_file(&self.root, &t.folders, &t.file, bytes, Finish::Rename)?;
-        Ok(format!("{}/{}", t.folders.join("/"), t.file))
+        let replaced = sys::write_file(&self.root, &t.folders, &t.file, bytes, Finish::Rename, overwrite)?;
+        Ok((format!("{}/{}", t.folders.join("/"), t.file), replaced))
     }
 
     #[cfg(test)]
     fn write_temp_only(&self, kind: Kind, name: &str, bytes: &[u8]) -> Result<()> {
         let t = resolve(kind, name)?;
-        sys::write_file(&self.root, &t.folders, &t.file, bytes, Finish::LeaveTemp)
+        sys::write_file(&self.root, &t.folders, &t.file, bytes, Finish::LeaveTemp, true).map(|_| ())
     }
 }
 
@@ -196,12 +237,12 @@ mod sys {
         }
     }
 
-    pub fn write_file(root: &Root, folders: &[String], file: &str, bytes: &[u8], finish: Finish) -> Result<()> {
+    pub fn write_file(root: &Root, folders: &[String], file: &str, bytes: &[u8], finish: Finish, overwrite: bool) -> Result<bool> {
         let mut cur = open_dir(&root.0, &folders[0])?;
         for f in &folders[1..] {
             cur = open_dir(&cur, f)?;
         }
-        match statat(&cur, file, AtFlags::SYMLINK_NOFOLLOW) {
+        let existed = match statat(&cur, file, AtFlags::SYMLINK_NOFOLLOW) {
             Ok(st) => {
                 if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile {
                     bail!("refused: `{file}` exists and is not a plain file");
@@ -209,9 +250,13 @@ mod sys {
                 if st.st_nlink > 1 {
                     bail!("refused: `{file}` has {} hard links", st.st_nlink);
                 }
+                true
             }
-            Err(Errno::NOENT) => {}
+            Err(Errno::NOENT) => false,
             Err(e) => bail!("reading `{file}`: {e}"),
+        };
+        if existed && !overwrite {
+            bail!("refused: `{file}` already exists");
         }
         let tmp = temp_name();
         let fd = openat(&cur, tmp.as_str(), OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::from_raw_mode(0o644))
@@ -224,13 +269,13 @@ mod sys {
             return Err(e.context(format!("writing `{file}`")));
         }
         if finish == Finish::LeaveTemp {
-            return Ok(());
+            return Ok(existed);
         }
         if let Err(e) = renameat(&cur, tmp.as_str(), &cur, file) {
             let _ = unlinkat(&cur, tmp.as_str(), rustix::fs::AtFlags::empty());
             bail!("renaming onto `{file}`: {e}");
         }
-        Ok(())
+        Ok(existed)
     }
 }
 
@@ -264,7 +309,7 @@ mod sys {
         Ok(Root(p))
     }
 
-    pub fn write_file(root: &Root, folders: &[String], file: &str, bytes: &[u8], finish: Finish) -> Result<()> {
+    pub fn write_file(root: &Root, folders: &[String], file: &str, bytes: &[u8], finish: Finish, overwrite: bool) -> Result<bool> {
         let mut cur = root.0.clone();
         check_dir(&cur)?;
         for f in folders {
@@ -277,7 +322,7 @@ mod sys {
             check_dir(&cur)?;
         }
         let target = cur.join(file);
-        match std::fs::symlink_metadata(&target) {
+        let existed = match std::fs::symlink_metadata(&target) {
             Ok(md) => {
                 if md.file_type().is_symlink() || md.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 || !md.is_file() {
                     bail!("refused: `{file}` exists and is not a plain file");
@@ -291,9 +336,13 @@ mod sys {
                 if info.nNumberOfLinks > 1 {
                     bail!("refused: `{file}` has {} hard links", info.nNumberOfLinks);
                 }
+                true
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
             Err(e) => bail!("reading `{file}`: {e}"),
+        };
+        if existed && !overwrite {
+            bail!("refused: `{file}` already exists");
         }
         let tmp = cur.join(temp_name());
         let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
@@ -304,13 +353,13 @@ mod sys {
             return Err(anyhow::Error::from(e).context(format!("writing `{file}`")));
         }
         if finish == Finish::LeaveTemp {
-            return Ok(());
+            return Ok(existed);
         }
         if let Err(e) = std::fs::rename(&tmp, &target) {
             let _ = std::fs::remove_file(&tmp);
             bail!("renaming onto `{file}`: {e}");
         }
-        Ok(())
+        Ok(existed)
     }
 }
 
@@ -348,11 +397,12 @@ mod tests {
         let cases = [
             (Kind::Study, "s1", "studies/s1.study.json"),
             (Kind::HostStudy, "s1", "studies/s1.host-study.json"),
-            (Kind::Test, "t-1", "tests/t-1.test.toml"),
-            (Kind::Suite, "su", "tests/su.suite.toml"),
-            (Kind::Plan, "p", "tests/p.plan.toml"),
+            (Kind::Test, "su/t-1", "tests/suites/su/t-1/test.json"),
+            (Kind::TestStudy, "su/t-1/study.json", "tests/suites/su/t-1/study.json"),
+            (Kind::Suite, "su", "tests/suites/su/suite.json"),
+            (Kind::Plan, "p", "tests/plans/p.json"),
             (Kind::TestResults, "r", "tests/r.results.json"),
-            (Kind::SavedBench, "b", "topologies/b.json"),
+            (Kind::SavedBench, "b", "topologies/b.toml"),
             (Kind::AtlasMeasured, "a", "atlas/a.json"),
             (Kind::LiveLog, "2026-11-25-x", "live/2026-11-25-x.jsonl"),
             (Kind::ReportTyp, "s1", "studies/s1/report.typ"),
@@ -434,6 +484,42 @@ mod tests {
         std::os::unix::fs::symlink(&victim, &target).unwrap();
         refused(w.write(Kind::Study, "s", b"x"));
         assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_at_a_suite_folder_or_a_plan_path_is_refused() {
+        let t = Tmp::new();
+        let elsewhere = Tmp::new();
+        let w = ConfinedWriter::open(&t.0).unwrap();
+        let suites = t.0.join("embarch/tests/suites");
+        std::fs::create_dir_all(&suites).unwrap();
+        std::os::unix::fs::symlink(&elsewhere.0, suites.join("su")).unwrap();
+        refused(w.write(Kind::Suite, "su", b"x"));
+        refused(w.write(Kind::Test, "su/t", b"x"));
+        refused(w.write(Kind::TestStudy, "su/t/study.json", b"x"));
+        assert!(!elsewhere.0.join("suite.json").exists() && !elsewhere.0.join("t").exists());
+        let victim = t.0.join("victim");
+        std::fs::write(&victim, b"keep").unwrap();
+        let plans = t.0.join("embarch/tests/plans");
+        std::fs::create_dir_all(&plans).unwrap();
+        std::os::unix::fs::symlink(&victim, plans.join("p.json")).unwrap();
+        refused(w.write(Kind::Plan, "p", b"x"));
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn a_hard_linked_plan_is_refused_and_no_overwrite_keeps_an_existing_file() {
+        let t = Tmp::new();
+        let w = ConfinedWriter::open(&t.0).unwrap();
+        w.write(Kind::Plan, "p", b"old").unwrap();
+        let other = t.0.join("other");
+        std::fs::hard_link(t.0.join("embarch/tests/plans/p.json"), &other).unwrap();
+        assert!(refused(w.write(Kind::Plan, "p", b"new")).contains("hard links"));
+        assert_eq!(std::fs::read(&other).unwrap(), b"old");
+        assert!(!w.write_with(Kind::SavedBench, "b", b"1", false).unwrap().1);
+        assert!(refused(w.write_with(Kind::SavedBench, "b", b"2", false)).contains("already exists"));
+        assert!(w.write_with(Kind::SavedBench, "b", b"3", true).unwrap().1);
     }
 
     #[test]

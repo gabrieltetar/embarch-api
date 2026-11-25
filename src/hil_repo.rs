@@ -31,6 +31,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 pub use crate::lease::Report;
+use embarch_api::person_writer::{ConfinedWriter, Kind};
 
 /// The version a custom suite's manifest starts at.
 const NEW_SUITE_VERSION: &str = "0.1.0";
@@ -99,52 +100,12 @@ fn pretty(v: &impl serde::Serialize) -> Vec<u8> {
 
 // ------------------------------------------------------------- confined writes
 
-/// Writes `bytes` at `<repo>/embarch/<steps...>` following no link: every folder and
-/// the file itself is read with `symlink_metadata` first. `overwrite` false refuses an
-/// existing file. Returns whether it replaced one.
-fn write_under_embarch(repo: &Path, steps: &[&str], bytes: &[u8], overwrite: bool) -> Result<bool, String> {
-    let Some((file, folders)) = steps.split_last() else {
-        return Err("no file name".into());
-    };
-    for s in steps {
-        if !is_slug(s) {
-            return Err(format!("refused: `{s}` is not a safe path step"));
-        }
-    }
-    let mut dir = repo.join("embarch");
-    for f in folders {
-        dir.push(f);
-        match std::fs::symlink_metadata(&dir) {
-            Ok(m) if m.file_type().is_symlink() => return Err(format!("refused: {} is a link", dir.display())),
-            Ok(m) if !m.is_dir() => return Err(format!("refused: {} is not a folder", dir.display())),
-            Ok(_) => {}
-            Err(_) => std::fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?,
-        }
-    }
-    let path = dir.join(file);
-    let existed = match std::fs::symlink_metadata(&path) {
-        Ok(m) if m.file_type().is_symlink() => return Err(format!("refused: {} is a link", path.display())),
-        Ok(m) if !m.is_file() => return Err(format!("refused: {} is not a file", path.display())),
-        Ok(_) => true,
-        Err(_) => false,
-    };
-    if existed && !overwrite {
-        return Err(format!("refused: {} already exists", path.display()));
-    }
-    if existed {
-        let tmp = dir.join(format!(".{file}.tmp"));
-        std::fs::write(&tmp, bytes).map_err(|e| format!("writing {}: {e}", tmp.display()))?;
-        std::fs::rename(&tmp, &path).map_err(|e| format!("replacing {}: {e}", path.display()))?;
-    } else {
-        use std::io::Write;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(|e| format!("creating {}: {e}", path.display()))?;
-        f.write_all(bytes).map_err(|e| format!("writing {}: {e}", path.display()))?;
-    }
-    Ok(existed)
+/// Writes `bytes` as one `kind` file through the person writer (decision 132): no link
+/// followed, a hard-linked target refused, a temp file and a rename. `overwrite` false
+/// refuses an existing file. Returns whether it replaced one.
+fn write_under_embarch(repo: &Path, kind: Kind, name: &str, bytes: &[u8], overwrite: bool) -> Result<bool, String> {
+    let w = ConfinedWriter::open(repo).map_err(|e| format!("{e:#}"))?;
+    w.write_with(kind, name, bytes, overwrite).map(|(_, replaced)| replaced).map_err(|e| format!("{e:#}"))
 }
 
 // ------------------------------------------------------------------ propose
@@ -351,21 +312,21 @@ fn write_test(repo: &Path, suite: &str, c: &CheckedTest) -> Result<(Vec<String>,
         Err(_) => None,
     };
     let test_name = format!("{id}/test.json");
-    write_under_embarch(repo, &["tests", "suites", suite, id, "test.json"], &pretty(&c.def), true)?;
+    write_under_embarch(repo, Kind::Test, &format!("{suite}/{id}"), &pretty(&c.def), true)?;
     written.push(format!("embarch/tests/suites/{suite}/{test_name}"));
     if let Some(bytes) = &c.study_bytes {
         let file = c.def.study.file.as_str();
         if file.contains('/') || file.contains('\\') || file.starts_with('.') || file.is_empty() {
             return Err(format!("study.file `{file}` is not a bare file name"));
         }
-        write_under_embarch(repo, &["tests", "suites", suite, id, file], bytes, true)?;
+        write_under_embarch(repo, Kind::TestStudy, &format!("{suite}/{id}/{file}"), bytes, true)?;
         written.push(format!("embarch/tests/suites/{suite}/{id}/{file}"));
     }
     let Some(bench) = &c.bench else {
         let note = manifest.is_none().then(|| "suite.json not written: no bench travelled with the test, and a manifest lists its benches".to_string());
         if let Some(m) = manifest.as_mut() {
             upsert_test(m, id, &test_name, &c.def);
-            write_under_embarch(repo, &["tests", "suites", suite, "suite.json"], &pretty(m), true)?;
+            write_under_embarch(repo, Kind::Suite, suite, &pretty(m), true)?;
             written.push(format!("embarch/tests/suites/{suite}/suite.json"));
         }
         return Ok((written, note));
@@ -383,7 +344,7 @@ fn write_test(repo: &Path, suite: &str, c: &CheckedTest) -> Result<(Vec<String>,
         Some(slot) => *slot = bench.clone(),
         None => m.benches.push(bench.clone()),
     }
-    write_under_embarch(repo, &["tests", "suites", suite, "suite.json"], &pretty(m), true)?;
+    write_under_embarch(repo, Kind::Suite, suite, &pretty(m), true)?;
     written.push(format!("embarch/tests/suites/{suite}/suite.json"));
     Ok((written, None))
 }
@@ -466,7 +427,7 @@ async fn write_plan(repo: &Path, core: &CoreClient, name: &str, def: &Value) -> 
         return failed(e);
     }
     let file = format!("{name}.json");
-    let replaced = match write_under_embarch(repo, &["tests", "plans", &file], &pretty(&plan), true) {
+    let replaced = match write_under_embarch(repo, Kind::Plan, name, &pretty(&plan), true) {
         Ok(r) => r,
         Err(e) => return failed(e),
     };
@@ -547,7 +508,7 @@ pub async fn select_suite(repo: &Path, core: &CoreClient, id: &str) -> (Value, S
                     left.push(json!({ "bench": bench.name, "path": rel, "diff": line_diff(&have, &text) }));
                 }
             }
-            Err(_) => match write_under_embarch(repo, &["topologies", &file], text.as_bytes(), false) {
+            Err(_) => match write_under_embarch(repo, Kind::SavedBench, &slug, text.as_bytes(), false) {
                 Ok(_) => copied.push(json!({ "bench": bench.name, "path": rel })),
                 Err(e) => notes.push(format!("bench `{}` not copied: {e}", bench.name)),
             },
@@ -722,18 +683,24 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("hil-repo-w-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("embarch")).unwrap();
-        assert!(!write_under_embarch(&dir, &["tests", "plans", "a.json"], b"1", true).unwrap());
-        assert!(write_under_embarch(&dir, &["tests", "plans", "a.json"], b"2", false).is_err());
-        assert!(write_under_embarch(&dir, &["tests", "plans", "a.json"], b"3", true).unwrap());
+        assert!(!write_under_embarch(&dir, Kind::Plan, "a", b"1", true).unwrap());
+        assert!(write_under_embarch(&dir, Kind::Plan, "a", b"2", false).is_err());
+        assert!(write_under_embarch(&dir, Kind::Plan, "a", b"3", true).unwrap());
         assert_eq!(std::fs::read(dir.join("embarch/tests/plans/a.json")).unwrap(), b"3");
-        assert!(write_under_embarch(&dir, &["tests", "..", "a.json"], b"x", true).is_err());
+        assert!(write_under_embarch(&dir, Kind::Plan, "..", b"x", true).is_err());
         #[cfg(unix)]
         {
             let elsewhere = dir.join("elsewhere");
             std::fs::create_dir_all(&elsewhere).unwrap();
             std::os::unix::fs::symlink(&elsewhere, dir.join("embarch/tests/suites")).unwrap();
-            assert!(write_under_embarch(&dir, &["tests", "suites", "s", "x.json"], b"x", true).is_err());
+            assert!(write_under_embarch(&dir, Kind::Test, "s/t", b"x", true).is_err());
             assert!(!elsewhere.join("s").exists());
+            let victim = dir.join("victim");
+            std::fs::write(&victim, b"keep").unwrap();
+            std::fs::remove_file(dir.join("embarch/tests/plans/a.json")).unwrap();
+            std::os::unix::fs::symlink(&victim, dir.join("embarch/tests/plans/a.json")).unwrap();
+            assert!(write_under_embarch(&dir, Kind::Plan, "a", b"x", true).is_err());
+            assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
