@@ -210,6 +210,9 @@ pub enum StudyEvent {
         bench_config: Option<String>,
         opened_utc_ms: u64,
         deadline_utc_ms: u64,
+        /// A device study's session prompt only (`embarch-core` decision 127).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<crate::client::SessionPromptInfo>,
     },
     /// The pending prompt ended. `answer` is `confirmed`, `cancelled`,
     /// `timed_out` or `study_cancelled`; `answered_by` (`ui`, `mcp`, `cli`)
@@ -237,6 +240,7 @@ impl StudyEvent {
                 bench_config,
                 opened_utc_ms,
                 deadline_utc_ms,
+                session,
                 ..
             } => {
                 Some(PendingPrompt {
@@ -248,6 +252,7 @@ impl StudyEvent {
                     bench_config: bench_config.clone(),
                     opened_utc_ms: *opened_utc_ms,
                     deadline_utc_ms: *deadline_utc_ms,
+                    session: session.clone(),
                 })
             }
             _ => None,
@@ -266,6 +271,7 @@ impl StudyEvent {
             bench_config: prompt.bench_config.clone(),
             opened_utc_ms: prompt.opened_utc_ms,
             deadline_utc_ms: prompt.deadline_utc_ms,
+            session: prompt.session.clone(),
         }
     }
 

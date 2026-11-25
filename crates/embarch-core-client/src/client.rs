@@ -1994,6 +1994,43 @@ pub struct PendingPrompt {
     pub bench_config: Option<String>,
     pub opened_utc_ms: u64,
     pub deadline_utc_ms: u64,
+    /// Set only on a device study's session prompt (`embarch-core` decision
+    /// 127): which of the two it is and, on Start, the run fields to fill.
+    /// Absent for a host study's prompt and from an older Core.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<SessionPromptInfo>,
+}
+
+/// Which of a session's two prompts (`embarch-core` decision 127).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionPhase {
+    Start,
+    Done,
+}
+
+/// One run field a Start prompt asks for.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct RunFieldInfo {
+    pub name: String,
+    pub label: String,
+    pub required: bool,
+}
+
+/// What a prompt says about itself when it belongs to a session.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct SessionPromptInfo {
+    pub phase: SessionPhase,
+    /// The Start prompt's run fields in declared order; empty on Done.
+    #[serde(default)]
+    pub run_fields: Vec<RunFieldInfo>,
+}
+
+/// One run field's value in a Start answer.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct RunFieldAnswer {
+    pub name: String,
+    pub value: String,
 }
 
 /// A person's answer to a prompt, as `POST /study/{id}/prompt` takes it.
@@ -2004,6 +2041,11 @@ pub struct PromptAnswerRequest {
     pub answer: String,
     /// The surface relaying it: `ui`, `mcp` or `cli`.
     pub answered_by: String,
+    /// The values for a session Start prompt's run fields (`embarch-core`
+    /// decision 127); left out of the body when empty, so a host study's
+    /// answer is byte-for-byte what it was.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub run_fields: Vec<RunFieldAnswer>,
 }
 
 /// `POST /study/{id}/prompt`'s `200` body.

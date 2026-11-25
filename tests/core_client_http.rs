@@ -172,7 +172,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
     .expect("a one-step host study");
     // `post_host_study` and `post_study` delegate to these; the claiming forms build the request.
     let _ = client.post_host_study_claiming(&host, &BuildClaims::default()).await;
-    let answer = embarch_core_client::PromptAnswerRequest { prompt_id: 1, answer: "confirmed".into(), answered_by: "cli".into() };
+    let answer = embarch_core_client::PromptAnswerRequest { prompt_id: 1, answer: "confirmed".into(), answered_by: "cli".into(), run_fields: vec![] };
     let _ = client.answer_prompt("study-1", &answer).await;
     let _ = client.lease_take("sweep", Some("sweep"), 60).await;
     let _ = client.lease_renew(None).await;
