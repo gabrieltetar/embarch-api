@@ -600,6 +600,13 @@ pub enum Commands {
     /// declared and captured nothing, which is a different fact from a tap
     /// that was never declared.
     ListStudyStreams { study_id: String },
+    /// List every study Core still retains, newest first (by start time; a
+    /// study with none after those that have one, by id), each with its
+    /// taps. Takes no lease. `--limit N` keeps the first N after sorting.
+    ListStudies {
+        #[arg(long)]
+        limit: Option<usize>,
+    },
     /// An outpost OutpostTrace tap's own load repartition: per-subject load
     /// shares and the coverage line, computed once on embarch-core rather
     /// than re-implemented here (suite decision 4) — the same answer

@@ -44,6 +44,7 @@ const DOCUMENTED_ASYMMETRIES: &[Asymmetry] = &[
     Asymmetry::CliOnly("guide"),
     Asymmetry::CliOnly("verify"),
     Asymmetry::CliOnly("core-key"),
+    Asymmetry::CliOnly("list-studies"),
     Asymmetry::ToolReachedAs("study_watch", "study-status"),
     Asymmetry::ToolReachedAs("build_each", "build"),
 ];

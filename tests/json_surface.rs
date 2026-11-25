@@ -74,6 +74,7 @@ const EVERY_SUBCOMMAND: &[&[&str]] = &[
     &["study-status", "no-such-study", "--follow", "--follow-timeout", "1"],
     &["study-stream-data", "no-such-study", "--name", "some-tap"],
     &["list-study-streams", "no-such-study"],
+    &["list-studies"],
     &["study-measurements", "no-such-study"],
     &["study-stream-load", "no-such-study", "--name", "some-tap"],
     &["export-audio", "no-such-study", "--name", "some-tap", "--study-file", "no-such-study.json"],

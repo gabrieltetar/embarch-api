@@ -244,6 +244,7 @@ async fn run_command(command: Commands, json: bool, config: Arc<Config>, core: C
         Commands::ListStudyStreams { study_id } => {
             list_study_streams(&core, &study_id, json).await
         }
+        Commands::ListStudies { limit } => list_studies(&core, limit, json).await,
         Commands::StudyStreamLoad { study_id, name } => {
             study_stream_load(&core, &study_id, &name, json).await
         }
@@ -1060,6 +1061,88 @@ async fn list_instruments(core: &CoreClient, json: bool) -> i32 {
             finish(json, true, serde_json::json!({ "success": true, "instruments": list }), human)
         }
         Err(e) => error_result(json, format!("list-instruments failed: {e:#}")),
+    }
+}
+
+/// Core's tap encoding as the flat word a reader branches on, so nobody
+/// parses `StreamEncoding`'s externally tagged JSON (promptu contract 15.3).
+fn encoding_kind(e: &embarch_study_designer::StreamEncoding) -> &'static str {
+    use embarch_study_designer::StreamEncoding as E;
+    match e {
+        E::Raw => "raw",
+        E::Text => "text",
+        E::Samples { .. } => "samples",
+        E::GattTranscript => "gatt_transcript",
+        E::OutpostTrace => "outpost_trace",
+        E::Struct { .. } => "struct",
+    }
+}
+
+/// Newest first by `started_utc_ms`; a study without one comes after those
+/// that have one, ordered by id. `limit` keeps the first N after sorting.
+fn sort_studies(studies: &mut Vec<embarch_core_client::StudySummary>, limit: Option<usize>) {
+    studies.sort_by(|a, b| match (a.started_utc_ms, b.started_utc_ms) {
+        (Some(x), Some(y)) => y.cmp(&x).then_with(|| a.study_id.cmp(&b.study_id)),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => a.study_id.cmp(&b.study_id),
+    });
+    if let Some(n) = limit {
+        studies.truncate(n);
+    }
+}
+
+fn study_json(s: &embarch_core_client::StudySummary) -> serde_json::Value {
+    let taps = s.taps.as_ref().map(|taps| {
+        taps.iter()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.name,
+                    "encoding": t.encoding,
+                    "encoding_kind": encoding_kind(&t.encoding),
+                    "rendered": t.rendered,
+                })
+            })
+            .collect::<Vec<_>>()
+    });
+    serde_json::json!({
+        "study_id": s.study_id,
+        "study_name": s.study_name,
+        "status": s.status,
+        "started_utc_ms": s.started_utc_ms,
+        "ended_utc_ms": s.ended_utc_ms,
+        "taps": taps,
+        "note": s.note,
+    })
+}
+
+fn study_human(s: &embarch_core_client::StudySummary) -> String {
+    let start = s.started_utc_ms.map_or("no start time".to_string(), |ms| format!("started {ms} ms"));
+    let mut out = format!("{}  {}  {}  {}", s.study_id, s.study_name.as_deref().unwrap_or("-"), s.status, start);
+    match &s.taps {
+        Some(taps) => {
+            for t in taps {
+                out.push_str(&format!("\n    {} ({})", t.name, encoding_kind(&t.encoding)));
+            }
+        }
+        None => out.push_str("\n    taps unreadable"),
+    }
+    out
+}
+
+async fn list_studies(core: &CoreClient, limit: Option<usize>, json: bool) -> i32 {
+    match core.list_studies().await {
+        Ok(mut listing) => {
+            sort_studies(&mut listing.studies, limit);
+            let human = if listing.studies.is_empty() {
+                "no studies retained".to_string()
+            } else {
+                listing.studies.iter().map(study_human).collect::<Vec<_>>().join("\n")
+            };
+            let studies: Vec<_> = listing.studies.iter().map(study_json).collect();
+            finish(json, true, serde_json::json!({ "success": true, "keep": listing.keep, "studies": studies }), human)
+        }
+        Err(e) => error_result(json, format!("list-studies failed: {e:#}")),
     }
 }
 
@@ -2872,7 +2955,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 64,
+            arms, 65,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."
