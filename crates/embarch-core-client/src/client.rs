@@ -3730,7 +3730,7 @@ impl CoreClient {
     /// definitions and refuses one it does not reproduce. `201 {run_id, run_hash,
     /// lease_holder, duration_bound_ms}`; a refusal (`422` naming the first differing
     /// key, `409` the id is prepared, `400`) comes back as `embarch-core returned
-    /// {status}: {body}`. There is no method for the go: it takes the person's token.
+    /// {status}: {body}`. The go is `test_run_go`, the person's.
     pub async fn prepare_test_run(&self, body: &serde_json::Value) -> Result<serde_json::Value> {
         let url = format!("{}/test-runs", self.base_url().await?);
         self.send(self.client.post(url).json(body), self.status_timeout).await
@@ -3748,6 +3748,18 @@ impl CoreClient {
     pub async fn test_run_card(&self, run_id: &str) -> Result<serde_json::Value> {
         let url = format!("{}/test-runs/{}/card", self.base_url().await?, urlencode(run_id));
         self.send(self.client.get(url), self.status_timeout).await
+    }
+
+    /// `POST /test-runs/{run_id}/go` with `{run_id, run_hash, nonce}` — the person's go,
+    /// of exactly what the card showed (core decision 135). The bearer is whichever token
+    /// the client was built with; Core answers `403` to the agent's token, and a stale
+    /// `run_hash` or a spent nonce is refused too. **No MCP tool or CLI verb may call
+    /// this** — only the person's surface (the UI); `tests/run_test_cli.rs` fails if the
+    /// agent's sources name it.
+    pub async fn test_run_go(&self, run_id: &str, run_hash: &str, nonce: &str) -> Result<serde_json::Value> {
+        let url = format!("{}/test-runs/{}/go", self.base_url().await?, urlencode(run_id));
+        let body = serde_json::json!({ "run_id": run_id, "run_hash": run_hash, "nonce": nonce });
+        self.send(self.client.post(url).json(&body), self.status_timeout).await
     }
 
     /// `GET /signals` — every declared signal link.

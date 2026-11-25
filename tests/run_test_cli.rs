@@ -224,17 +224,18 @@ async fn test_status_gives_bench_test_verdicts_and_a_waiting_prompt_with_the_rel
 }
 
 /// The go takes the person's token (core decision 135); nothing in the agent's surfaces may
-/// name its route.
+/// name its route or the client's `test_run_go`. The client crate carries that method for the UI.
 #[test]
 fn no_code_path_in_the_server_or_the_cli_names_the_go() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    for rel in ["src/tools.rs", "src/cli.rs", "src/hil_run.rs", "crates/embarch-core-client/src/client.rs"] {
+    for rel in ["src/tools.rs", "src/cli.rs", "src/hil_run.rs"] {
         let src = std::fs::read_to_string(root.join(rel)).unwrap();
         for (n, line) in src.lines().enumerate() {
             let t = line.trim_start();
             if t.starts_with("//") {
                 continue;
             }
+            assert!(!line.contains("test_run_go"), "{rel}:{}: {line}", n + 1);
             assert!(!line.contains("/go\"") && !line.contains("/go}") && !line.contains("}/go"), "{rel}:{}: {line}", n + 1);
         }
     }

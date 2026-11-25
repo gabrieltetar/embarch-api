@@ -186,6 +186,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.prepare_test_run(&serde_json::json!({})).await;
     let _ = client.test_run_status("run-1").await;
     let _ = client.test_run_card("run-1").await;
+    let _ = client.test_run_go("run-1", "hash-1", "nonce-1").await;
     let _ = client.lease_take("sweep", Some("sweep"), 60).await;
     let _ = client.lease_renew(None).await;
     let _ = client.lease_release().await;
@@ -320,6 +321,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
         ("POST", "/test-runs"),
         ("GET", "/test-runs/run-1"),
         ("GET", "/test-runs/run-1/card"),
+        ("POST", "/test-runs/run-1/go"),
         ("POST", "/study/study-1/adopt"),
         ("POST", "/study/study-1/report-data"),
         ("POST", "/study/study-1/publish"),
@@ -1177,4 +1179,22 @@ async fn build_claims_ride_both_study_routes_and_default_sends_none() {
             "/host-studies?build_commit=0123456789abcdef&build_dirty=true&build_toolchain=West%20version%3A%20v1.2.0".to_string(),
         ]
     );
+}
+
+/// The person's go posts the body Core documents, with the client's own bearer.
+#[tokio::test]
+async fn test_run_go_posts_the_documented_body_with_the_bearer() {
+    let mock = MockCore::start(Behavior::json_ok(json!({ "state": "running" }))).await;
+    let client = CoreClient::new(&config(json!({ "base_url": mock.base_url(), "token": "person-token" })))
+        .expect("client did not build");
+
+    let answer = client.test_run_go("run-1", "hash-1", "nonce-1").await.expect("go");
+    assert_eq!(answer["state"], "running");
+
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert_eq!(requests[0].route(), ("POST".to_string(), "/test-runs/run-1/go".to_string()));
+    assert_eq!(requests[0].header("authorization"), Some("Bearer person-token"));
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body, json!({ "run_id": "run-1", "run_hash": "hash-1", "nonce": "nonce-1" }));
 }
