@@ -116,8 +116,12 @@ pub fn core_calls(entries: &[CallEntry]) -> Value {
 /// The repo whose `embarch/` this process runs in: the nearest directory from
 /// the working directory up to its git root that holds an `embarch/` folder.
 fn repo_from_cwd() -> Option<PathBuf> {
-    let cwd = std::env::current_dir().ok()?;
-    for dir in cwd.ancestors() {
+    repo_above(&std::env::current_dir().ok()?)
+}
+
+/// [`repo_from_cwd`] for any starting directory.
+fn repo_above(start: &Path) -> Option<PathBuf> {
+    for dir in start.ancestors() {
         if dir.join("embarch").is_dir() {
             return Some(dir.to_path_buf());
         }
@@ -131,7 +135,12 @@ fn repo_from_cwd() -> Option<PathBuf> {
 /// The firmware repo a line goes to: the one this process runs in, else the
 /// configured project's source path (the named one, or the only one).
 pub fn repo_dir(config: &Config, project: Option<&str>) -> Result<PathBuf, String> {
-    if let Some(dir) = repo_from_cwd() {
+    repo_dir_from(repo_from_cwd(), config, project)
+}
+
+/// [`repo_dir`] with the walk up from the working directory already done.
+fn repo_dir_from(from_cwd: Option<PathBuf>, config: &Config, project: Option<&str>) -> Result<PathBuf, String> {
+    if let Some(dir) = from_cwd {
         return Ok(dir);
     }
     let configured = match project.filter(|p| !p.is_empty() && *p != "desk") {
@@ -234,22 +243,20 @@ fn append(path: &Path, line: &str) -> std::io::Result<()> {
     f.write_all(format!("{line}\n").as_bytes())
 }
 
-/// Appends the line for a finished call, when it was Live.
-pub async fn record(config: &Config, core: &CoreClient, call: Call<'_>) -> Outcome {
-    let live = live_entries(call.entries);
-    if live.is_empty() {
-        return Outcome::NotLive;
-    }
-    let repo = match repo_dir(config, call.project) {
-        Ok(r) => r,
-        Err(why) => return Outcome::NotWritten(why),
-    };
-    let now = now_stamp();
-    let (lease, status) = tokio::join!(core.lease_show(), core.status());
-    let lease = lease.ok().flatten();
-    let (file_stem, session) = session(lease.as_ref(), &now);
-    let (role, probe_serial, chip) = board(&live, &call.sent, call.answer, call.structured);
-    let image = image_sha256(status.as_ref().ok(), chip.as_deref(), probe_serial.as_deref());
+/// The file stem (`<date>-<session>`) and the line for a finished call, from
+/// what the call saw: the Live entries, the lease and `GET /status` as Core
+/// answered, and `now` (the `t` field, UTC). Pure, so the shared fixture
+/// (`tests/fixtures/live-log/`) can run it without a Core or a clock.
+fn build_line(
+    call: &Call<'_>,
+    live: &[&CallEntry],
+    lease: Option<&embarch_core_client::LeaseView>,
+    status: Option<&embarch_core_client::StatusResponse>,
+    now: &str,
+) -> (String, Value) {
+    let (file_stem, session) = session(lease, now);
+    let (role, probe_serial, chip) = board(live, &call.sent, call.answer, call.structured);
+    let image = image_sha256(status, chip.as_deref(), probe_serial.as_deref());
     let live_owned: Vec<CallEntry> = live.iter().map(|e| (*e).clone()).collect();
     let line = json!({
         "schema": SCHEMA,
@@ -265,12 +272,32 @@ pub async fn record(config: &Config, core: &CoreClient, call: Call<'_>) -> Outco
         "core": core_calls(&live_owned),
         "session": session,
     });
+    (file_stem, line)
+}
+
+/// Appends the line for a finished call, when it was Live.
+pub async fn record(config: &Config, core: &CoreClient, call: Call<'_>) -> Outcome {
+    let live = live_entries(call.entries);
+    if live.is_empty() {
+        return Outcome::NotLive;
+    }
+    let repo = match repo_dir(config, call.project) {
+        Ok(r) => r,
+        Err(why) => return Outcome::NotWritten(why),
+    };
+    let now = now_stamp();
+    let (lease, status) = tokio::join!(core.lease_show(), core.status());
+    let lease = lease.ok().flatten();
+    let (file_stem, line) = build_line(&call, &live, lease.as_ref(), status.as_ref().ok(), &now);
     let path = repo.join("embarch").join("live").join(format!("{file_stem}.jsonl"));
     match append(&path, &line.to_string()) {
         Ok(()) => Outcome::Written(path),
         Err(e) => Outcome::NotWritten(format!("could not write {}: {e}", path.display())),
     }
 }
+
+#[cfg(test)]
+mod fixture_tests;
 
 #[cfg(test)]
 mod tests {

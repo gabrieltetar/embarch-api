@@ -1,0 +1,71 @@
+{
+  "description": "Nothing names a board: all three are null.",
+  "rule": "board-order",
+  "layout": {
+    "dirs": [
+      "fw/embarch"
+    ],
+    "files": []
+  },
+  "cwd": "fw",
+  "projects": [],
+  "call": {
+    "tool": "mem_read",
+    "sent": {},
+    "project": null,
+    "ok": true,
+    "answer": "done",
+    "structured": null,
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/live/mem-read",
+        "status": 200,
+        "seq": 41,
+        "hash": "9f2c0000000000000000000000000000000000000000000000000000000000aa",
+        "repeat": null,
+        "sent": null
+      }
+    ]
+  },
+  "lease": {
+    "holder": "claude-gabriel",
+    "started_at": "2026-11-23T21:00:00Z"
+  },
+  "status": null,
+  "now": "2026-11-25T12:00:00Z",
+  "expect": {
+    "path": "fw/embarch/live/2026-11-23-claude-gabriel-210000.jsonl",
+    "line": {
+      "schema": "embarch-live/1",
+      "tool": "mem_read",
+      "board": {
+        "role": null,
+        "probe_serial": null,
+        "chip": null
+      },
+      "image_sha256": "unknown",
+      "ok": true,
+      "answer": {
+        "text": "done",
+        "bytes": 4,
+        "sha256": "a4c3ed04a95a3da14a9d235c83d868bed7c0f45cf7f3faa751ee8f50598d2211",
+        "truncated": false
+      },
+      "core": [
+        {
+          "seq": 41,
+          "hash": "9f2c0000000000000000000000000000000000000000000000000000000000aa",
+          "repeat": null,
+          "method": "POST",
+          "path": "/live/mem-read",
+          "status": 200
+        }
+      ],
+      "session": {
+        "holder": "claude-gabriel",
+        "started_at": "2026-11-23T21:00:00Z"
+      }
+    }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "description": "No ancestor holds embarch/ and no project is configured: no line.",
+  "rule": "path",
+  "layout": {
+    "dirs": [
+      "elsewhere"
+    ],
+    "files": []
+  },
+  "cwd": "elsewhere",
+  "projects": [],
+  "call": {
+    "tool": "mem_read",
+    "sent": {},
+    "project": null,
+    "ok": true,
+    "answer": "ok",
+    "structured": null,
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/live/mem-read",
+        "status": 200,
+        "seq": 41,
+        "hash": "9f2c0000000000000000000000000000000000000000000000000000000000aa",
+        "repeat": null,
+        "sent": null
+      }
+    ]
+  },
+  "lease": {
+    "holder": "claude-gabriel",
+    "started_at": "2026-11-23T21:00:00Z"
+  },
+  "status": null,
+  "now": "2026-11-25T12:00:00Z",
+  "expect": {
+    "path": null,
+    "line": null
+  }
+}

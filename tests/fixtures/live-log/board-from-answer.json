@@ -1,0 +1,75 @@
+{
+  "description": "Neither a body nor the arguments name a board: the answer's JSON does, directly or one object down.",
+  "rule": "board-order",
+  "layout": {
+    "dirs": [
+      "fw/embarch"
+    ],
+    "files": []
+  },
+  "cwd": "fw",
+  "projects": [],
+  "call": {
+    "tool": "mem_read",
+    "sent": {
+      "ranges": []
+    },
+    "project": null,
+    "ok": true,
+    "answer": "{\"role\": \"dut\", \"result\": {\"probe_serial\": \"000683\", \"chip\": \"nRF54L15\"}}",
+    "structured": null,
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/live/mem-read",
+        "status": 200,
+        "seq": 41,
+        "hash": "9f2c0000000000000000000000000000000000000000000000000000000000aa",
+        "repeat": null,
+        "sent": {
+          "ranges": []
+        }
+      }
+    ]
+  },
+  "lease": {
+    "holder": "claude-gabriel",
+    "started_at": "2026-11-23T21:00:00Z"
+  },
+  "status": null,
+  "now": "2026-11-25T12:00:00Z",
+  "expect": {
+    "path": "fw/embarch/live/2026-11-23-claude-gabriel-210000.jsonl",
+    "line": {
+      "schema": "embarch-live/1",
+      "tool": "mem_read",
+      "board": {
+        "role": "dut",
+        "probe_serial": "000683",
+        "chip": "nRF54L15"
+      },
+      "image_sha256": "unknown",
+      "ok": true,
+      "answer": {
+        "text": "{\"role\": \"dut\", \"result\": {\"probe_serial\": \"000683\", \"chip\": \"nRF54L15\"}}",
+        "bytes": 73,
+        "sha256": "49d0cc6d8791b9469a0ed7e402da76067de80add7cfae103f59d9552727bc89a",
+        "truncated": false
+      },
+      "core": [
+        {
+          "seq": 41,
+          "hash": "9f2c0000000000000000000000000000000000000000000000000000000000aa",
+          "repeat": null,
+          "method": "POST",
+          "path": "/live/mem-read",
+          "status": 200
+        }
+      ],
+      "session": {
+        "holder": "claude-gabriel",
+        "started_at": "2026-11-23T21:00:00Z"
+      }
+    }
+  }
+}

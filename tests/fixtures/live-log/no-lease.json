@@ -1,0 +1,65 @@
+{
+  "description": "No lease is live: the file is <today>-no-lease, today taken from now, and session is null.",
+  "rule": "session",
+  "layout": {
+    "dirs": [
+      "fw/embarch"
+    ],
+    "files": []
+  },
+  "cwd": "fw",
+  "projects": [],
+  "call": {
+    "tool": "mem_read",
+    "sent": {},
+    "project": null,
+    "ok": true,
+    "answer": "ok",
+    "structured": null,
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/live/mem-read",
+        "status": 200,
+        "seq": 41,
+        "hash": "9f2c0000000000000000000000000000000000000000000000000000000000aa",
+        "repeat": null,
+        "sent": null
+      }
+    ]
+  },
+  "lease": null,
+  "status": null,
+  "now": "2026-11-25T12:00:00Z",
+  "expect": {
+    "path": "fw/embarch/live/2026-11-25-no-lease.jsonl",
+    "line": {
+      "schema": "embarch-live/1",
+      "tool": "mem_read",
+      "board": {
+        "role": null,
+        "probe_serial": null,
+        "chip": null
+      },
+      "image_sha256": "unknown",
+      "ok": true,
+      "answer": {
+        "text": "ok",
+        "bytes": 2,
+        "sha256": "2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df",
+        "truncated": false
+      },
+      "core": [
+        {
+          "seq": 41,
+          "hash": "9f2c0000000000000000000000000000000000000000000000000000000000aa",
+          "repeat": null,
+          "method": "POST",
+          "path": "/live/mem-read",
+          "status": 200
+        }
+      ],
+      "session": null
+    }
+  }
+}

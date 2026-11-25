@@ -1,0 +1,91 @@
+{
+  "description": "A gated call's body names all three; the tool's arguments and the answer name others and lose. Core's last_images entry for the probe gives the image hash.",
+  "rule": "board-order",
+  "layout": {
+    "dirs": [
+      "fw/embarch"
+    ],
+    "files": []
+  },
+  "cwd": "fw",
+  "projects": [],
+  "call": {
+    "tool": "mem_read",
+    "sent": {
+      "role": "args-role",
+      "probe_serial": "args-probe",
+      "chip": "args-chip"
+    },
+    "project": null,
+    "ok": true,
+    "answer": "{\"role\": \"ans-role\", \"probe_serial\": \"ans-probe\", \"chip\": \"ans-chip\"}",
+    "structured": null,
+    "entries": [
+      {
+        "method": "POST",
+        "path": "/live/mem-read",
+        "status": 200,
+        "seq": 41,
+        "hash": "9f2c0000000000000000000000000000000000000000000000000000000000aa",
+        "repeat": null,
+        "sent": {
+          "role": "dut",
+          "probe_serial": "000111",
+          "chip": "nRF54L15"
+        }
+      }
+    ]
+  },
+  "lease": {
+    "holder": "claude-gabriel",
+    "started_at": "2026-11-23T21:00:00Z"
+  },
+  "status": {
+    "status": "ok",
+    "probes": [],
+    "last_images": [
+      {
+        "chip": "nRF54L15",
+        "probe_serial": "000111",
+        "path": "/x/zephyr.hex",
+        "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "flashed_at": "2026-11-23T20:00:00Z"
+      }
+    ]
+  },
+  "now": "2026-11-25T12:00:00Z",
+  "expect": {
+    "path": "fw/embarch/live/2026-11-23-claude-gabriel-210000.jsonl",
+    "line": {
+      "schema": "embarch-live/1",
+      "tool": "mem_read",
+      "board": {
+        "role": "dut",
+        "probe_serial": "000111",
+        "chip": "nRF54L15"
+      },
+      "image_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "ok": true,
+      "answer": {
+        "text": "{\"role\": \"ans-role\", \"probe_serial\": \"ans-probe\", \"chip\": \"ans-chip\"}",
+        "bytes": 69,
+        "sha256": "a2585e040414c3e89110a3047ba2c4038d9c73e8269d05ad5ef81c0511ee8661",
+        "truncated": false
+      },
+      "core": [
+        {
+          "seq": 41,
+          "hash": "9f2c0000000000000000000000000000000000000000000000000000000000aa",
+          "repeat": null,
+          "method": "POST",
+          "path": "/live/mem-read",
+          "status": 200
+        }
+      ],
+      "session": {
+        "holder": "claude-gabriel",
+        "started_at": "2026-11-23T21:00:00Z"
+      }
+    }
+  }
+}
