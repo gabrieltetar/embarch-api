@@ -27,6 +27,9 @@
 //! could never do through this crate's `lib` face — it cannot depend on
 //! this package at all.
 
+/// `export-audio`: a framed analog tap as WAV, one file per gap-free segment (decision 130).
+pub mod audio_export;
+
 /// `core-key`: Core's public key from its challenge, signature checked (decision 129).
 pub mod core_key;
 

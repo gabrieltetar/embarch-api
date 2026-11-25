@@ -101,6 +101,7 @@ mod tests {
             dev_bench_log_level: Default::default(),
             record_checks: Default::default(),
             measurements: Default::default(),
+            session: None,
         }
     }
 

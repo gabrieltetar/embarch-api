@@ -713,6 +713,21 @@ pub struct StudyStreamParams {
     pub raw: Option<bool>,
 }
 
+/// `export_audio`'s params: the same four arguments as the `export-audio`
+/// subcommand.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ExportAudioParams {
+    /// The study_id returned by run_study.
+    pub study_id: String,
+    /// The tap's declared name — `StreamTap.name` in the submitted Study.
+    pub name: String,
+    /// Path to the Study JSON the run was submitted from: it declares the
+    /// tap's rate, its block layout and the export folder.
+    pub study_file: String,
+    /// Write here instead of the study's own export folder.
+    pub out_dir: Option<String>,
+}
+
 /// `study_stream_load`'s params — one declared `OutpostTrace` tap, by the
 /// name the `Study` gave it. No `raw`: the load answer is always the same
 /// computed result, never a byte choice the way `study_stream_data`'s
@@ -2730,6 +2745,24 @@ impl EmbarchApi {
                 })),
             },
             Err(e) => Self::err_text(format!("list_study_streams failed for '{study_id}': {e:#}")),
+        }
+    }
+
+    #[tool(description = "Export a framed analog tap of a completed study as 16-bit PCM mono WAV at the tap's declared sample rate: (code minus mid-scale) scaled to fill int16 (x16 for a 12-bit source, read from the capture's start header), one file per gap-free segment (a skipped block ends one), markers as RIFF cue points with labels plus an Audacity label file (tab-separated start, end, label, in seconds) beside each WAV, written to the study's export folder (its session's export_dir; out_dir replaces it). Returns the files, the gaps (where each segment ended, with the samples missing) and warnings, such as marker edges a block counts but cannot place. study_file is the Study JSON the run was submitted from: it declares the rate, the block layout and the folder, which Core does not serve back. Refused with a reason for a tap with no declared rate (anything but an AnalogInput source), no block layout, more than one channel, no start header, or no export folder. Overwrites files of the same name. Needs no bench lease.")]
+    async fn export_audio(
+        &self,
+        Parameters(ExportAudioParams { study_id, name, study_file, out_dir }): Parameters<ExportAudioParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let out_dir = out_dir.map(std::path::PathBuf::from);
+        let req = embarch_api::audio_export::Request {
+            study_id: &study_id,
+            tap: &name,
+            study_file: std::path::Path::new(&study_file),
+            out_dir: out_dir.as_deref(),
+        };
+        match embarch_api::audio_export::run(&self.core, &req).await {
+            Ok(o) => Self::ok_json(embarch_api::audio_export::outcome_json(&o)),
+            Err(e) => Self::err_text(format!("export_audio refused for '{study_id}' stream '{name}': {e:#}")),
         }
     }
 

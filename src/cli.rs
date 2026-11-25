@@ -247,6 +247,9 @@ async fn run_command(command: Commands, json: bool, config: Arc<Config>, core: C
         Commands::StudyStreamLoad { study_id, name } => {
             study_stream_load(&core, &study_id, &name, json).await
         }
+        Commands::ExportAudio { study_id, name, study_file, out_dir } => {
+            export_audio(&core, &study_id, &name, &study_file, out_dir.as_deref(), json).await
+        }
         Commands::BuildDevBench => build_dev_bench(&config, json).await,
         Commands::FlashDevBench { firmware_path, erase } => {
             flash_dev_bench(&config, &core, firmware_path, erase, json).await
@@ -2518,6 +2521,29 @@ async fn study_stream_data(
     }
 }
 
+/// `export-audio`: the shared implementation is `embarch_api::audio_export::run`.
+async fn export_audio(
+    core: &CoreClient,
+    study_id: &str,
+    tap: &str,
+    study_file: &Path,
+    out_dir: Option<&Path>,
+    json: bool,
+) -> i32 {
+    let req = embarch_api::audio_export::Request { study_id, tap, study_file, out_dir };
+    match embarch_api::audio_export::run(core, &req).await {
+        Ok(o) => {
+            let mut value = embarch_api::audio_export::outcome_json(&o);
+            if let Some(map) = value.as_object_mut() {
+                map.insert("success".to_string(), serde_json::json!(true));
+                map.insert("study_id".to_string(), serde_json::json!(study_id));
+            }
+            finish(json, true, value, embarch_api::audio_export::outcome_text(&o))
+        }
+        Err(e) => error_result(json, format!("export-audio refused for '{study_id}' stream '{tap}': {e:#}")),
+    }
+}
+
 /// The bracketed record-check tail of a stream line. A report with
 /// `total == 0` checked nothing (empty capture, or no magic in it), so it says
 /// "no records found" and never "0 of 0 verified", which reads as damage.
@@ -2833,7 +2859,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 63,
+            arms, 64,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."

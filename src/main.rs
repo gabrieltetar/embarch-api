@@ -614,6 +614,24 @@ pub enum Commands {
         #[arg(long)]
         name: String,
     },
+    /// Export a framed analog tap as 16-bit PCM mono WAV at its declared rate:
+    /// one file per gap-free segment, markers as WAV cue points plus an
+    /// Audacity label file beside each, written to the study's export folder
+    /// (its session's export_dir; --out-dir replaces it). The rate, block
+    /// layout and export folder come from the Study JSON the run was
+    /// submitted from. A tap with no declared rate is refused with the reason.
+    ExportAudio {
+        study_id: String,
+        /// The tap's declared name — StreamTap.name in the submitted Study.
+        #[arg(long)]
+        name: String,
+        /// The Study JSON the run was submitted from.
+        #[arg(long)]
+        study_file: PathBuf,
+        /// Write here instead of the study's export folder.
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+    },
     /// Build embarch-dev-bench's own firmware by running `west build`.
     /// No project — dev-bench isn't a `[[projects]]` entry, see config.rs's
     /// `DevBenchConfig`. Which board gets built comes from [dev_bench]
