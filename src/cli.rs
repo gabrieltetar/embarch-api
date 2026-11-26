@@ -1358,7 +1358,7 @@ async fn answer_prompt(core: &CoreClient, study_id: &str, prompt_id: u32, answer
         Ok(a) => a,
         Err(e) => return error_result(json, format!("answer-prompt failed: {e:#}")),
     };
-    let req = embarch_core_client::PromptAnswerRequest { prompt_id, answer: answer.to_string(), answered_by: "cli".to_string(), run_fields: vec![] };
+    let req = embarch_core_client::PromptAnswerRequest { prompt_id, answer: answer.to_string(), answered_by: "cli".to_string(), run_fields: vec![], value: None };
     match core.answer_prompt(study_id, &req).await {
         Ok(r) => finish(
             json,

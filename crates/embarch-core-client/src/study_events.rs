@@ -213,6 +213,15 @@ pub enum StudyEvent {
         /// A device study's session prompt only (`embarch-core` decision 127).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session: Option<crate::client::SessionPromptInfo>,
+        /// A Test run's prompt only (`embarch-core` decision 138). There is no
+        /// `kind` here: the prompt's own `kind` is flattened onto a stream
+        /// whose tag is also `kind`, which a serde-tagged variant cannot
+        /// declare, so a prompt's kind is read from `GET /study/{id}`'s
+        /// `pending_prompt` (api decision 137).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        observation: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        switched_on: Vec<crate::client::SwitchedOn>,
     },
     /// The pending prompt ended. `answer` is `confirmed`, `cancelled`,
     /// `timed_out` or `study_cancelled`; `answered_by` (`ui`, `mcp`, `cli`)
@@ -241,6 +250,8 @@ impl StudyEvent {
                 opened_utc_ms,
                 deadline_utc_ms,
                 session,
+                observation,
+                switched_on,
                 ..
             } => {
                 Some(PendingPrompt {
@@ -253,6 +264,9 @@ impl StudyEvent {
                     opened_utc_ms: *opened_utc_ms,
                     deadline_utc_ms: *deadline_utc_ms,
                     session: session.clone(),
+                    kind: None,
+                    observation: observation.clone(),
+                    switched_on: switched_on.clone(),
                 })
             }
             _ => None,
@@ -272,6 +286,8 @@ impl StudyEvent {
             opened_utc_ms: prompt.opened_utc_ms,
             deadline_utc_ms: prompt.deadline_utc_ms,
             session: prompt.session.clone(),
+            observation: prompt.observation.clone(),
+            switched_on: prompt.switched_on.clone(),
         }
     }
 

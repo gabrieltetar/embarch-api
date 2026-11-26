@@ -2018,6 +2018,29 @@ pub struct PendingPrompt {
     /// Absent for a host study's prompt and from an older Core.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<SessionPromptInfo>,
+    /// The prompt's kind in a Test run (`embarch-core` decision 138); absent
+    /// outside one and from an older Core.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<embarch_study_designer::host_study::PromptKind>,
+    /// An `observation` prompt's declared answer, as Core sends it:
+    /// `{name, answers?, number?}`. Left as JSON, since Core's shape is the
+    /// study designer's and a surface only reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation: Option<serde_json::Value>,
+    /// The outputs Core last switched on (decision 138); empty outside a Test run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub switched_on: Vec<SwitchedOn>,
+}
+
+/// One output Core last switched on, by an energising step it ran
+/// (`embarch-core` decision 138).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct SwitchedOn {
+    /// The signal or instrument the step addressed.
+    pub target: String,
+    /// The line it sent.
+    pub line: String,
+    pub step: String,
 }
 
 /// Which of a session's two prompts (`embarch-core` decision 127).
@@ -2065,6 +2088,11 @@ pub struct PromptAnswerRequest {
     /// answer is byte-for-byte what it was.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub run_fields: Vec<RunFieldAnswer>,
+    /// An `observation` prompt's value (`embarch-core` decision 138): one of
+    /// its declared answers (a string) or a number, sent with `confirmed`.
+    /// Left out of the body when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<serde_json::Value>,
 }
 
 /// `POST /study/{id}/prompt`'s `200` body.

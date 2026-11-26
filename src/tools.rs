@@ -1922,7 +1922,7 @@ impl EmbarchApi {
             Ok(a) => a,
             Err(e) => return Self::err_text(format!("answer_prompt failed: {e:#}")),
         };
-        let req = embarch_core_client::PromptAnswerRequest { prompt_id: p.prompt_id, answer: answer.to_string(), answered_by: "mcp".to_string(), run_fields: vec![] };
+        let req = embarch_core_client::PromptAnswerRequest { prompt_id: p.prompt_id, answer: answer.to_string(), answered_by: "mcp".to_string(), run_fields: vec![], value: None };
         match self.core.answer_prompt(&p.study_id, &req).await {
             Ok(r) => Self::ok_json(serde_json::json!({ "answer": r })),
             Err(e) => {
