@@ -139,7 +139,12 @@ async fn a_proposed_custom_test_arrives_with_its_hash_and_waits_for_confirmation
     let body: Value = serde_json::from_slice(&sent[0].body).unwrap();
     assert_eq!(body["kind"], "test");
     assert_eq!(body["definition"]["test_id"], "vbus-5v-source-voltage");
-    assert_eq!(body["definition"]["study"]["hash"].as_str().unwrap().len(), 64, "the study's hash is filled");
+    let host: embarch_study_designer::HostStudy = serde_json::from_value(fixture("study")).unwrap();
+    assert_eq!(
+        body["definition"]["study"]["hash"],
+        embarch_study_designer::hil_test::study_hash(&host),
+        "the study's hash is filled with `study_hash`"
+    );
     assert!(body["study"].is_object() && body["bench"].is_object() && body["measured"].is_object());
 
     let suite = rig.repo.join("embarch/tests/suites/mine");
@@ -246,4 +251,24 @@ async fn a_suite_without_a_plan_lists_its_applicable_tests_by_bench() {
     assert!(ok, "{v}");
     assert_eq!(v["applicable_by_bench"]["pd-sink-bench"][0]["test_id"], "vbus-5v-source-voltage");
     assert!(v["not_applicable"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_given_hash_that_is_not_the_studys_study_hash_is_refused_naming_both() {
+    let mock = MockCore::start(kept_reply()).await;
+    let rig = Rig::new(&mock);
+    let mut d = definition();
+    d["study"]["hash"] = json!("00".repeat(32));
+    let dp = rig.put("wrong-hash.json", &d);
+    let (_, _, s, b, m) = propose_args(&rig, &[]);
+    let (ok, v) = rig.run(&[
+        "test-propose", "test", "--definition-file", dp.to_str().unwrap(), "--study-file", s.to_str().unwrap(),
+        "--bench-file", b.to_str().unwrap(), "--measured-file", m.to_str().unwrap(), "--suite", "mine",
+    ]);
+    assert!(!ok);
+    let host: embarch_study_designer::HostStudy = serde_json::from_value(fixture("study")).unwrap();
+    let want = embarch_study_designer::hil_test::study_hash(&host);
+    let reason = v["reason"].as_str().unwrap();
+    assert!(reason.contains(&"00".repeat(32)) && reason.contains(&want), "{reason}");
+    assert!(mock.requests().is_empty());
 }

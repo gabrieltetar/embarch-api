@@ -64,7 +64,8 @@ impl Rig {
         let mut def = fixture("test");
         def["requires"] = json!([]);
         let study = serde_json::to_vec_pretty(&fixture("study")).unwrap();
-        def["study"]["hash"] = json!("00".repeat(32));
+        let host: embarch_study_designer::HostStudy = serde_json::from_value(fixture("study")).unwrap();
+        def["study"]["hash"] = json!(embarch_study_designer::hil_test::study_hash(&host));
         std::fs::write(t.join("test.json"), serde_json::to_vec(&def).unwrap()).unwrap();
         std::fs::write(t.join("vbus-5v.study.json"), study).unwrap();
         let mut m = fixture("suite");

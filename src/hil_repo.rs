@@ -23,12 +23,11 @@ use std::path::{Path, PathBuf};
 use embarch_core_client::CoreClient;
 use embarch_study_designer::hil_check::{check_test, By, Measured, Metrology, StudyKind};
 use embarch_study_designer::hil_test::{
-    canonical_json, Capability, HookMapping, Plan, SuiteBench, SuiteManifest, SuiteTest, TestDef,
+    canonical_json, study_hash, Capability, HookMapping, Plan, SuiteBench, SuiteManifest, SuiteTest, TestDef,
 };
 use embarch_study_designer::HostStudy;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 
 pub use crate::lease::Report;
 use embarch_api::person_writer::{ConfinedWriter, Kind};
@@ -86,10 +85,6 @@ pub fn bench_slug(name: &str) -> String {
 
 fn parse<T: DeserializeOwned>(what: &str, v: &Value) -> Result<T, String> {
     serde_json::from_value(v.clone()).map_err(|e| format!("not a valid {what}: {e}"))
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn pretty(v: &impl serde::Serialize) -> Vec<u8> {
@@ -167,7 +162,7 @@ struct CheckedTest {
 fn check_proposed_test(a: &ProposeArgs<'_>) -> Result<CheckedTest, String> {
     let mut definition = a.definition.clone();
     if a.study.is_some() {
-        // The study's hash is the hash of the bytes this tool writes; leave it out and it is filled.
+        // The study's hash is `study_hash` of the study (its canonical JSON, not the file's bytes); leave it out and it is filled.
         if let Some(study) = definition.get_mut("study").and_then(Value::as_object_mut) {
             study.entry("hash").or_insert_with(|| Value::String(String::new()));
         }
@@ -185,12 +180,12 @@ fn check_proposed_test(a: &ProposeArgs<'_>) -> Result<CheckedTest, String> {
                 return Err(format!("bench `{}`: description is not an object", bench.name));
             }
             let bytes = pretty(&study);
-            let hash = sha256_hex(&bytes);
+            let hash = study_hash(&study);
             if def.study.hash.is_empty() {
                 def.study.hash = hash;
             } else if def.study.hash != hash {
                 return Err(format!(
-                    "{}: study.hash is {}, the study as written hashes to {hash}; leave `hash` out of study to have it filled",
+                    "{}: study.hash is {}, the study hashes to {hash}; leave `hash` out of study to have it filled",
                     def.test_id, def.study.hash
                 ));
             }
