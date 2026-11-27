@@ -75,6 +75,13 @@ struct Knobs {
     flip_result_run: bool,
     /// `report-data.json` says t1's limit was judged with another `w` than its declared source gives.
     alter_limit_w: bool,
+    /// The record carries `observed.mode` (this) and `observed.release`, and the report-data the newer attestation.
+    /// "service" has a release object; any other mode a null one.
+    release_mode: Option<&'static str>,
+}
+
+fn release_of(mode: &str) -> Value {
+    if mode == "service" { json!({ "suite_version": "1.2.3", "manifest_sha256": "ab".repeat(32) }) } else { Value::Null }
 }
 
 fn t1_judged() -> Judged {
@@ -178,6 +185,11 @@ fn core_files(k: &SigningKey, knobs: Knobs) -> BTreeMap<String, String> {
             "selection": { "entries": [{ "test_id": "t1", "status": "selected", "reason": null }, { "test_id": "t2", "status": "selected", "reason": null },
                                        { "test_id": "t3", "status": "not_selected", "reason": "outside the plan" }] },
             "tests": tests, "observed": { "core": { "version": "0.0.0" }, "call_log": null } } });
+    let mut test_record = test_record;
+    if let Some(mode) = knobs.release_mode {
+        test_record["predicate"]["observed"]["mode"] = json!(mode);
+        test_record["predicate"]["observed"]["release"] = release_of(mode);
+    }
     f.insert("test-run.dsse.json".into(), envelope(k, &test_record));
     let record_sha = sha(f["test-run.dsse.json"].as_bytes());
 
@@ -235,6 +247,10 @@ fn core_files(k: &SigningKey, knobs: Knobs) -> BTreeMap<String, String> {
         "core": { "version": "0.0.0", "keyid": sha(k.verifying_key().as_bytes()) },
         "record_sha256": record_sha, "study_ids": ["s1"],
     });
+    let mut rd = rd;
+    if let Some(mode) = knobs.release_mode {
+        rd["attestation"] = json!({ "label": "person's acts not protected", "core_mode": mode, "release": release_of(mode), "reason": "milestone 1" });
+    }
     f.insert("report-data.json".into(), rd.to_string());
     let st = json!({ "_type": "https://in-toto.io/Statement/v1",
         "subject": [{ "name": "report-data.json", "digest": { "sha256": sha(rd.to_string().as_bytes()) } }],
@@ -528,4 +544,35 @@ async fn an_interrupted_run_is_named_not_checked_by_this_version_and_not_failed(
         assert_eq!(status(&r, id), Status::NotChecked, "check {id}\n{}", dump(&r));
     }
     assert!(problems(&r, 3).contains("interrupted"), "{}", problems(&r, 3));
+}
+
+#[tokio::test]
+async fn check_6_reads_a_test_runs_attestation_by_the_signed_records_mode_and_release() {
+    let k = key(7);
+    for mode in ["service", "development"] {
+        let files = published(&k, Knobs { release_mode: Some(mode), ..Knobs::default() }).await;
+        let r = check(&files, &k);
+        assert_eq!(status(&r, 6), Status::Pass, "{mode}: {}", dump(&r));
+        let appendix = String::from_utf8(files["appendix.typ"].clone()).unwrap();
+        assert!(appendix.contains("Core mode") && appendix.contains("Release") && appendix.contains("milestone 1"), "{appendix}");
+        assert!(!appendix.contains("Core attested"), "{appendix}");
+
+        let rd: Value = serde_json::from_slice(&files["report-data.json"]).unwrap();
+        let other = if mode == "service" { "development" } else { "service" };
+        for (field, bad) in [("core_mode", json!(other)), ("release", json!({ "suite_version": "9" }))] {
+            let mut b = rd.clone();
+            b["attestation"][field] = bad;
+            let mut f = files.clone();
+            f.insert("report-data.json".into(), b.to_string().into_bytes());
+            let r = check(&f, &k);
+            assert_eq!(status(&r, 6), Status::Fail, "{}", dump(&r));
+            assert!(problems(&r, 6).contains(&format!("attestation.{field}")), "{}", problems(&r, 6));
+        }
+        let mut b = rd.clone();
+        b["attestation"]["core_attested"] = json!(false);
+        let mut f = files.clone();
+        f.insert("report-data.json".into(), b.to_string().into_bytes());
+        let r = check(&f, &k);
+        assert!(problems(&r, 6).contains("attestation.core_attested"), "{}", problems(&r, 6));
+    }
 }

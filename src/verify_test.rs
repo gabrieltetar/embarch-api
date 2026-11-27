@@ -956,7 +956,7 @@ impl Zip<'_> {
             "person": if facts.person.is_null() { Value::Null } else { json!({ "name": facts.person["name"], "scope": facts.person["scope"], "at_utc_ms": facts.person["at_utc_ms"] }) },
             "go_by": facts.go_by, "published_by": facts.published_by,
             "statement": self.rd["statement"],
-            "attestation": { "label": attestation_label(facts.person_acted), "core_attested": false },
+            "attestation": crate::verify_report::attestation_claim(self.record.unwrap_or(&Value::Null), attestation_label(facts.person_acted)),
             "summary": summary, "requirements": requirements, "tests": tests,
             "manual_verdicts": manual_listed, "not_run": not_run, "coverage": coverage,
             "runs_on_unit": runs_on_unit(lines, unit_key),
@@ -1071,8 +1071,9 @@ fn check_report_claims(z: &Zip, d: &Derived, c: &mut Check) {
     }
     for (k, w) in want.as_object().into_iter().flatten() {
         let have = &z.rd[k.as_str()];
-        let same = if k == "attestation" { have["label"] == w["label"] && have["core_attested"] == w["core_attested"] } else { have == w };
-        if !same {
+        if k == "attestation" {
+            differing.extend(crate::verify_report::attestation_differences(w, have));
+        } else if have != w {
             differing.push(k.clone());
         }
     }

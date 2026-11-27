@@ -289,13 +289,16 @@ pub fn appendix_source(rd: &Value, pins: &RunPins) -> String {
         ("report.typ", ReportSource::Generated.as_str().to_string()),
     ]);
     d.heading(2, "Attestation");
-    d.kv(&[
-        ("Label", at(rd, "/attestation/label")),
-        ("Core attested", at(rd, "/attestation/core_attested")),
-        ("Reason", at(rd, "/attestation/reason")),
-        ("Run begun with", at(rd, "/go_by")),
-        ("Published by", at(rd, "/published_by")),
-    ]);
+    let mut rows = vec![("Label", at(rd, "/attestation/label"))];
+    if rd["attestation"].get("core_mode").is_some() {
+        rows.push(("Core mode", at(rd, "/attestation/core_mode")));
+        rows.push(("Release", at(rd, "/attestation/release")));
+    }
+    if rd["attestation"].get("core_attested").is_some() {
+        rows.push(("Core attested", at(rd, "/attestation/core_attested")));
+    }
+    rows.extend([("Reason", at(rd, "/attestation/reason")), ("Run begun with", at(rd, "/go_by")), ("Published by", at(rd, "/published_by"))]);
+    d.kv(&rows);
     d.heading(2, "Manual verdicts");
     let manual: Vec<Vec<String>> = rd["manual_verdicts"]
         .as_array()
