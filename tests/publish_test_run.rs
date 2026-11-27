@@ -44,7 +44,7 @@ fn report_data() -> String {
         "requirements": {
             "R1": { "verdict": "not_verified", "counts": {}, "qualifiers": [], "n_of_m": null, "tests": ["T2"],
                     "skipped_tests": [{ "test_id": "T2", "reason": "requires_not_met" }] },
-            "R2": { "verdict": "pass", "counts": { "pass": 1 }, "qualifiers": ["bench firmware unreleased"], "n_of_m": [3, 5], "tests": ["T1"], "skipped_tests": [] },
+            "R2": { "verdict": "pass", "counts": { "pass": 1 }, "qualifiers": ["bench_firmware_unreleased", "n_of_m_run"], "n_of_m": { "n": 3, "m": 5 }, "tests": ["T1"], "skipped_tests": [] },
         },
         "tests": [
             { "test_id": "T1", "verdict": "pass", "reason": null, "qualifiers": [], "study_ids": ["s1"], "dut_image": "img1" },
