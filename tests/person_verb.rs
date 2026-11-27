@@ -17,8 +17,14 @@ fn reply(status: u16, body: Value) -> Behavior {
 }
 
 fn core() -> Behavior {
+    core_with_quota(reply(200, json!({ "quota_bytes": 2147483648u64, "previous_bytes": 1073741824u64, "size_bytes": 1000 })))
+}
+
+fn core_with_quota(quota: Behavior) -> Behavior {
     Behavior::Router {
         routes: vec![
+            ("/call-log/quota".into(), quota),
+            ("/call-log".into(), reply(200, json!({ "verified": true, "length": 0, "from": 0, "to": 0, "entries": [], "size_bytes": 1000, "quota_bytes": 1073741824u64 }))),
             ("/confirmations/h1/card".into(), reply(200, json!({ "card": { "name": { "agent_text": "Plug it in" } }, "confirmation": "unconfirmed", "nonce": "n-confirm", "expires_utc_ms": 9 }))),
             ("/confirmations".into(), reply(200, json!({ "confirmed": true }))),
             ("/test-runs/run-1/card".into(), reply(200, json!({ "run_id": "run-1", "run_hash": "cd".repeat(32), "card": { "duration": 5 }, "nonce": "n-go", "expires_utc_ms": 9 }))),
@@ -45,7 +51,11 @@ impl Run {
 }
 
 async fn person(args: &[&str], stdin: &str) -> Run {
-    let mock = MockCore::start(core()).await;
+    person_on(core(), args, stdin).await
+}
+
+async fn person_on(behavior: Behavior, args: &[&str], stdin: &str) -> Run {
+    let mock = MockCore::start(behavior).await;
     let dir = support::unique_dir("person");
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = dir.join("api.toml");
@@ -135,8 +145,42 @@ async fn unit_and_name_are_the_persons_declarations() {
 }
 
 #[tokio::test]
+async fn call_log_quota_shows_size_and_quota_then_sends_the_parsed_bytes_after_a_yes() {
+    let run = person(&["call-log-quota", "2GiB"], "yes\n").await;
+    assert!(run.ok, "{}", run.stderr);
+    for want in ["size_bytes: 1000", "quota_bytes: 1073741824", "requested_quota_bytes: 2147483648"] {
+        assert!(run.stderr.contains(want), "{want}: {}", run.stderr);
+    }
+    let w = run.writes();
+    assert_eq!((w.len(), w[0].method.as_str(), w[0].path()), (1, "PUT", "/call-log/quota"));
+    assert_eq!(bearer(w[0]), format!("Bearer {PERSON}"));
+    assert_eq!(body(w[0]), json!({ "quota_bytes": 2147483648u64 }));
+    let bytes = person(&["call-log-quota", "5000"], "yes\n").await;
+    assert_eq!(body(bytes.writes()[0]), json!({ "quota_bytes": 5000 }));
+}
+
+#[tokio::test]
+async fn call_log_quota_without_a_typed_yes_sends_nothing() {
+    for input in ["", "\n", "no\n", "y\n", "YES\n"] {
+        let run = person(&["call-log-quota", "2GiB"], input).await;
+        assert!(!run.ok, "{input:?}");
+        assert!(run.writes().is_empty(), "{input:?}");
+    }
+}
+
+#[tokio::test]
+async fn call_log_quota_400_and_403_come_back_as_their_own_text() {
+    let bad = person_on(core_with_quota(reply(400, json!("quota_bytes must be at least 1"))), &["call-log-quota", "0"], "yes\n").await;
+    assert!(!bad.ok);
+    assert!(bad.stderr.contains("a quota of 0 is not one"), "{}", bad.stderr);
+    let refused = person_on(core_with_quota(reply(403, json!("the agent's token"))), &["call-log-quota", "1GiB"], "yes\n").await;
+    assert!(!refused.ok);
+    assert!(refused.stderr.contains("the person's to set"), "{}", refused.stderr);
+}
+
+#[tokio::test]
 async fn anything_but_a_typed_yes_sends_nothing() {
-    let cases: [&[&str]; 5] = [&["confirm", "h1"], &["go", "run-1"], &["answer", "run-1", "3", "green"], &["unit", "DUT-1", "--serial", "S", "--revision", "A"], &["name", "Ada"]];
+    let cases: [&[&str]; 6] = [&["call-log-quota", "2GiB"], &["confirm", "h1"], &["go", "run-1"], &["answer", "run-1", "3", "green"], &["unit", "DUT-1", "--serial", "S", "--revision", "A"], &["name", "Ada"]];
     for args in cases {
         for input in ["", "\n", "no\n", "y\n", "YES\n", "yes please\n"] {
             let run = person(args, input).await;

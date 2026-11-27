@@ -49,6 +49,28 @@ pub enum PersonAction {
     },
     /// Declare your name.
     Name { name: String },
+    /// Raise (or set) the call log's quota: bytes, or a suffix as in `2GiB`.
+    CallLogQuota {
+        #[arg(value_parser = parse_size)]
+        size: u64,
+    },
+}
+
+/// Bytes, or a number with a binary suffix (`B`, `KiB`, `MiB`, `GiB`, `TiB`, case-insensitive).
+fn parse_size(s: &str) -> Result<u64, String> {
+    let t = s.trim();
+    let split = t.find(|c: char| !c.is_ascii_digit()).unwrap_or(t.len());
+    let (digits, suffix) = t.split_at(split);
+    let n: u64 = digits.parse().map_err(|_| format!("`{s}` is not a size: digits, then an optional B, KiB, MiB, GiB or TiB"))?;
+    let unit: u64 = match suffix.trim().to_ascii_lowercase().as_str() {
+        "" | "b" => 1,
+        "kib" => 1 << 10,
+        "mib" => 1 << 20,
+        "gib" => 1 << 30,
+        "tib" => 1 << 40,
+        _ => return Err(format!("`{s}` has an unknown unit; use B, KiB, MiB, GiB or TiB")),
+    };
+    n.checked_mul(unit).ok_or_else(|| format!("`{s}` is too large"))
 }
 
 /// What one act came to.
@@ -107,6 +129,7 @@ async fn act(client: &CoreClient, action: PersonAction, input: &mut dyn BufRead)
             }
             result(client.declare_person(&name).await, "the name is declared")
         }
+        PersonAction::CallLogQuota { size } => call_log_quota(client, size, input).await,
     }
 }
 
@@ -114,6 +137,30 @@ fn result(r: anyhow::Result<Value>, what: &str) -> Outcome {
     match r {
         Ok(v) => Outcome::done(what, v),
         Err(e) => Outcome::failed(format!("{e:#}")),
+    }
+}
+
+async fn call_log_quota(client: &CoreClient, size: u64, input: &mut dyn BufRead) -> Outcome {
+    let log = match client.call_log(Some(0), Some(0)).await {
+        Ok(l) => l,
+        Err(e) => return Outcome::failed(format!("{e:#}")),
+    };
+    let shown = json!({ "size_bytes": log.size_bytes, "quota_bytes": log.quota_bytes, "requested_quota_bytes": size });
+    if !ask(&shown, "set the call log's quota", input) {
+        return Outcome::declined("the quota");
+    }
+    match client.set_call_log_quota(size).await {
+        Ok(v) => Outcome::done("the call log's quota is set", v),
+        Err(e) => {
+            let text = format!("{e:#}");
+            Outcome::failed(if text.contains("returned 400") {
+                format!("Core refused the quota (400: a quota of 0 is not one): {text}")
+            } else if text.contains("returned 403") {
+                format!("Core refused the token (403: the quota is the person's to set; check the person token): {text}")
+            } else {
+                text
+            })
+        }
     }
 }
 
@@ -249,6 +296,16 @@ mod tests {
         assert!(text.contains("n: 3"), "{text}");
         assert!(text.contains("- \"a\""), "{text}");
         assert!(!text.contains("secret"), "{text}");
+    }
+
+    #[test]
+    fn a_size_is_bytes_or_a_binary_suffix() {
+        assert_eq!(parse_size("5000"), Ok(5000));
+        assert_eq!(parse_size("2GiB"), Ok(2 << 30));
+        assert_eq!(parse_size("512mib"), Ok(512 << 20));
+        assert!(parse_size("2GB").is_err());
+        assert!(parse_size("GiB").is_err());
+        assert!(parse_size("99999999999TiB").is_err());
     }
 
     #[test]

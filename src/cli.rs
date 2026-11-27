@@ -1873,6 +1873,9 @@ async fn call_log(core: &CoreClient, seq: Option<usize>, from: Option<usize>, to
                 if r.verified { "verified".to_string() } else { format!("NOT verified: {}", r.error.as_deref().unwrap_or("no reason given")) },
                 if r.truncated { ", answer cut at Core's cap" } else { "" }
             ));
+            if let (Some(size), Some(quota)) = (r.size_bytes, r.quota_bytes) {
+                human.push(format!("log size {size} of quota {quota} bytes; the person raises it with `embarch-api person call-log-quota <size>`"));
+            }
             finish(json, true, serde_json::json!({ "success": true, "call_log": r }), human.join("\n"))
         }
         Err(e) => error_result(json, format!("call-log failed: {e:#}")),

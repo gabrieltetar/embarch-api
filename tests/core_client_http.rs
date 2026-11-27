@@ -194,6 +194,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.resume_test_run("run-1", "run-2").await;
     let _ = client.declare_unit("DUT-1", "SN7", "B").await;
     let _ = client.declare_person("Ada").await;
+    let _ = client.set_call_log_quota(1).await;
     let _ = client.run_log().await;
     let _ = client.manual_verdict(&serde_json::json!({ "test_id": "t" })).await;
     let _ = client.lease_take("sweep", Some("sweep"), 60).await;
@@ -334,6 +335,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
         ("POST", "/test-runs/run-1/resume"),
         ("PUT", "/units/DUT-1"),
         ("PUT", "/person"),
+        ("PUT", "/call-log/quota"),
         ("GET", "/run-log"),
         ("POST", "/manual-verdicts"),
         ("POST", "/study/study-1/adopt"),

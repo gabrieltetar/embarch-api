@@ -1396,6 +1396,11 @@ pub struct CallLogResponse {
     pub entries: Vec<serde_json::Value>,
     #[serde(default)]
     pub pending_fold: Option<serde_json::Value>,
+    /// The log file's size and its quota; `None` from a Core older than decision 161.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_bytes: Option<u64>,
 }
 
 /// One range of a `POST /live/mem-read` reply.
@@ -3762,6 +3767,13 @@ impl CoreClient {
     pub async fn declare_person(&self, name: &str) -> Result<serde_json::Value> {
         let url = format!("{}/person", self.base_url().await?);
         self.send(self.client.put(url).json(&serde_json::json!({ "name": name })), self.status_timeout).await
+    }
+
+    /// `PUT /call-log/quota` with `{quota_bytes}` (core decision 161): `{quota_bytes,
+    /// previous_bytes, size_bytes}`; `400` for 0, `403` for the agent's token. Only the person's surface calls this.
+    pub async fn set_call_log_quota(&self, quota_bytes: u64) -> Result<serde_json::Value> {
+        let url = format!("{}/call-log/quota", self.base_url().await?);
+        self.send(self.client.put(url).json(&serde_json::json!({ "quota_bytes": quota_bytes })), self.status_timeout).await
     }
 
     /// `GET /run-log` — `{verified, error, length, head, entries}`, `entries` the
