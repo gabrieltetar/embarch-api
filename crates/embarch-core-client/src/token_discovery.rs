@@ -1,9 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
+use embarch_topology::software::TopologyClass;
 use std::path::{Path, PathBuf};
-#[cfg(unix)]
-use std::process::Command;
-#[cfg(unix)]
-use std::sync::OnceLock;
 
 /// Resolve the bearer token embarch-api sends to embarch-core, in order:
 /// 1. `token_env` (an env var name) if set and present in the environment.
@@ -103,11 +100,9 @@ pub(crate) fn dev_file(file_name: &str) -> Result<PathBuf> {
     #[cfg(unix)]
     {
         if is_wsl2() {
-            let local = run_shellout("cmd.exe", &["/C", "echo", "%LOCALAPPDATA%"])
-                .filter(|v| !v.is_empty() && !v.contains('%'))
-                .or_else(|| run_shellout("powershell.exe", &["-NoProfile", "-Command", "$env:LOCALAPPDATA"]).filter(|v| !v.is_empty()))
+            let local = embarch_topology::windows_env_var("LOCALAPPDATA")
                 .context("could not determine Windows %LOCALAPPDATA% from within WSL2")?;
-            Ok(translate_windows_path_to_wsl(&local)?.join("embarch").join("dev").join(file_name))
+            Ok(embarch_topology::windows_path_to_wsl(&local)?.join("embarch").join("dev").join(file_name))
         } else {
             let home = std::env::var("HOME").context("HOME is not set")?;
             Ok(Path::new(&home).join(".local/state/embarch/dev").join(file_name))
@@ -155,27 +150,24 @@ fn no_token_error(scope: TokenScope, checked_path: &Path) -> anyhow::Error {
     )
 }
 
-/// The same-OS or WSL2-translated path to embarch-core's generated token
-/// file, per the precedence documented on `resolve_token`.
+/// The path to embarch-core's generated token file, per the precedence
+/// documented on `resolve_token`. The directory is `embarch-topology`'s
+/// resolver (decision 52): `Local` here, `WslHost` under WSL2. An unset
+/// `ProgramData` is an error naming it, surfaced as "no token".
 fn discover_token_path(file_name: &str) -> Result<PathBuf> {
-    #[cfg(windows)]
-    {
-        Ok(windows_embarch_dir().join(file_name))
-    }
-    #[cfg(unix)]
-    {
-        if is_wsl2() {
-            wsl2_embarch_dir().map(|d| d.join(file_name)).map_err(|msg| anyhow!(msg))
-        } else {
-            Ok(PathBuf::from("/var/lib/embarch").join(file_name))
-        }
-    }
+    let dir = embarch_topology::machine_data_dir(machine_data_class())?
+        .context("the machine data directory has no local path for this topology class")?;
+    Ok(dir.join(file_name))
 }
 
-#[cfg(windows)]
-fn windows_embarch_dir() -> PathBuf {
-    let program_data = std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string());
-    Path::new(&program_data).join("embarch")
+/// Which machine's data directory holds Core's files: the Windows host's
+/// under WSL2, this machine's own everywhere else.
+fn machine_data_class() -> TopologyClass {
+    #[cfg(unix)]
+    if is_wsl2() {
+        return TopologyClass::WslHost;
+    }
+    TopologyClass::Local
 }
 
 /// Detects WSL2 by delegating to `embarch_topology::software::detect_wsl2`
@@ -201,84 +193,6 @@ fn is_wsl2() -> bool {
     let proc_version = std::fs::read_to_string("/proc/version").ok();
     let wsl_distro_env = std::env::var("WSL_DISTRO_NAME").ok();
     embarch_topology::software::detect_wsl2(proc_version.as_deref(), wsl_distro_env.as_deref())
-}
-
-/// The WSL2-translated path to `%ProgramData%\embarch`, computed once per
-/// process and cached — the shell-out to resolve `%ProgramData%` should not
-/// run on every token resolution. Both token files sit in it.
-#[cfg(unix)]
-fn wsl2_embarch_dir() -> Result<PathBuf, String> {
-    static CACHE: OnceLock<Result<PathBuf, String>> = OnceLock::new();
-    CACHE
-        .get_or_init(|| compute_wsl2_embarch_dir().map_err(|e| format!("{e:#}")))
-        .clone()
-}
-
-#[cfg(unix)]
-fn compute_wsl2_embarch_dir() -> Result<PathBuf> {
-    let program_data = windows_program_data_via_shellout()
-        .context("could not determine Windows %ProgramData% from within WSL2")?;
-    let mnt_root = translate_windows_path_to_wsl(&program_data)
-        .with_context(|| format!("could not translate Windows path '{program_data}' to its WSL2 mount form"))?;
-    Ok(mnt_root.join("embarch"))
-}
-
-#[cfg(unix)]
-fn windows_program_data_via_shellout() -> Result<String> {
-    if let Some(v) = run_shellout("cmd.exe", &["/C", "echo", "%ProgramData%"]) {
-        if !v.is_empty() && !v.contains('%') {
-            return Ok(v);
-        }
-    }
-    if let Some(v) = run_shellout("powershell.exe", &["-NoProfile", "-Command", "$env:ProgramData"]) {
-        if !v.is_empty() {
-            return Ok(v);
-        }
-    }
-    bail!("neither cmd.exe nor powershell.exe returned a usable %ProgramData% value")
-}
-
-#[cfg(unix)]
-fn run_shellout(program: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(program).args(args).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8(output.stdout).ok()?;
-    Some(text.trim().to_string())
-}
-
-/// Translates a Windows-side path (e.g. `C:\ProgramData`) to its WSL2 mount
-/// form (e.g. `/mnt/c/ProgramData`). Prefers the `wslpath` utility, since it
-/// correctly reflects however this WSL2 instance actually has drives
-/// mounted; falls back to hand-parsing the drive letter only if `wslpath`
-/// isn't available or doesn't behave as expected.
-#[cfg(unix)]
-fn translate_windows_path_to_wsl(win_path: &str) -> Result<PathBuf> {
-    if let Some(translated) = run_shellout("wslpath", &["-u", win_path]) {
-        if translated.starts_with('/') {
-            return Ok(PathBuf::from(translated));
-        }
-    }
-
-    hand_parse_windows_path(win_path)
-}
-
-#[cfg(unix)]
-fn hand_parse_windows_path(win_path: &str) -> Result<PathBuf> {
-    let mut chars = win_path.chars();
-    let drive = chars
-        .next()
-        .filter(|c| c.is_ascii_alphabetic())
-        .with_context(|| format!("'{win_path}' doesn't start with a drive letter"))?;
-    let rest = chars.as_str();
-    let rest = rest.strip_prefix(':').with_context(|| format!("'{win_path}' is missing the ':' after the drive letter"))?;
-    let rest = rest.replace('\\', "/");
-    Ok(PathBuf::from(format!(
-        "/mnt/{}{}",
-        drive.to_ascii_lowercase(),
-        rest
-    )))
 }
 
 #[cfg(test)]
@@ -330,20 +244,6 @@ mod tests {
         assert!(msg.contains(&path.display().to_string()));
         assert!(msg.contains("token or token_env"));
         assert!(msg.contains("start embarch-core"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn hand_parse_translates_drive_letter() {
-        let translated = hand_parse_windows_path(r"C:\ProgramData").unwrap();
-        assert_eq!(translated, PathBuf::from("/mnt/c/ProgramData"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn hand_parse_lowercases_drive_letter() {
-        let translated = hand_parse_windows_path(r"D:\Foo\Bar").unwrap();
-        assert_eq!(translated, PathBuf::from("/mnt/d/Foo/Bar"));
     }
 
     // The env-var tests below each use their own variable name, so they do
