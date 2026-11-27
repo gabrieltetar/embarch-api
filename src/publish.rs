@@ -94,7 +94,7 @@ pub struct PublishOutcome {
     pub warnings: Vec<String>,
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -146,7 +146,7 @@ fn refuse_footer(src: &str) -> Result<()> {
 }
 
 /// The names the manifest Statement lists as Core's subjects, with their digests.
-fn manifest_subjects(envelope: &[u8]) -> Result<Vec<(String, String)>> {
+pub(crate) fn manifest_subjects(envelope: &[u8]) -> Result<Vec<(String, String)>> {
     let env: Value = serde_json::from_slice(envelope).context("manifest.dsse.json is not JSON")?;
     let payload = base64::engine::general_purpose::STANDARD
         .decode(env["payload"].as_str().unwrap_or(""))
@@ -303,6 +303,12 @@ pub async fn run(core: &CoreClient, folder: Option<&Path>, req: &PublishRequest<
         if !prose_names.insert(p.name.clone()) {
             bail!("the prose file {:?} is given twice", p.name);
         }
+    }
+
+    // Every refusal above is made before Core is asked anything. A Test run's id is
+    // Core's own record of a prepared run (decision 144).
+    if core.is_test_run(run_id).await? {
+        return crate::publish_test::run(core, folder, req, now_unix).await;
     }
 
     let earlier = earlier_zips(folder, run_id);
@@ -573,7 +579,7 @@ pub async fn run(core: &CoreClient, folder: Option<&Path>, req: &PublishRequest<
 
 /// Writes entries in name order with a fixed time, so the same entries are the
 /// same bytes. Refuses to overwrite (`create_new`).
-fn write_zip(path: &Path, entries: &BTreeMap<String, Vec<u8>>) -> Result<String> {
+pub(crate) fn write_zip(path: &Path, entries: &BTreeMap<String, Vec<u8>>) -> Result<String> {
     let file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)

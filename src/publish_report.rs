@@ -110,7 +110,7 @@ pub fn lit(s: &str) -> String {
     out
 }
 
-fn show(v: &Value) -> String {
+pub(crate) fn show(v: &Value) -> String {
     match v {
         Value::Null => "none".to_string(),
         Value::String(s) => s.clone(),
@@ -118,23 +118,23 @@ fn show(v: &Value) -> String {
     }
 }
 
-fn at(v: &Value, pointer: &str) -> String {
+pub(crate) fn at(v: &Value, pointer: &str) -> String {
     v.pointer(pointer).map(show).unwrap_or_else(|| "not recorded".to_string())
 }
 
-struct Doc(String);
+pub(crate) struct Doc(pub(crate) String);
 
 impl Doc {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Doc(String::new())
     }
-    fn heading(&mut self, level: usize, text: &str) {
+    pub(crate) fn heading(&mut self, level: usize, text: &str) {
         self.0.push_str(&format!("#heading(level: {level}, {})\n", lit(text)));
     }
-    fn para(&mut self, text: &str) {
+    pub(crate) fn para(&mut self, text: &str) {
         self.0.push_str(&format!("#par({})\n\n", lit(text)));
     }
-    fn table(&mut self, cols: &[&str], rows: &[Vec<String>]) {
+    pub(crate) fn table(&mut self, cols: &[&str], rows: &[Vec<String>]) {
         let n = cols.len();
         let spec = if n == 2 { "(auto, 1fr)".to_string() } else { format!("{n}") };
         self.0.push_str(&format!("#table(columns: {spec}, stroke: 0.4pt, inset: 3pt,\n"));
@@ -148,7 +148,7 @@ impl Doc {
         }
         self.0.push_str(")\n\n");
     }
-    fn kv(&mut self, rows: &[(&str, String)]) {
+    pub(crate) fn kv(&mut self, rows: &[(&str, String)]) {
         let rows: Vec<Vec<String>> = rows.iter().map(|(k, v)| vec![(*k).to_string(), v.clone()]).collect();
         self.table(&["Item", "Value"], &rows);
     }
@@ -248,7 +248,7 @@ pub fn data_section_source(i: &ReportInputs) -> String {
 
 /// The appendix's call-log rows: the head, the range and the count Core's report-data
 /// gives, with what the log holds. A zip with no field reads "no call log".
-fn call_log_rows(rd: &Value) -> Vec<(&'static str, String)> {
+pub(crate) fn call_log_rows(rd: &Value) -> Vec<(&'static str, String)> {
     let Some(log) = rd.pointer("/observed/call_log") else {
         return vec![("Call log", "no call log".to_string())];
     };

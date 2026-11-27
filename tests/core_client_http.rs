@@ -186,6 +186,10 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.prepare_test_run(&serde_json::json!({})).await;
     let _ = client.test_run_status("run-1").await;
     let _ = client.test_run_card("run-1").await;
+    let _ = client.is_test_run("run-1").await;
+    let _ = client.test_report_data("run-1").await;
+    let _ = client.test_publish("run-1", &[]).await;
+    let _ = client.test_publish_file("run-1", 1, "run.json").await;
     let _ = client.test_run_go("run-1", "hash-1", "nonce-1").await;
     let _ = client.declare_unit("DUT-1", "SN7", "B").await;
     let _ = client.declare_person("Ada").await;
@@ -336,6 +340,9 @@ async fn every_outbound_call_carries_the_bearer_token() {
         ("GET", "/study/study-1/publish/1/files/streams/a.csv"),
         ("PUT", "/study/study-1/restore/streams/a.csv"),
         ("GET", "/study/study-1/events"),
+        ("GET", "/test-runs/run-1/publish/1/files/run.json"),
+        ("POST", "/test-runs/run-1/publish"),
+        ("POST", "/test-runs/run-1/report-data"),
     ]
     .into_iter()
     .map(|(method, path)| (method.to_string(), path.to_string()))

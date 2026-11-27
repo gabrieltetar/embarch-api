@@ -3810,6 +3810,61 @@ impl CoreClient {
         self.send(self.client.get(url), self.status_timeout).await
     }
 
+    /// Whether Core holds a prepared Test run of this id: `GET /test-runs/{run_id}`,
+    /// `Ok(false)` for a `404`. How `publish` tells a Test run's id from a Study's.
+    pub async fn is_test_run(&self, run_id: &str) -> Result<bool> {
+        let url = format!("{}/test-runs/{}", self.base_url().await?, urlencode(run_id));
+        let response = self.dispatch(self.client.get(url), Some(self.status_timeout)).await?;
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+        if status.is_success() {
+            return Ok(true);
+        }
+        let body = response.text().await.unwrap_or_else(|_| "<no response body>".to_string());
+        Err(anyhow!("embarch-core returned {status}: {body}"))
+    }
+
+    /// `POST /test-runs/{run_id}/report-data` (`embarch-core` decision 148): a Test
+    /// run's `report-data.json` for the next revision, as [`CoreClient::report_data`]
+    /// is a Study's.
+    pub async fn test_report_data(&self, run_id: &str) -> Result<ReportDataResponse> {
+        let url = format!("{}/test-runs/{}/report-data", self.base_url().await?, urlencode(run_id));
+        self.send(self.client.post(url), self.study_timeout).await
+    }
+
+    /// `POST /test-runs/{run_id}/publish` (`embarch-core` decision 149): signs the
+    /// manifest over every study run's files and the run's own. `files` are
+    /// embarch-api's, listed and not vouched for.
+    pub async fn test_publish(&self, run_id: &str, files: &[PublishFile]) -> Result<PublishResponse> {
+        let url = format!("{}/test-runs/{}/publish", self.base_url().await?, urlencode(run_id));
+        let body = serde_json::json!({ "files": files });
+        self.send(self.client.post(url).json(&body), self.study_timeout).await
+    }
+
+    /// `GET /test-runs/{run_id}/publish/{revision}/files/{name}` (`embarch-core`
+    /// decision 150): one file of a Test run's revision, `Ok(None)` for a `404`.
+    /// `name` may hold `/` (`studies/<id>/events.json`); each segment is encoded.
+    pub async fn test_publish_file(&self, run_id: &str, revision: u64, name: &str) -> Result<Option<Bytes>> {
+        let name = name.split('/').map(urlencode).collect::<Vec<_>>().join("/");
+        let url = format!(
+            "{}/test-runs/{}/publish/{revision}/files/{name}",
+            self.base_url().await?,
+            urlencode(run_id)
+        );
+        let response = self.dispatch(self.client.get(url), Some(self.study_timeout)).await?;
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if status.is_success() {
+            return response.bytes().await.map(Some).context("failed to read embarch-core's response body");
+        }
+        let body = response.text().await.unwrap_or_else(|_| "<no response body>".to_string());
+        Err(anyhow!("embarch-core returned {status}: {body}"))
+    }
+
     /// `GET /test-runs/{run_id}/card` — the go card rendered from Core's record of the
     /// run. `nonce` and `expires_utc_ms` come back `null` for the agent's token.
     pub async fn test_run_card(&self, run_id: &str) -> Result<serde_json::Value> {

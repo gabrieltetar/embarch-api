@@ -57,6 +57,10 @@ pub mod report_pdf;
 /// and behind `pdf` because the report is its PDF.
 #[cfg(feature = "pdf")]
 pub mod publish;
+/// A Test run's publish: one zip over every study run's files, and a PDF
+/// organised by requirement (`embarch-api` decision 144).
+#[cfg(feature = "pdf")]
+pub mod publish_test;
 /// The two interop exports of a Study run, pure functions of the signed data.
 #[cfg(feature = "pdf")]
 pub mod publish_export;
