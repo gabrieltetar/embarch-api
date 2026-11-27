@@ -425,6 +425,56 @@ async fn a_run_verdict_result_json_changed_against_its_study_record_fails_check_
     assert!(problems(&r, 3).contains("test t1: study s1's record says its run was"), "{}", problems(&r, 3));
 }
 
+/// The fixture's one step row rewritten: refused, with the given extra keys (`signal`, `target`).
+async fn refused_step_zip(extra: Value) -> (BTreeMap<String, Vec<u8>>, SigningKey) {
+    let k = key(7);
+    let mut files = published(&k, Knobs::default()).await;
+    let mut events: Value = serde_json::from_slice(&files["studies/s1/events.json"]).unwrap();
+    events["steps"][0]["detail"] = json!("refused");
+    for (name, v) in extra.as_object().unwrap() {
+        events["steps"][0][name] = v.clone();
+    }
+    files.insert("studies/s1/events.json".into(), events.to_string().into_bytes());
+    (files, k)
+}
+
+#[tokio::test]
+async fn a_refused_exchange_row_with_target_dut_is_judged_as_the_dut_alone() {
+    let (files, k) = refused_step_zip(json!({ "signal": "console", "target": "dut" })).await;
+    let r = check(&files, &k);
+    assert_eq!(status(&r, 3), Status::Fail, "{}", dump(&r));
+    let p = problems(&r, 3);
+    assert!(p.contains("study s1's run recomputes to fail (step_failed) ["), "{p}");
+    assert!(!p.contains(" or "), "{p}");
+}
+
+#[tokio::test]
+async fn a_refused_exchange_row_with_target_bench_is_judged_as_the_bench_alone() {
+    let (files, k) = refused_step_zip(json!({ "signal": "console", "target": "bench" })).await;
+    let r = check(&files, &k);
+    assert_eq!(status(&r, 3), Status::Fail, "{}", dump(&r));
+    let p = problems(&r, 3);
+    assert!(p.contains("study s1's run recomputes to error (bench_step_failed) ["), "{p}");
+    assert!(!p.contains(" or "), "{p}");
+}
+
+#[tokio::test]
+async fn a_refused_exchange_row_without_target_is_still_read_both_ways() {
+    let (files, k) = refused_step_zip(json!({})).await;
+    let r = check(&files, &k);
+    assert_eq!(status(&r, 3), Status::Fail, "{}", dump(&r));
+    let p = problems(&r, 3);
+    assert!(p.contains("recomputes to fail") && p.contains(" or error"), "{p}");
+}
+
+#[tokio::test]
+async fn an_exchange_row_naming_another_signal_than_its_action_fails_check_3_naming_the_step() {
+    let (files, k) = refused_step_zip(json!({ "signal": "other", "target": "dut" })).await;
+    let r = check(&files, &k);
+    assert_eq!(status(&r, 3), Status::Fail, "{}", dump(&r));
+    assert!(problems(&r, 3).contains("rows for read name another signal than study.json's action does"), "{}", problems(&r, 3));
+}
+
 #[tokio::test]
 async fn a_zip_altered_after_signing_fails_the_check_that_names_it() {
     let k = key(7);

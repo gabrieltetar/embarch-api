@@ -341,18 +341,29 @@ fn walk_actions<'a>(steps: &'a Value, out: &mut BTreeMap<&'a str, &'a Value>) {
     }
 }
 
-/// `embarch-core`'s `judge_steps`, a copy over the signed study file read as JSON. **A signal's
-/// target is Core's live topology and is in no file of the zip**, so each step on an `Exchange`
-/// signal is given its target by `bench_signals` and the signals whose target could change the
-/// verdict (a refusal or an `until` not seen) are returned in `unknown`.
-fn judge_steps(test: &RunTest, study: Option<&Value>, events: Option<&Value>, bench_signals: &BTreeSet<String>) -> (Vec<StepRecord>, BTreeSet<String>) {
+/// What `judge_steps` found beside the steps: the signals whose target no file of the zip holds,
+/// and the steps whose row names another signal than the study's action does.
+#[derive(Default)]
+struct StepFindings {
+    unknown: BTreeSet<String>,
+    contradicted: Vec<String>,
+}
+
+/// `embarch-core`'s `judge_steps`, a copy over the signed study file read as JSON. An `Exchange`
+/// row Core wrote since its decision 155 carries `target` (`dut` or `bench`), the one lookup the
+/// study made, and is judged under it (`embarch-api` decision 149). **A row without it, from an
+/// older Core, has no target in any file of the zip**: its step is given its target by
+/// `bench_signals`, and the signals whose target could change the verdict (a refusal or an
+/// `until` not seen) are returned in `unknown`. A row whose `signal` is not its action's is
+/// returned in `contradicted`.
+fn judge_steps(test: &RunTest, study: Option<&Value>, events: Option<&Value>, bench_signals: &BTreeSet<String>) -> (Vec<StepRecord>, StepFindings) {
     let mut actions = BTreeMap::new();
     if let Some(s) = study {
         walk_actions(&s["steps"], &mut actions);
         walk_actions(&s["teardown"], &mut actions);
     }
     let kinds: BTreeMap<&str, PromptKind> = test.prompt_kinds.iter().map(|k| (k.step.as_str(), k.kind)).collect();
-    let mut unknown = BTreeSet::new();
+    let mut found = StepFindings::default();
     let mut out = Vec::new();
     for s in events.map_or(&[][..], |e| e["steps"].as_array().map_or(&[][..], Vec::as_slice)) {
         let Some(name) = s["step_name"].as_str() else { continue };
@@ -360,13 +371,22 @@ fn judge_steps(test: &RunTest, study: Option<&Value>, events: Option<&Value>, be
         let Some(outcome) = outcome_of(s["detail"].as_str().unwrap_or(""), observation) else { continue };
         let action = actions.get(name).copied().unwrap_or(&Value::Null);
         let target = if let Some(signal) = action["Exchange"]["signal"].as_str() {
-            if matches!(outcome, StepOutcome::RefusedOn | StepOutcome::TimedOut | StepOutcome::UntilNotSeen) {
-                unknown.insert(signal.to_string());
+            if s["signal"].as_str().is_some_and(|row| row != signal) {
+                found.contradicted.push(name.to_string());
             }
-            if bench_signals.contains(signal) {
-                Target::Bench
-            } else {
-                Target::Dut
+            match s["target"].as_str() {
+                Some("bench") => Target::Bench,
+                Some("dut") => Target::Dut,
+                _ => {
+                    if matches!(outcome, StepOutcome::RefusedOn | StepOutcome::TimedOut | StepOutcome::UntilNotSeen) {
+                        found.unknown.insert(signal.to_string());
+                    }
+                    if bench_signals.contains(signal) {
+                        Target::Bench
+                    } else {
+                        Target::Dut
+                    }
+                }
             }
         } else if action.get("Instrument").is_some() {
             Target::Bench
@@ -375,7 +395,7 @@ fn judge_steps(test: &RunTest, study: Option<&Value>, events: Option<&Value>, be
         };
         out.push(StepRecord { step: name.to_string(), target, outcome });
     }
-    (out, unknown)
+    (out, found)
 }
 
 /// The UTC date `yyyy-mm-dd` of a millisecond timestamp (`embarch-core`'s, a copy).
@@ -653,12 +673,20 @@ impl Zip<'_> {
         }
     }
 
-    /// `judge_run` under each reading of the signals whose target the zip does not hold; the
-    /// recorded verdict must be one of them, and the check is partial when they disagree.
+    /// `judge_run` under each reading of the signals whose target the zip does not hold (a row with
+    /// a recorded `target` has none to read); the recorded verdict must be one of them, and the
+    /// check is partial when they disagree. A row naming another signal than its step fails.
     #[allow(clippy::too_many_arguments)]
     fn judge_with_targets(&self, c: &mut Check, t: &RunTest, s: &Study, measurements: &[MeasurementRecord], rules: &Rules, recorded: &Judged, id: &str, sid: &str) -> Option<Judged> {
-        let (_, unknown) = judge_steps(t, s.study.as_ref(), s.events.as_ref(), &BTreeSet::new());
-        let unknown: Vec<String> = unknown.into_iter().collect();
+        let (_, found) = judge_steps(t, s.study.as_ref(), s.events.as_ref(), &BTreeSet::new());
+        if !found.contradicted.is_empty() {
+            c.fail(format!(
+                "test {id}: study {sid}'s events.json rows for {} name another signal than study.json's action does; the signed files contradict each other",
+                found.contradicted.join(", ")
+            ));
+            return None;
+        }
+        let unknown: Vec<String> = found.unknown.into_iter().collect();
         if unknown.len() > MAX_AMBIGUOUS_SIGNALS {
             c.partial(format!("test {id}: study {sid} has {} signals of unknown target, too many to enumerate; its run was not recomputed", unknown.len()));
             return None;
