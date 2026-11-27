@@ -315,6 +315,23 @@ pub enum Commands {
         /// has none).
         #[arg(long, conflicts_with = "safe_off")]
         clear_safe_off: bool,
+        /// What one reading of a quantity is worth, as a JSON object:
+        /// {"quantity","unit","resolution","U","k","basis","range":{"min","max"}}.
+        /// Repeat the flag for several. Left out, the stored list is kept;
+        /// `--clear-metrology` drops it.
+        #[arg(long)]
+        metrology: Vec<String>,
+        /// Clear the stored metrology (with no --metrology).
+        #[arg(long, conflicts_with = "metrology")]
+        clear_metrology: bool,
+        /// The calibration, as a JSON object: {"serial","certificate_ref",
+        /// "due":"yyyy-mm-dd","certificate":"<file path>"}. Only the file's
+        /// SHA-256 is sent. Left out, the stored one is kept.
+        #[arg(long)]
+        calibration: Option<String>,
+        /// Clear the stored calibration (with no --calibration).
+        #[arg(long, conflicts_with = "calibration")]
+        clear_calibration: bool,
     },
     /// List the declared bench instruments.
     ListInstruments,

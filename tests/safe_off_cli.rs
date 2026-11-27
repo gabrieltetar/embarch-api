@@ -56,7 +56,9 @@ fn instrument_args<'a>(extra: &[&'a str]) -> Vec<&'a str> {
 
 async fn declare_instrument(extra: &[&str]) -> (std::process::Output, Vec<RecordedRequest>) {
     let stored: Value = serde_json::from_str(STORED_INSTRUMENT).unwrap();
-    run("/instruments", !extra.contains(&"--safe-off") && !extra.contains(&"--clear-safe-off"), json!([stored.clone()]), Behavior::json_ok(stored), &instrument_args(extra)).await
+    let gave = |names: &[&str]| names.iter().any(|n| extra.contains(n));
+    let reads = !(gave(&["--safe-off", "--clear-safe-off"]) && gave(&["--metrology", "--clear-metrology"]) && gave(&["--calibration", "--clear-calibration"]));
+    run("/instruments", reads, json!([stored.clone()]), Behavior::json_ok(stored), &instrument_args(extra)).await
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -75,9 +77,9 @@ async fn a_redeclare_without_safe_off_keeps_the_stored_one() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn clear_safe_off_drops_the_stored_one_and_reads_nothing() {
-    let (out, reqs) = declare_instrument(&["--clear-safe-off"]).await;
+    let (out, reqs) = declare_instrument(&["--clear-safe-off", "--clear-metrology", "--clear-calibration"]).await;
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert!(reqs.iter().all(|r| r.method != "GET"), "a clear needs no read: {reqs:?}");
+    assert!(reqs.iter().all(|r| r.method != "GET"), "a clear of all three needs no read: {reqs:?}");
     assert!(body_of(&reqs, "PUT").get("safe_off").is_none());
 }
 

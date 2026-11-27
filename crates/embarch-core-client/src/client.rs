@@ -746,8 +746,8 @@ impl std::error::Error for TopologyMismatchError {}
 // renaming every one of them is churn that buys nothing; a `*Response` suffix
 // is also still an honest name for "the shape `GET /alerts` returns".
 pub use embarch_topology::hardware::{
-    Ack, Alert, BootloadPorts, DetectedPort, EnrolledBoard, Instrument, InstrumentProtocol,
-    Route, SignalDirection, SignalLink, UsbPortId,
+    Ack, Alert, BootloadPorts, Calibration, DetectedPort, EnrolledBoard, Instrument, InstrumentProtocol,
+    MeasuringRange, Metrology, MetrologyBasis, Route, SignalDirection, SignalLink, UsbPortId,
 };
 /// The `timeout_ms` Core uses for an instrument command when none is sent (`embarch-topology` decision 49).
 pub use embarch_topology::hardware::instrument::DEFAULT_TIMEOUT_MS as INSTRUMENT_DEFAULT_TIMEOUT_MS;

@@ -630,6 +630,31 @@ pub struct DeclareInstrumentParams {
     /// empty list clears it. A declaration without one is listed, not refused.
     #[serde(default)]
     pub safe_off: Option<Vec<String>>,
+    /// What one reading of each quantity the instrument measures is worth:
+    /// quantity, unit, resolution, U (expanded uncertainty), k, basis
+    /// ("datasheet", "certificate" or "declared") and range {min, max}. Omitted,
+    /// the stored list is kept; [] clears it.
+    #[serde(default)]
+    pub metrology: Option<Vec<crate::instrument::MetrologyArg>>,
+    /// The instrument's calibration: serial, certificate_ref, due (yyyy-mm-dd)
+    /// and certificate, the path of the certificate file, of which only the
+    /// SHA-256 is sent. Omitted, the stored one is kept.
+    #[serde(default)]
+    pub calibration: Option<crate::instrument::CalibrationArg>,
+    /// Drop the stored calibration (with no calibration given).
+    #[serde(default)]
+    pub clear_calibration: Option<bool>,
+}
+
+/// The metrology and calibration a `declare_instrument` call carries, in
+/// topology's types, the certificate file hashed; shared with nothing the CLI
+/// parses differently (decision 138).
+fn declared_blocks(
+    p: &DeclareInstrumentParams,
+) -> Result<(Option<Vec<embarch_core_client::Metrology>>, Option<embarch_core_client::Calibration>), String> {
+    let metrology = p.metrology.as_deref().map(crate::instrument::metrology_from).transpose()?;
+    let calibration = p.calibration.as_ref().map(crate::instrument::calibration_from).transpose()?;
+    Ok((metrology, calibration))
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1829,8 +1854,12 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Declare a bench instrument Core drives over a USB serial line — an electronic load, a lab supply — via embarch-core's PUT /instruments (embarch-api decision 97, embarch-topology decision 49), or replace the one of the same name. port is VID:PID[:SERIAL] in hex; declared, never detected, so check list_serial_ports first. preset \"et54\" fills an ET54-series load's measured line facts; otherwise give baud, and terminators default to LF out and CR LF back. Declare ack_ok when the instrument acknowledges a set: every set is then checked and an unacknowledged one fails. Core refuses a second instrument one port could match together with the first: declare serials or interfaces that differ. safe_off is the list of commands, one per line, that switch the output off; Core sends them at a study's start and at a graceful stop, and a declaration without one is listed, not refused. Omit safe_off on a re-declare and the stored one is kept (PUT replaces by name); pass [] to clear it. Touches no hardware.")]
+    #[tool(description = "Declare a bench instrument Core drives over a USB serial line — an electronic load, a lab supply — via embarch-core's PUT /instruments (embarch-api decision 97, embarch-topology decision 49), or replace the one of the same name. port is VID:PID[:SERIAL] in hex; declared, never detected, so check list_serial_ports first. preset \"et54\" fills an ET54-series load's measured line facts; otherwise give baud, and terminators default to LF out and CR LF back. Declare ack_ok when the instrument acknowledges a set: every set is then checked and an unacknowledged one fails. Core refuses a second instrument one port could match together with the first: declare serials or interfaces that differ. safe_off is the list of commands, one per line, that switch the output off; Core sends them at a study's start and at a graceful stop, and a declaration without one is listed, not refused. Omit safe_off on a re-declare and the stored one is kept (PUT replaces by name); pass [] to clear it. metrology and calibration say what a reading is worth (embarch-api decision 138): U (expanded uncertainty, with its coverage factor k) and resolution decide whether a Test's limit can be judged at all; a calibration past its due date makes a verdict inconclusive; basis \"declared\" is the person's own number, and on a Core that is not attested a value you declare reads \"declared by the agent\", so declare only what a datasheet or certificate gives you. A calibration's certificate is a file path: only its SHA-256 is sent. A malformed due date, a negative U or resolution, or a range whose min is not below its max is refused before Core is called. Omit metrology or calibration on a re-declare and the stored ones are kept; metrology [] or clear_calibration drops them. Touches no hardware.")]
     async fn declare_instrument(&self, Parameters(p): Parameters<DeclareInstrumentParams>) -> Result<CallToolResult, McpError> {
+        let (metrology, calibration) = match declared_blocks(&p) {
+            Ok(b) => b,
+            Err(e) => return Self::err_text(e),
+        };
         let args = crate::instrument::DeclareArgs {
             name: &p.name,
             port: &p.port,
@@ -1843,6 +1872,9 @@ impl EmbarchApi {
             ack_ok: p.ack_ok.as_deref(),
             ack_err: p.ack_err.as_deref(),
             safe_off: p.safe_off.as_deref(),
+            metrology: metrology.as_deref(),
+            calibration: calibration.as_ref(),
+            clear_calibration: p.clear_calibration.unwrap_or(false),
         };
         let mut inst = match crate::instrument::build(&args) {
             Ok(i) => i,
@@ -3238,5 +3270,63 @@ mod signal_tests {
         );
         assert!(link("via-dev-bench", Some(2)).unwrap_err().contains("interface"));
         assert!(link("via-dev-bench", None).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod declare_instrument_tests {
+    use super::*;
+
+    fn params(extra: serde_json::Value) -> DeclareInstrumentParams {
+        let mut v = serde_json::json!({"name": "dmm", "port": "1a86:7523", "baud": 9600});
+        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(v).unwrap()
+    }
+
+    fn declaration(p: &DeclareInstrumentParams) -> Result<serde_json::Value, String> {
+        let (metrology, calibration) = declared_blocks(p)?;
+        let args = crate::instrument::DeclareArgs {
+            name: &p.name,
+            port: &p.port,
+            baud: p.baud,
+            metrology: metrology.as_deref(),
+            calibration: calibration.as_ref(),
+            ..Default::default()
+        };
+        crate::instrument::build(&args).map(|i| serde_json::to_value(i).unwrap())
+    }
+
+    const CURRENT: &str = r#"{"quantity":"current","unit":"A","resolution":0.0001,"U":0.002,"k":2.0,"basis":"declared","range":{"min":0.0,"max":5.0}}"#;
+
+    #[test]
+    fn the_tool_sends_the_blocks_as_given() {
+        let m: serde_json::Value = serde_json::from_str(CURRENT).unwrap();
+        let cal = serde_json::json!({"serial": "S1", "certificate_ref": "C-1", "due": "2027-02-28"});
+        let v = declaration(&params(serde_json::json!({"metrology": [m.clone()], "calibration": cal.clone()}))).unwrap();
+        assert_eq!(v["metrology"], serde_json::json!([m]));
+        assert_eq!(v["calibration"], cal);
+    }
+
+    #[test]
+    fn a_certificate_file_is_sent_as_its_sha256() {
+        let path = std::env::temp_dir().join(format!("emb205-cert-{}.pdf", std::process::id()));
+        std::fs::write(&path, b"abc").unwrap();
+        let cal = serde_json::json!({"serial": "S1", "certificate_ref": "C-1", "due": "2027-02-28", "certificate": path});
+        let v = declaration(&params(serde_json::json!({"calibration": cal}))).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(v["calibration"]["certificate_sha256"], "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    }
+
+    #[test]
+    fn a_malformed_date_a_negative_u_and_an_inverted_range_are_refused() {
+        let m = |from: &str, to: &str| -> serde_json::Value { serde_json::from_str(&CURRENT.replace(from, to)).unwrap() };
+        let bad_date = serde_json::json!({"calibration": {"serial": "S", "certificate_ref": "C", "due": "28/02/2027"}});
+        assert!(declaration(&params(bad_date)).unwrap_err().contains("due"));
+        let neg_u = serde_json::json!({"metrology": [m("0.002", "-0.002")]});
+        assert!(declaration(&params(neg_u)).unwrap_err().contains('U'));
+        let inverted = serde_json::json!({"metrology": [m(r#""min":0.0,"max":5.0"#, r#""min":9.0,"max":5.0"#)]});
+        assert!(declaration(&params(inverted)).unwrap_err().contains("range"));
+        let basis = serde_json::json!({"metrology": [m("declared", "guess")]});
+        assert!(declaration(&params(basis)).unwrap_err().contains("basis"));
     }
 }

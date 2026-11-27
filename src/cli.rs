@@ -242,7 +242,31 @@ async fn run_command(command: Commands, json: bool, config: Arc<Config>, core: C
             ack_err,
             safe_off,
             clear_safe_off,
+            metrology,
+            clear_metrology,
+            calibration,
+            clear_calibration,
         } => {
+            let parsed = (|| -> Result<_, String> {
+                let rows = metrology
+                    .iter()
+                    .map(|j| serde_json::from_str::<crate::instrument::MetrologyArg>(j).map_err(|e| format!("--metrology is not a metrology object: {e}")))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let m = if rows.is_empty() && !clear_metrology { None } else { Some(crate::instrument::metrology_from(&rows)?) };
+                let c = calibration
+                    .as_deref()
+                    .map(|j| {
+                        let a: crate::instrument::CalibrationArg =
+                            serde_json::from_str(j).map_err(|e| format!("--calibration is not a calibration object: {e}"))?;
+                        crate::instrument::calibration_from(&a)
+                    })
+                    .transpose()?;
+                Ok((m, c))
+            })();
+            let (metrology, calibration) = match parsed {
+                Ok(v) => v,
+                Err(e) => return error_result(json, e),
+            };
             let no_lines: [String; 0] = [];
             let safe_off = if clear_safe_off {
                 Some(&no_lines[..])
@@ -263,6 +287,9 @@ async fn run_command(command: Commands, json: bool, config: Arc<Config>, core: C
                 ack_ok: ack_ok.as_deref(),
                 ack_err: ack_err.as_deref(),
                 safe_off,
+                metrology: metrology.as_deref(),
+                calibration: calibration.as_ref(),
+                clear_calibration,
             };
             declare_instrument(&core, &args, json).await
         }

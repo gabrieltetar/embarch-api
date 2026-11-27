@@ -3,7 +3,10 @@
 //! (decision 97). Core does the talking (`embarch-core` decision 104); the
 //! declaration's shape is `embarch-topology` decision 49's.
 
-use embarch_core_client::{Instrument, InstrumentProtocol, UsbPortId};
+use embarch_core_client::{
+    Calibration, Instrument, InstrumentProtocol, MeasuringRange, Metrology, MetrologyBasis, UsbPortId,
+};
+use serde::Deserialize;
 
 /// What a declaration is built from: every field optional except the name
 /// and the port, so a preset can fill the rest and an explicit value wins.
@@ -23,6 +26,93 @@ pub struct DeclareArgs<'a> {
     /// what Core already stores under the name ([`carry_stored_safe_off`]);
     /// `Some(&[])` clears it.
     pub safe_off: Option<&'a [String]>,
+    /// What each quantity's reading is worth. `None` keeps what Core already
+    /// stores under the name; `Some(&[])` clears it (decision 138).
+    pub metrology: Option<&'a [Metrology]>,
+    /// The calibration. `None` keeps the stored one; `clear_calibration`
+    /// drops it.
+    pub calibration: Option<&'a Calibration>,
+    pub clear_calibration: bool,
+}
+
+/// One metrology entry as a caller writes it: `embarch-topology`'s
+/// `Metrology` field for field (`U` upper-case, `basis` a word), so the JSON
+/// of the tool and of the subcommand is the one Core stores.
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MetrologyArg {
+    /// What it measures, e.g. "current".
+    pub quantity: String,
+    pub unit: String,
+    /// The smallest step a reading resolves, in `unit`; zero or more.
+    pub resolution: f64,
+    /// Expanded uncertainty of one reading, in `unit`; zero or more.
+    #[serde(rename = "U")]
+    #[schemars(rename = "U")]
+    pub u: f64,
+    /// Coverage factor of `U`; above zero.
+    pub k: f64,
+    /// "datasheet", "certificate" or "declared".
+    pub basis: String,
+    /// The span it holds over, in `unit`; `min` below `max`.
+    pub range: RangeArg,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RangeArg {
+    pub min: f64,
+    pub max: f64,
+}
+
+/// A calibration as a caller writes it. `certificate` is a path to the
+/// certificate file: only its SHA-256 is sent, the file stays with the person.
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CalibrationArg {
+    /// The serial the certificate names; Core checks it against `*IDN?`.
+    pub serial: String,
+    pub certificate_ref: String,
+    /// The date the calibration runs out, yyyy-mm-dd.
+    pub due: String,
+    /// Path of the certificate file, hashed here.
+    pub certificate: Option<String>,
+}
+
+/// The topology entries `args` describe; a bad basis is refused by name.
+pub fn metrology_from(args: &[MetrologyArg]) -> Result<Vec<Metrology>, String> {
+    args.iter()
+        .map(|m| {
+            let basis = match m.basis.to_ascii_lowercase().as_str() {
+                "datasheet" => MetrologyBasis::Datasheet,
+                "certificate" => MetrologyBasis::Certificate,
+                "declared" => MetrologyBasis::Declared,
+                other => return Err(format!("metrology `{}`: basis `{other}` is not one of datasheet, certificate, declared", m.quantity)),
+            };
+            Ok(Metrology {
+                quantity: m.quantity.clone(),
+                unit: m.unit.clone(),
+                resolution: m.resolution,
+                u_expanded: m.u,
+                k: m.k,
+                basis,
+                range: MeasuringRange { min: m.range.min, max: m.range.max },
+            })
+        })
+        .collect()
+}
+
+/// The calibration `arg` describes, its certificate file read and hashed.
+pub fn calibration_from(arg: &CalibrationArg) -> Result<Calibration, String> {
+    use sha2::{Digest, Sha256};
+    let certificate_sha256 = match &arg.certificate {
+        Some(path) => {
+            let bytes = std::fs::read(path).map_err(|e| format!("could not read the certificate file `{path}`: {e}"))?;
+            Some(Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect::<String>())
+        }
+        None => None,
+    };
+    Ok(Calibration { serial: arg.serial.clone(), certificate_ref: arg.certificate_ref.clone(), due: arg.due.clone(), certificate_sha256 })
 }
 
 /// The presets this crate knows, by name. Each is a set of line facts seen on
@@ -94,21 +184,22 @@ pub fn build(args: &DeclareArgs<'_>) -> Result<Instrument, String> {
         ack_ok: args.ack_ok.map(str::to_string).or(p.as_ref().map(|p| p.ack_ok.to_string())),
         ack_err: args.ack_err.map(str::to_string).or(p.as_ref().map(|p| p.ack_err.to_string())),
         safe_off: args.safe_off.map(<[String]>::to_vec).unwrap_or_default(),
-        metrology: Vec::new(),
-        calibration: None,
+        metrology: args.metrology.map(<[Metrology]>::to_vec).unwrap_or_default(),
+        calibration: args.calibration.cloned(),
     };
     inst.check()?;
     Ok(inst)
 }
 
 /// `PUT /instruments` replaces an instrument by name, so a declaration that
-/// leaves `safe_off` out would drop one declared by another path (decision
-/// 97). When the caller gave none (`args.safe_off` is `None`), copy the
-/// stored instrument's into `inst`; an explicit list, empty included, is
-/// sent as given. A stored value that cannot be read is an error, never a
+/// leaves `safe_off`, `metrology` or `calibration` out would drop one
+/// declared by another path (decisions 97, 138). For each the caller did not
+/// give, copy the stored instrument's into `inst`; an explicit value, an empty
+/// list included, is sent as given. A stored value that cannot be read is an error, never a
 /// silent drop.
 pub async fn carry_stored_safe_off(core: &embarch_core_client::CoreClient, inst: &mut Instrument, args: &DeclareArgs<'_>) -> Result<(), String> {
-    if args.safe_off.is_some() {
+    let keeps_calibration = args.calibration.is_none() && !args.clear_calibration;
+    if args.safe_off.is_some() && args.metrology.is_some() && !keeps_calibration {
         return Ok(());
     }
     let stored = core
@@ -116,7 +207,15 @@ pub async fn carry_stored_safe_off(core: &embarch_core_client::CoreClient, inst:
         .await
         .map_err(|e| format!("could not read the stored `{}` to carry its safe_off over the re-declare (pass safe_off, empty to clear): {e:#}", inst.name))?;
     if let Some(old) = stored.into_iter().find(|i| i.name == inst.name) {
-        inst.safe_off = old.safe_off;
+        if args.safe_off.is_none() {
+            inst.safe_off = old.safe_off;
+        }
+        if args.metrology.is_none() {
+            inst.metrology = old.metrology;
+        }
+        if keeps_calibration {
+            inst.calibration = old.calibration;
+        }
     }
     Ok(())
 }
