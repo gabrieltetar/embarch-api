@@ -3884,6 +3884,18 @@ impl CoreClient {
         self.send(self.client.post(url).json(&body), self.status_timeout).await
     }
 
+    /// `POST /test-runs/{run_id}/resume` with `{run_id: new_run_id}` (`embarch-core` decision
+    /// 153): prepares a new run of what the interrupted run `run_id` left pending and starts
+    /// nothing. `201 {run_id, run_hash, resumes, lease_holder, duration_bound_ms, pending,
+    /// kept}`; a refusal (`404`, `409` for a run not interrupted, already resumed, with nothing
+    /// pending or an id in use, `400`) comes back as `embarch-core returned {status}: {body}`.
+    /// Either token may call it; the new run's go is the person's, as any run's.
+    pub async fn resume_test_run(&self, run_id: &str, new_run_id: &str) -> Result<serde_json::Value> {
+        let url = format!("{}/test-runs/{}/resume", self.base_url().await?, urlencode(run_id));
+        let body = serde_json::json!({ "run_id": new_run_id });
+        self.send(self.client.post(url).json(&body), self.status_timeout).await
+    }
+
     /// `GET /signals` — every declared signal link.
     ///
     /// An empty list is the normal starting state, not a failure: nothing has

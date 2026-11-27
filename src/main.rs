@@ -533,6 +533,16 @@ pub enum Commands {
         #[arg(long, default_value = "desk")]
         project: String,
     },
+    /// Prepare a new Test run of what an interrupted run left pending
+    /// (embarch-api decision 148, embarch-core decision 153) and show its
+    /// card. Nothing is started: the new run has its own go.
+    ResumeTest {
+        /// The interrupted run to resume.
+        run_id: String,
+        /// The id the new run takes; a fresh one when omitted.
+        #[arg(long)]
+        new_run_id: Option<String>,
+    },
     /// A Test run's state, current bench and test, verdicts so far and any
     /// waiting prompt (embarch-core decision 136).
     TestStatus {

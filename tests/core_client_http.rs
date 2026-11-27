@@ -191,6 +191,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.test_publish("run-1", &[]).await;
     let _ = client.test_publish_file("run-1", 1, "run.json").await;
     let _ = client.test_run_go("run-1", "hash-1", "nonce-1").await;
+    let _ = client.resume_test_run("run-1", "run-2").await;
     let _ = client.declare_unit("DUT-1", "SN7", "B").await;
     let _ = client.declare_person("Ada").await;
     let _ = client.run_log().await;
@@ -330,6 +331,7 @@ async fn every_outbound_call_carries_the_bearer_token() {
         ("GET", "/test-runs/run-1"),
         ("GET", "/test-runs/run-1/card"),
         ("POST", "/test-runs/run-1/go"),
+        ("POST", "/test-runs/run-1/resume"),
         ("PUT", "/units/DUT-1"),
         ("PUT", "/person"),
         ("GET", "/run-log"),

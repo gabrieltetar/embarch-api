@@ -194,7 +194,13 @@ pub async fn prepare(repo: &Path, core: &CoreClient, a: RunTestArgs<'_>) -> Repo
         Err(e) => return failed(format!("run_test: Core did not prepare the run: {e:#}")),
     };
     let run_id = prepared["run_id"].as_str().unwrap_or(&expansion.run.run_id).to_string();
-    let card = core.test_run_card(&run_id).await;
+    shown(core, &run_id, &prepared, &not_run, json!({})).await
+}
+
+/// Reads the card of a run Core just prepared and answers with it: the one path a fresh run and
+/// a resume share, so neither can start the run or surface a nonce. `extra` is merged into the answer.
+async fn shown(core: &CoreClient, run_id: &str, prepared: &Value, not_run: &[Value], extra: Value) -> Report {
+    let card = core.test_run_card(run_id).await;
     let (card_value, card_note) = match card {
         Ok(mut v) => {
             // The agent has no use for a nonce and the go is not its to give.
@@ -206,22 +212,45 @@ pub async fn prepare(repo: &Path, core: &CoreClient, a: RunTestArgs<'_>) -> Repo
         }
         Err(e) => (Value::Null, Some(format!("the run is prepared but its card could not be read: {e:#}"))),
     };
-    let human = render(&run_id, &prepared, &card_value, card_note.as_deref(), &not_run);
-    Report {
-        success: true,
-        value: json!({
-            "success": true,
-            "run_id": run_id,
-            "run_hash": prepared["run_hash"],
-            "duration_bound_ms": prepared["duration_bound_ms"],
-            "lease_holder": prepared["lease_holder"],
-            "started": false,
-            "card": card_value,
-            "not_run": not_run,
-            "message": GO_MESSAGE,
-        }),
-        human,
+    let mut human = render(run_id, prepared, &card_value, card_note.as_deref(), not_run);
+    let mut value = json!({
+        "success": true,
+        "run_id": run_id,
+        "run_hash": prepared["run_hash"],
+        "duration_bound_ms": prepared["duration_bound_ms"],
+        "lease_holder": prepared["lease_holder"],
+        "started": false,
+        "card": card_value,
+        "not_run": not_run,
+        "message": GO_MESSAGE,
+    });
+    if let (Some(v), Some(x)) = (value.as_object_mut(), extra.as_object()) {
+        for (k, val) in x {
+            v.insert(k.clone(), val.clone());
+        }
     }
+    if let Some(first) = extra["resumes"].as_str() {
+        human = format!("resumes {first}: pending {}, kept {}\n{human}", plain_list(&extra["pending"]), plain_list(&extra["kept"]));
+    }
+    Report { success: true, value, human }
+}
+
+fn plain_list(v: &Value) -> String {
+    v.as_array().map(|a| a.iter().map(plain).collect::<Vec<_>>().join(", ")).unwrap_or_default()
+}
+
+/// `resume_test`: asks Core to prepare a new run of what an interrupted run left pending
+/// (`POST /test-runs/{id}/resume`, embarch-core decision 153) and shows its card. Never starts
+/// it, and a refusal is Core's words, passed on once, never retried or reworded.
+pub async fn resume(core: &CoreClient, interrupted: &str, new_run_id: Option<&str>) -> Report {
+    let new_id = new_run_id.filter(|s| !s.is_empty()).map(str::to_string).unwrap_or_else(fresh_run_id);
+    let prepared = match core.resume_test_run(interrupted, &new_id).await {
+        Ok(v) => v,
+        Err(e) => return failed(format!("resume_test: {e:#}")),
+    };
+    let run_id = prepared["run_id"].as_str().unwrap_or(&new_id).to_string();
+    let extra = json!({ "resumes": prepared["resumes"], "pending": prepared["pending"], "kept": prepared["kept"] });
+    shown(core, &run_id, &prepared, &[], extra).await
 }
 
 const GO_MESSAGE: &str =

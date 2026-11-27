@@ -224,6 +224,10 @@ async fn run_command(command: Commands, json: bool, config: Arc<Config>, core: C
             .await;
             finish(json, report.success, report.value, report.human)
         }
+        Commands::ResumeTest { run_id, new_run_id } => {
+            let report = crate::hil_run::resume(&core, &run_id, new_run_id.as_deref()).await;
+            finish(json, report.success, report.value, report.human)
+        }
         Commands::TestStatus { run_id, studies } => {
             let report = crate::hil_run::status(&core, &run_id, studies).await;
             finish(json, report.success, report.value, report.human)
@@ -3087,7 +3091,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 72,
+            arms, 73,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."

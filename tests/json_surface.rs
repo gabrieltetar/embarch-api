@@ -63,6 +63,7 @@ const EVERY_SUBCOMMAND: &[&[&str]] = &[
     &["cancel-study", "no-such-study"],
     &["run-test", "--suite", "s", "--project", "no-such-project"],
     &["test-status", "no-such-run"],
+    &["resume-test", "no-such-run"],
     &["publish", "no-such-run"],
     &["test-add", "some-test", "pass", "--reason", "r", "--unit-key", "u", "--project", "no-such-project"],
     &["test-show", "--project", "no-such-project"],

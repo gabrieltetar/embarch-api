@@ -224,6 +224,70 @@ async fn test_status_gives_bench_test_verdicts_and_a_waiting_prompt_with_the_rel
     assert_eq!(v["run"]["prompt_relay"]["relayable"], false);
 }
 
+fn resume_core(resume: Behavior) -> Behavior {
+    Behavior::Router {
+        routes: vec![
+            ("/run-2/card".into(), reply(200, card())),
+            ("/run-1/resume".into(), resume),
+        ],
+        otherwise: Box::new(reply(404, json!("no"))),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resume_test_prepares_the_rest_names_the_first_run_and_never_starts_it() {
+    let prepared = json!({
+        "run_id": "run-2", "run_hash": "cd".repeat(32), "resumes": "run-1", "lease_holder": null,
+        "duration_bound_ms": 30000, "pending": ["t2"], "kept": ["t1"],
+    });
+    let mock = MockCore::start(resume_core(reply(201, prepared))).await;
+    let rig = Rig::new(&mock);
+    let (ok, v) = rig.run(&["resume-test", "run-1", "--new-run-id", "run-2"]);
+    assert!(ok, "{v}");
+    assert_eq!((v["run_id"].as_str(), v["resumes"].as_str()), (Some("run-2"), Some("run-1")));
+    assert_eq!((v["pending"].clone(), v["kept"].clone()), (json!(["t2"]), json!(["t1"])));
+    assert_eq!(v["started"], false);
+    assert_eq!(v["duration_bound_ms"], 30000);
+    assert!(v["card"].get("nonce").is_none(), "no nonce reaches the agent: {v}");
+    assert!(v["message"].as_str().unwrap().contains("not started"), "{v}");
+    let reqs = mock.requests();
+    let sent = find(&reqs, "POST", "/test-runs/run-1/resume");
+    assert_eq!(serde_json::from_slice::<Value>(&sent.body).unwrap(), json!({ "run_id": "run-2" }));
+    assert!(reqs.iter().all(|r| !r.path().ends_with("/go")), "{reqs:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resume_test_without_an_id_sends_a_fresh_one() {
+    let prepared = json!({ "run_id": "run-2", "run_hash": "cd".repeat(32), "resumes": "run-1", "lease_holder": null, "duration_bound_ms": 1, "pending": ["t2"], "kept": [] });
+    let mock = MockCore::start(resume_core(reply(201, prepared))).await;
+    let rig = Rig::new(&mock);
+    let (ok, v) = rig.run(&["resume-test", "run-1"]);
+    assert!(ok, "{v}");
+    let reqs = mock.requests();
+    let sent: Value = serde_json::from_slice(&find(&reqs, "POST", "/test-runs/run-1/resume").body).unwrap();
+    assert!(sent["run_id"].as_str().unwrap().starts_with("run-"), "{sent}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_resume_reaches_the_caller_as_core_said_it_and_is_sent_once() {
+    for (status, said) in [
+        (409, "run run-1 is completed, not interrupted: only an interrupted run is resumed"),
+        (409, "run run-1 was already resumed by run-9: a run is resumed once"),
+        (409, "run run-1 has nothing pending: every test finished before the restart"),
+        (404, "Core has no prepared run run-1"),
+    ] {
+        let mock = MockCore::start(resume_core(reply(status, json!(said)))).await;
+        let rig = Rig::new(&mock);
+        let (ok, v) = rig.run(&["resume-test", "run-1", "--new-run-id", "run-2"]);
+        assert!(!ok, "{v}");
+        let err = v["error"].as_str().unwrap();
+        assert!(err.contains(&status.to_string()) && err.contains(said), "{err}");
+        let reqs = mock.requests();
+        assert_eq!(reqs.iter().filter(|r| r.path().ends_with("/resume")).count(), 1, "never retried: {reqs:?}");
+        assert!(reqs.iter().all(|r| !r.path().ends_with("/card") && !r.path().ends_with("/go")), "{reqs:?}");
+    }
+}
+
 /// The go takes the person's token (core decision 135); nothing in the agent's surfaces may
 /// name its route or the client's `test_run_go`. The client crate carries that method for the UI.
 #[test]
