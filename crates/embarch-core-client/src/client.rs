@@ -98,10 +98,14 @@ pub struct ProbeInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "StatusWire")]
 pub struct StatusResponse {
     pub status: String,
     pub probes: Vec<ProbeInfo>,
-    /// The **host type** schema version Core was built against
+    /// The **host type** schema version Core was built against, read from
+    /// `host_type_schema_version` and, failing that, the older
+    /// `study_designer_schema_version` (embarch-api decision 58; see
+    /// [`StatusWire`])
     /// (`embarch-study-designer` decision 12 and its
     /// 2026-08-25 amendment) — the number that guards this hop, which
     /// carries `Study`/`StudyResult` whole rather than the dev-bench subset.
@@ -110,8 +114,7 @@ pub struct StatusResponse {
     /// what lets [`CoreClient::post_study`] report the drift by name instead
     /// of failing as an opaque JSON decode error. `None` is not treated as
     /// "compatible" — see that method.
-    #[serde(default)]
-    pub study_designer_schema_version: Option<u32>,
+    pub host_type_schema_version: Option<u32>,
     /// The live bench lease without its token, `None` when none is live or
     /// Core predates the lease (embarch-core decision 93).
     #[serde(default)]
@@ -131,6 +134,42 @@ pub struct StatusResponse {
     /// `None` for a Core predating it.
     #[serde(default)]
     pub keyid: Option<String>,
+}
+
+/// `GET /status`'s body as Core serves it, before [`StatusResponse`] folds the
+/// two spellings of the host-type schema version into one field. A Core that
+/// has both serves both keys, so `#[serde(alias)]` on one field would fail
+/// that body as a duplicate field; two fields cannot.
+#[derive(Deserialize)]
+struct StatusWire {
+    status: String,
+    probes: Vec<ProbeInfo>,
+    #[serde(default)]
+    host_type_schema_version: Option<u32>,
+    #[serde(default)]
+    study_designer_schema_version: Option<u32>,
+    #[serde(default)]
+    lease: Option<LeaseView>,
+    #[serde(default)]
+    last_images: Option<Vec<FlashedImage>>,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    keyid: Option<String>,
+}
+
+impl From<StatusWire> for StatusResponse {
+    fn from(w: StatusWire) -> Self {
+        StatusResponse {
+            status: w.status,
+            probes: w.probes,
+            host_type_schema_version: w.host_type_schema_version.or(w.study_designer_schema_version),
+            lease: w.lease,
+            last_images: w.last_images,
+            mode: w.mode,
+            keyid: w.keyid,
+        }
+    }
 }
 
 /// Environment variable `dispatch` reads on every request for a lease token
@@ -595,7 +634,7 @@ pub struct ValidateResponse {
     /// still parses, rather than every `validate` call failing at
     /// deserialization (`embarch-api` decision 58 — the crate's rule, not
     /// this field's exception; see `link_port_interface` and
-    /// `study_designer_schema_version` for the same shape). `None` must never
+    /// `host_type_schema_version` for the same shape). `None` must never
     /// be presented as "validated at 1970" — a fabricated timestamp is worse
     /// than the parse error it replaces.
     #[serde(default)]
@@ -3349,7 +3388,7 @@ impl CoreClient {
         run: &StudyRunOptions,
         build: &BuildClaims,
     ) -> Result<PostStudyResponse> {
-        let core_version = self.status().await?.study_designer_schema_version;
+        let core_version = self.status().await?.host_type_schema_version;
         if core_version != Some(embarch_study_designer::HOST_TYPE_SCHEMA_VERSION) {
             return Err(anyhow::Error::new(SchemaVersionMismatch {
                 api_version: embarch_study_designer::HOST_TYPE_SCHEMA_VERSION,
@@ -3455,7 +3494,7 @@ impl CoreClient {
         study: &embarch_study_designer::HostStudy,
         build: &BuildClaims,
     ) -> Result<PostStudyResponse> {
-        let core_version = self.status().await?.study_designer_schema_version;
+        let core_version = self.status().await?.host_type_schema_version;
         if core_version != Some(embarch_study_designer::HOST_TYPE_SCHEMA_VERSION) {
             return Err(anyhow::Error::new(SchemaVersionMismatch {
                 api_version: embarch_study_designer::HOST_TYPE_SCHEMA_VERSION,
@@ -4337,6 +4376,24 @@ impl CoreClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn status_reads_the_host_type_schema_version_from_either_key_or_both() {
+        let parse = |extra: &str| -> StatusResponse {
+            serde_json::from_str(&format!(r#"{{"status":"ok","probes":[]{extra}}}"#)).unwrap()
+        };
+        let old = parse(r#","study_designer_schema_version":17"#);
+        let new = parse(r#","host_type_schema_version":17"#);
+        let both = parse(r#","host_type_schema_version":17,"study_designer_schema_version":17"#);
+        let neither = parse("");
+        assert_eq!(old.host_type_schema_version, Some(17));
+        assert_eq!(new.host_type_schema_version, Some(17));
+        assert_eq!(both.host_type_schema_version, Some(17));
+        assert_eq!(neither.host_type_schema_version, None);
+        // The new key wins if a Core ever serves two different numbers.
+        let split = parse(r#","host_type_schema_version":18,"study_designer_schema_version":17"#);
+        assert_eq!(split.host_type_schema_version, Some(18));
+    }
+
     #[test]
     fn status_parses_cores_mode_and_keyid_and_a_body_with_neither() {
         let new: StatusResponse = serde_json::from_str(r#"{"status":"ok","probes":[],"mode":"development","keyid":"abc123"}"#).unwrap();
