@@ -50,14 +50,16 @@ use crate::client::PendingPrompt;
 use crate::client::{CoreClient, UnknownStudyError};
 use crate::sse::{SseDecoder, SseFrame};
 
-/// Core's own `StudyEvent` (`embarch-core/src/study.rs`), deserialize side.
+/// What a consumer matches on: Core's `StudyEvent`, read leniently.
 ///
-/// A mirror rather than a shared type because Core's copy lives in Core's
-/// binary crate and is `Serialize`-only; lifting it into
-/// `embarch-study-designer` would be a cross-repo wire change, which is not
-/// a single sub-project's to make. The cost of the mirror is that a variant
-/// added to Core and not here is not decoded — which is exactly why an
-/// unknown `kind` is [`StudyStreamItem::Unrecognized`] and not an error.
+/// Core's definition is `embarch_core_wire::StudyEvent` (`embarch-core`
+/// decision 164), strict: every stamp required, `PromptPending` carrying a
+/// nested prompt, `answered_by` an enum. This client type stays, because the
+/// consumers (`embarch-ui`, `embarch-api`'s CLI) match its flat fields and
+/// `Option` stamps, and an older Core that predates a stamp must still decode
+/// (`embarch-api` decision 49). A test holds it to the shared type: every
+/// line Core's type writes reads into this one and writes back unchanged. A
+/// variant Core adds and this lacks is [`StudyStreamItem::Unrecognized`].
 /// `Serialize` as well as `Deserialize` so a consumer can hand an event
 /// straight back out — the CLI's `--json` line and the MCP tool's event
 /// array both re-emit Core's own shape verbatim rather than a lossy
@@ -896,5 +898,50 @@ impl CoreClient {
             };
             tokio::time::sleep(wait).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StudyEvent;
+    use embarch_core_wire::StudyEvent as WireEvent;
+
+    // Core's own wire lines, one per variant (the pins in `embarch-core-wire`'s
+    // `study_event.rs`). The client's `StudyEvent` stays lenient (decision 49), so
+    // it is held to the shared type here: every line Core's type writes must
+    // read into this one and write back the same JSON.
+    const WIRE_LINES: &[(&str, &str)] = &[
+        ("StepCompleted", r#"{"kind":"StepCompleted","study_id":"s1","step_index":2,"result":{"step_name":"a","outcome":"Pass","captured_data":null,"gatt_services":null,"security_level":null,"protocol":null},"started_utc_ms":10,"ended_utc_ms":20,"delay_before_ms":5}"#),
+        ("SampleBatch", r#"{"kind":"SampleBatch","study_id":"s1","stream_id":1,"stream_name":"rail","samples":[{"rx_utc_ms":1,"value":3.3,"unit":"Volts","channel_id":0}],"core_rx_utc_ms":99}"#),
+        ("GattTranscript", r#"{"kind":"GattTranscript","study_id":"s1","step_index":3,"entry":{"rx_utc_ms":4242,"direction":"In","kind":"Notification","service_uuid":[110,64,0,1,181,163,243,147,224,169,229,14,36,220,202,158],"characteristic_uuid":[110,64,0,3,181,163,243,147,224,169,229,14,36,220,202,158],"att_status":0,"payload":[1,2]},"core_rx_utc_ms":77}"#),
+        ("StreamText", r#"{"kind":"StreamText","study_id":"s1","stream_id":2,"stream_name":"con","step_index":1,"rx_utc_ms":5,"core_rx_utc_ms":6,"text":"hi\n"}"#),
+        ("OutpostRows", r#"{"kind":"OutpostRows","study_id":"s1","stream_id":2,"stream_name":"tr","frame_index":7,"frame_seq":8,"rx_utc_ms":9,"header_seen":false,"rows":["a,b"]}"#),
+        ("StructChartValue", r#"{"kind":"StructChartValue","study_id":"s1","stream_id":2,"stream_name":"st","field_name":"f","value":1.5,"core_rx_utc_ms":4}"#),
+        ("HostStepCompleted", r#"{"kind":"HostStepCompleted","study_id":"h1","list":"Steps","step_index":1,"result":{"step_name":"x","outcome":"Pass","reply":"ok","reply_truncated":false,"answered_by":null,"elapsed_ms":3,"iteration":null},"detail":"waited","started_utc_ms":1,"ended_utc_ms":2,"delay_before_ms":0}"#),
+        ("PromptPendingFull", r#"{"kind":"PromptPending","study_id":"h1","bench_config":"direct","deadline_utc_ms":2,"list":"Steps","observation":{"answers":["green","red"],"name":"led"},"opened_utc_ms":1,"prompt_id":4,"prompt_kind":"observation","session":{"phase":"start","run_fields":[{"label":"Serial","name":"serial","required":true}]},"step_index":2,"step_name":"ask","switched_on":[{"line":"OUTP ON","step":"on","target":"eload"}],"text":"plug in"}"#),
+        ("PromptPendingBare", r#"{"kind":"PromptPending","study_id":"h1","deadline_utc_ms":2,"list":"Teardown","opened_utc_ms":1,"prompt_id":1,"step_index":0,"step_name":"n","text":"t"}"#),
+        ("PromptResolved", r#"{"kind":"PromptResolved","study_id":"h1","prompt_id":4,"answer":"confirmed","answered_by":"mcp","resolved_utc_ms":9}"#),
+        ("PromptResolvedNone", r#"{"kind":"PromptResolved","study_id":"h1","prompt_id":4,"answer":"timed_out","answered_by":null,"resolved_utc_ms":9}"#),
+        ("StatusChanged", r#"{"kind":"StatusChanged","study_id":"s1","status":"failed","reason":"boom"}"#),
+        ("StatusChangedNone", r#"{"kind":"StatusChanged","study_id":"s1","status":"completed","reason":null}"#),
+    ];
+
+    #[test]
+    fn every_line_the_shared_event_writes_reads_into_the_client_and_writes_back_unchanged() {
+        for (name, line) in WIRE_LINES {
+            let wire: WireEvent = serde_json::from_str(line).unwrap_or_else(|e| panic!("{name}: Core's own type no longer reads its pin: {e}"));
+            let written = serde_json::to_string(&wire).unwrap();
+            let client: StudyEvent = serde_json::from_str(&written).unwrap_or_else(|e| panic!("{name}: the client cannot read what Core writes: {e}"));
+            let back: serde_json::Value = serde_json::to_value(&client).unwrap();
+            // Value to Value, so an `f32` sample reads the same on both sides.
+            assert_eq!(back, serde_json::to_value(&wire).unwrap(), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_client_stays_lenient_where_an_older_core_sent_less() {
+        let older = r#"{"kind":"SampleBatch","study_id":"s1","stream_id":1,"stream_name":"rail","samples":[]}"#;
+        assert!(serde_json::from_str::<StudyEvent>(older).is_ok());
+        assert!(serde_json::from_str::<WireEvent>(older).is_err(), "the shared type requires the stamp");
     }
 }

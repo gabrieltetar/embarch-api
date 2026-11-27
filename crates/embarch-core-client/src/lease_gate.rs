@@ -9,37 +9,11 @@
 /// while no bench lease is live. Empty or `0` is off.
 pub const REQUIRE_LEASE_ENV: &str = "EMBARCH_REQUIRE_LEASE";
 
-/// A copy of `embarch-core`'s `lease::LEASE_GATED`, compared with it by the
-/// test below whenever the sibling checkout is there. A route missing here is
-/// not refused locally, but Core still gates it while a lease is live.
-pub const LEASE_GATED: &[(&str, &str)] = &[
-    ("POST", "/flash"),
-    ("POST", "/reset"),
-    ("POST", "/bootload"),
-    ("PUT", "/bootload/ports"),
-    ("DELETE", "/bootload/ports"),
-    ("GET", "/serial-log"),
-    ("GET", "/dev-bench/hello"),
-    ("POST", "/probes/enroll"),
-    ("DELETE", "/probes/enrolled/{role}"),
-    ("PUT", "/probes/enrolled/{role}/board"),
-    ("DELETE", "/probes/by-serial/{serial}"),
-    ("POST", "/dev-bench/link"),
-    ("POST", "/signals"),
-    ("DELETE", "/signals/{name}"),
-    ("POST", "/signals/{name}/exchange"),
-    ("POST", "/signals/{name}/capture"),
-    ("DELETE", "/signals/{name}/capture"),
-    ("PUT", "/instruments"),
-    ("DELETE", "/instruments/{name}"),
-    ("POST", "/instruments/{name}/exchange"),
-    ("POST", "/live/mem-read"),
-    ("POST", "/live/core-state"),
-    ("POST", "/validate"),
-    ("POST", "/study"),
-    ("POST", "/host-studies"),
-    ("POST", "/study/{study_id}/cancel"),
-];
+/// Every route a live lease gates: `embarch-core`'s own table from
+/// `embarch-core-wire` (`embarch-core` decision 164), so a route Core gates
+/// cannot be missing here. A route missing from Core's table is a Core bug, and
+/// Core's own test requires every route to be gated or open.
+pub use embarch_core_wire::LEASE_GATED;
 
 /// Whether [`REQUIRE_LEASE_ENV`] is on in this process's environment.
 pub fn required_by_env() -> bool {
@@ -89,28 +63,5 @@ mod tests {
         assert!(!is_gated("POST", "/signals//exchange"));
         assert!(!is_gated("POST", "/signals/ppg/exchange/more"));
         assert!(!is_gated("POST", "/signals/ppg"));
-    }
-
-    /// Fails when Core's gated set moves and this copy did not. A checkout with
-    /// no `embarch-core` beside it has nothing to compare with, so it passes.
-    #[test]
-    fn the_copy_matches_embarch_core_when_the_sibling_is_there() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../embarch-core/src/lease.rs");
-        let Ok(source) = std::fs::read_to_string(path) else {
-            eprintln!("no {path}: nothing to compare the gated routes with");
-            return;
-        };
-        let start = source.find("pub const LEASE_GATED").expect("Core's lease.rs names LEASE_GATED");
-        let rest = &source[start..];
-        let table = &rest[..rest.find("\n];").expect("LEASE_GATED ends with a closing bracket")];
-        let core: Vec<(&str, &str)> = table
-            .lines()
-            .filter(|line| line.trim_start().starts_with("(\""))
-            .map(|line| {
-                let parts: Vec<&str> = line.split('"').collect();
-                (parts[1], parts[3])
-            })
-            .collect();
-        assert_eq!(core, LEASE_GATED, "update this copy of embarch-core's lease::LEASE_GATED");
     }
 }

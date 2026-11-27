@@ -1004,6 +1004,7 @@ dependencies = [
  "anyhow",
  "bytes",
  "ed25519-dalek",
+ "embarch-core-wire",
  "embarch-study-designer",
  "embarch-topology",
  "getrandom 0.4.3",
@@ -1014,6 +1015,15 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "embarch-core-wire"
+version = "0.1.0"
+dependencies = [
+ "embarch-study-designer",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

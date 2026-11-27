@@ -1079,63 +1079,11 @@ impl StudyStreamEntry {
     }
 }
 
-/// `GET /study/{id}/stream/{name}/load`'s success body (`embarch-core`
-/// decision 62) — field-for-field mirror of Core's
-/// own `outpost_load::LoadAnswer`, plus what a caller needs to judge
-/// whether the rendered CSV was read in full. See
+/// `GET /study/{id}/stream/{name}/load`'s success body and its parts
+/// (`embarch-core` decision 62): Core's own definitions from
+/// `embarch-core-wire` (`embarch-core` decision 164), not a mirror. See
 /// [`CoreClient::get_study_load`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LoadAnswer {
-    pub rows: usize,
-    /// Rows past Core's row cap — counted, never silently dropped from this
-    /// number even though they were dropped from the computation itself.
-    pub rows_dropped_by_cap: usize,
-    pub row_cap: usize,
-    /// Rows Core's parser refused outright: a line short of nine fields, or
-    /// a `frame_index` that did not parse.
-    pub rows_unparsed: usize,
-    pub summary: LoadSummary,
-}
-
-/// The whole capture's load repartition, plus the coverage line: how much
-/// of the window is in a state a reader must doubt before trusting the
-/// rest. Field-for-field mirror of Core's own `outpost_load::LoadSummary`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LoadSummary {
-    pub unit: String,
-    pub window_extent: u64,
-    pub gap_extent: u64,
-    pub gap_fraction: f64,
-    pub records_lost: u64,
-    pub has_time_base: bool,
-    pub thread_extent: u64,
-    pub idle_record_extent: u64,
-    pub isr_extent: u64,
-    pub unaccounted_extent: u64,
-    pub below_resolution_spans: usize,
-    pub subjects: Vec<LoadSubject>,
-}
-
-/// One traced subject's share of the window — a thread, the CPU's idle
-/// state, or one interrupt vector. Field-for-field mirror of Core's own
-/// `outpost_load::LoadSubject`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LoadSubject {
-    pub key: String,
-    pub label: String,
-    pub unnamed: bool,
-    pub kind: String,
-    pub entries: usize,
-    pub measured_spans: usize,
-    pub total_extent: u64,
-    pub share: f64,
-    pub excluded_spans: usize,
-    pub excluded_extent: u64,
-    pub gap_crossing_spans: usize,
-    pub open_ended_spans: usize,
-    pub open_started_spans: usize,
-    pub below_resolution_spans: usize,
-}
+pub use embarch_core_wire::{LoadAnswer, LoadSubject, LoadSummary};
 
 /// `GET /dev-bench/port`'s success body (`embarch-core` spec.md) —
 /// which serial port `embarch-dev-bench` is on right now. Every field but
@@ -4807,12 +4755,10 @@ mod tests {
         assert_eq!(serde_json::from_str::<SignalLink>(&json).unwrap(), link);
     }
 
-    /// [`HelloAckResponse`]'s half of the same mirror contract
-    /// [`SIGNAL_LINK_JSON`] documents — pinned against `embarch-core`'s own
-    /// `study::HelloAckInfo` field-for-field, `self_reported_hardware_id`,
-    /// `link_identity` and `probe_hardware_id` included. The Core-side
-    /// counterpart test that pins `HelloAckInfo` against this exact string
-    /// does not exist yet — this only pins the client's own read of it.
+    /// [`HelloAckResponse`] stays lenient (decision 49), so it is held to
+    /// `embarch-core-wire`'s `HelloAckInfo` here: what Core's type writes reads
+    /// into this one and writes back the same bytes. The string is `HelloAckInfo`'s
+    /// own pin.
     const HELLO_ACK_RESPONSE_JSON: &str = concat!(
         r#"{"schema_version":10,"compatible":true,"dev_bench_version":"g1a2b3c",""#,
         r#"self_reported_hardware_id":"AAAABBBB","link_identity":"undeclared",""#,
@@ -4828,6 +4774,14 @@ mod tests {
             link_identity: Some("undeclared".to_string()),
             probe_hardware_id: Some("BBBBAAAA".to_string()),
         }
+    }
+
+    #[test]
+    fn the_shared_hello_answer_reads_into_the_lenient_client_type() {
+        let info: embarch_core_wire::HelloAckInfo = serde_json::from_str(HELLO_ACK_RESPONSE_JSON).unwrap();
+        assert_eq!(serde_json::to_string(&info).unwrap(), HELLO_ACK_RESPONSE_JSON);
+        let ack: HelloAckResponse = serde_json::from_str(&serde_json::to_string(&info).unwrap()).unwrap();
+        assert_eq!(ack, sample_hello_ack());
     }
 
     #[test]
@@ -5113,12 +5067,9 @@ mod tests {
         assert_eq!(urlencode("a/b"), "a%2Fb");
     }
 
-    /// `LoadAnswer`'s wire shape, written out — Core's `outpost_load::LoadAnswer`
-    /// is `#[derive(Serialize)]` only, so nothing here can pin agreement by
-    /// sharing the type the way `SignalLink`/`AlertResponse` do. This is what
-    /// notices a field renamed on one side and not the other: it fails to
-    /// deserialize a realistic body rather than silently defaulting a field
-    /// away, which a JSON literal missing a key would do instead.
+    /// A realistic Core body for `LoadAnswer`, which is `embarch-core-wire`'s
+    /// own type: this pins the client's read of a body with Core's real
+    /// numbers in it, not the type's agreement with Core.
     #[test]
     fn a_load_answer_deserializes_from_a_realistic_core_body() {
         let body = serde_json::json!({
