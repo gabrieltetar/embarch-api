@@ -68,6 +68,10 @@ fn core_files() -> BTreeMap<String, String> {
     f.insert("test-run.dsse.json".to_string(), r#"{"payloadType":"x"}"#.to_string());
     f.insert("studies/s1/events.json".to_string(), r#"{"steps":[]}"#.to_string());
     f.insert("studies/s1/study.json".to_string(), r#"{"name":"t1"}"#.to_string());
+    f.insert(
+        "studies/s1/measurements.json".to_string(),
+        r#"{"measurements":[{"name":"rate","value":12.5,"unit":"Hz","uncertainty":{"U":0.5,"k":2},"by":"dut","bench_image":"none","u_source":"declared","declared_by":[],"at_utc_ms":5000}]}"#.to_string(),
+    );
     f.insert("studies/s1/streams/rate.bin".to_string(), "raw".to_string());
     f.insert("report-data.json".to_string(), report_data());
     f.insert("report-data.dsse.json".to_string(), r#"{"payloadType":"rd"}"#.to_string());
@@ -150,7 +154,7 @@ async fn a_fixture_test_run_publishes_one_zip_holding_every_study_runs_files_and
     for name in files.keys() {
         assert_eq!(zip[name], files[name].as_bytes(), "{name}");
     }
-    for name in ["manifest.dsse.json", "report.pdf", "report.typ", "appendix.typ"] {
+    for name in ["manifest.dsse.json", "report.pdf", "report.typ", "appendix.typ", "exports/junit.xml", "exports/ocp-tv.jsonl"] {
         assert!(zip.contains_key(name), "the zip lacks {name}: {:?}", zip.keys().collect::<Vec<_>>());
     }
     // The hashes sent to Core are the zip's own, and none of Core's files is claimed as embarch-api's.
@@ -159,11 +163,27 @@ async fn a_fixture_test_run_publishes_one_zip_holding_every_study_runs_files_and
     assert!(p.path().starts_with(&format!("/test-runs/{RUN}/")), "{}", p.path());
     let body: Value = serde_json::from_slice(&p.body).unwrap();
     let sent = body["files"].as_array().unwrap();
-    assert_eq!(sent.len(), 3);
+    assert_eq!(sent.len(), 5);
     for f in sent {
         let name = f["name"].as_str().unwrap();
         assert_eq!(sha(&zip[name]), f["sha256"].as_str().unwrap(), "{name}");
     }
+}
+
+#[tokio::test]
+async fn the_zip_carries_both_exports_listed_as_this_crates_and_mapped_from_report_data() {
+    let (out, zip, _files, _mock) = publish_fixture("exports").await;
+    for name in ["exports/junit.xml", "exports/ocp-tv.jsonl"] {
+        assert!(out.embarch_api_files.iter().any(|f| f.name == name), "{name} is not listed as embarch-api's");
+    }
+    let x = String::from_utf8(zip["exports/junit.xml"].clone()).unwrap();
+    assert!(x.contains("<error type=\"not_verified\" message=\"requires_not_met\"/>"), "{x}");
+    assert!(x.contains("name=\"not_verified_requirements\" value=\"R1\""), "{x}");
+    assert!(x.contains("name=\"measurement.rate\" value=\"12.5 Hz"), "{x}");
+    assert!(x.contains("bench_firmware_unreleased"), "{x}");
+    let o = String::from_utf8(zip["exports/ocp-tv.jsonl"].clone()).unwrap();
+    assert!(o.contains("\"result\":\"PASS\""), "{o}");
+    assert!(o.contains("\"not_verified\":true"), "{o}");
 }
 
 #[tokio::test]

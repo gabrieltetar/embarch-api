@@ -64,6 +64,9 @@ pub mod publish_test;
 /// The two interop exports of a Study run, pure functions of the signed data.
 #[cfg(feature = "pdf")]
 pub mod publish_export;
+/// The two interop exports of a Test run, mapped from its verdicts.
+#[cfg(feature = "pdf")]
+pub mod publish_test_export;
 /// The numeric-oracle listing of the audit appendix: every number in the prose
 /// files and `report.typ`, cited, tagged, unbound, untagged or hardcoded.
 #[cfg(feature = "pdf")]

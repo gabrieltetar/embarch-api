@@ -16,9 +16,10 @@ use embarch_core_client::{CoreClient, PublishFile};
 use serde_json::Value;
 
 use crate::publish::{
-    manifest_subjects, sha256_hex, slug, utc_date, write_zip, zip_name, PublishOutcome, PublishRequest, MANIFEST_NAME,
-    REPORT_DATA_NAME, REPORT_PDF,
+    manifest_subjects, sha256_hex, slug, utc_date, write_zip, zip_name, PublishOutcome, PublishRequest, JUNIT_NAME, MANIFEST_NAME,
+    OCP_NAME, REPORT_DATA_NAME, REPORT_PDF,
 };
+use crate::publish_test_export::{junit_xml, ocp_jsonl, TestExportInputs};
 use crate::publish_report::{at, lit, show, Doc, ReportSource, Supersedes};
 use crate::report_pdf::{render_report, RenderOptions, Staging, APPENDIX_FILE, REPORT_FILE, TYPST_VERSION};
 
@@ -266,7 +267,7 @@ pub fn appendix_source(rd: &Value, pins: &RunPins) -> String {
     }
     d.heading(2, "Limits and losses");
     d.para(&format!(
-        "Not carried in this report: the standard's requirement count ({}: Core joins no atlas), per-limit decision rules, a resumed pair published as one, the JUnit and OCP exports.",
+        "Not carried in this report: the standard's requirement count ({}: Core joins no atlas), per-limit decision rules, a resumed pair published as one.",
         at(rd, "/standard/requirement_count")
     ));
     d.heading(2, "Hash manifest");
@@ -282,6 +283,20 @@ pub fn appendix_source(rd: &Value, pins: &RunPins) -> String {
         }
     }
     d.0
+}
+
+/// The study runs `report-data.json` names, each once.
+fn study_ids_of(rd: &Value) -> Vec<String> {
+    let mut ids: Vec<String> = rd["tests"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|t| t["study_ids"].as_array().into_iter().flatten())
+        .filter_map(|s| s.as_str().map(str::to_string))
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
 }
 
 /// Runs a Test run's publish. `folder` and `now_unix` are the Study's.
@@ -305,6 +320,19 @@ pub async fn run(core: &CoreClient, folder: &Path, req: &PublishRequest<'_>, now
     let run_json_bytes = pending(RUN_JSON_NAME).await?;
     let run_json: Value = serde_json::from_slice(&run_json_bytes).context("run.json is not JSON")?;
     let run_json_sha256 = sha256_hex(&run_json_bytes);
+    // Each study run's measurements, at the pending revision: the exports read them and nothing else
+    // of the zip besides `report-data.json`. A study that declared none has no such file.
+    let mut measurement_bytes: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    for id in study_ids_of(&rd.report_data) {
+        let name = format!("studies/{id}/measurements.json");
+        if let Some(b) = core.test_publish_file(run_id, revision, &name).await? {
+            measurement_bytes.insert(id, b.to_vec());
+        }
+    }
+    let mut measurements: BTreeMap<String, Value> = BTreeMap::new();
+    for (id, b) in &measurement_bytes {
+        measurements.insert(id.clone(), serde_json::from_slice(b).with_context(|| format!("studies/{id}/measurements.json is not JSON"))?);
+    }
 
     let supersedes: Option<Supersedes> = (revision > 1).then(|| revision - 1).map(|r| Supersedes {
         revision: r,
@@ -336,6 +364,9 @@ pub async fn run(core: &CoreClient, folder: &Path, req: &PublishRequest<'_>, now
     let mut api: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     api.insert(REPORT_PDF.into(), pdf);
     api.insert(REPORT_FILE.into(), report.into_bytes());
+    let export = TestExportInputs { report_data: &rd.report_data, measurements: &measurements };
+    api.insert(JUNIT_NAME.into(), junit_xml(&export).into_bytes());
+    api.insert(OCP_NAME.into(), ocp_jsonl(&export).into_bytes());
     api.insert(APPENDIX_FILE.into(), appendix.into_bytes());
     let api_files: Vec<PublishFile> =
         api.iter().map(|(n, b)| PublishFile { name: n.clone(), sha256: sha256_hex(b) }).collect();
@@ -366,8 +397,11 @@ pub async fn run(core: &CoreClient, folder: &Path, req: &PublishRequest<'_>, now
     core_files.insert(MANIFEST_NAME.to_string(), manifest_bytes.to_vec());
 
     // What the PDF read must be what Core signed.
-    for (name, read) in [(REPORT_DATA_NAME, &report_data_bytes[..]), (RUN_JSON_NAME, &run_json_bytes[..])] {
-        if core_files.get(name).map(Vec::as_slice) != Some(read) {
+    let read_files = [(REPORT_DATA_NAME.to_string(), &report_data_bytes[..]), (RUN_JSON_NAME.to_string(), &run_json_bytes[..])]
+        .into_iter()
+        .chain(measurement_bytes.iter().map(|(id, b)| (format!("studies/{id}/measurements.json"), &b[..])));
+    for (name, read) in read_files {
+        if core_files.get(&name).map(Vec::as_slice) != Some(read) {
             bail!("{name} changed between the render and the manifest, or the manifest does not name it; the PDF is built from other bytes");
         }
     }

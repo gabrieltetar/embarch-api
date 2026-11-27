@@ -85,7 +85,7 @@ pub fn measurement_line(m: &Value) -> String {
     out
 }
 
-fn xml_escape(s: &str) -> String {
+pub(crate) fn xml_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -102,7 +102,7 @@ fn xml_escape(s: &str) -> String {
     out
 }
 
-fn property(out: &mut String, name: &str, value: &str) {
+pub(crate) fn property(out: &mut String, name: &str, value: &str) {
     out.push_str(&format!("    <property name=\"{}\" value=\"{}\"/>\n", xml_escape(name), xml_escape(value)));
 }
 
