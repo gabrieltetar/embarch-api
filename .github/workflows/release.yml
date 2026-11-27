@@ -103,6 +103,12 @@ jobs:
         with:
           repository: gabrieltetar/embarch-topology
           path: embarch-topology
+      # embarch-core-client path-depends on embarch-core's wire crate
+      # (crates/embarch-core-wire, core decision 164; api decision 49).
+      - uses: actions/checkout@v4
+        with:
+          repository: gabrieltetar/embarch-core
+          path: embarch-core
 
       - uses: dtolnay/rust-toolchain@stable
         with:
