@@ -213,11 +213,14 @@ pub enum StudyEvent {
         /// A device study's session prompt only (`embarch-core` decision 127).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session: Option<crate::client::SessionPromptInfo>,
-        /// A Test run's prompt only (`embarch-core` decision 138). There is no
-        /// `kind` here: the prompt's own `kind` is flattened onto a stream
-        /// whose tag is also `kind`, which a serde-tagged variant cannot
-        /// declare, so a prompt's kind is read from `GET /study/{id}`'s
-        /// `pending_prompt` (api decision 137).
+        /// A Test run's prompt only (`embarch-core` decision 138). On this
+        /// event Core writes the prompt's kind as `prompt_kind`, since `kind`
+        /// is the event's own tag (`embarch-core` decision 151); absent for a
+        /// host study's or a session's prompt, and from a Core older than 151,
+        /// which wrote a second `kind` this variant cannot parse.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt_kind: Option<embarch_study_designer::host_study::PromptKind>,
+        /// A Test run's prompt only (`embarch-core` decision 138).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         observation: Option<serde_json::Value>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -250,6 +253,7 @@ impl StudyEvent {
                 opened_utc_ms,
                 deadline_utc_ms,
                 session,
+                prompt_kind,
                 observation,
                 switched_on,
                 ..
@@ -264,7 +268,7 @@ impl StudyEvent {
                     opened_utc_ms: *opened_utc_ms,
                     deadline_utc_ms: *deadline_utc_ms,
                     session: session.clone(),
-                    kind: None,
+                    kind: *prompt_kind,
                     observation: observation.clone(),
                     switched_on: switched_on.clone(),
                 })
@@ -286,6 +290,7 @@ impl StudyEvent {
             opened_utc_ms: prompt.opened_utc_ms,
             deadline_utc_ms: prompt.deadline_utc_ms,
             session: prompt.session.clone(),
+            prompt_kind: prompt.kind,
             observation: prompt.observation.clone(),
             switched_on: prompt.switched_on.clone(),
         }
