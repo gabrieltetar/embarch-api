@@ -3,7 +3,7 @@
 //! It writes only under `<repo>/embarch`, only a file of a known kind, under a
 //! name from a fixed set, and follows no link at any step. It runs nothing: this
 //! module starts no process, and a test reads its own source to say so.
-//! `hil_repo` writes the test layout through it; `ledger.rs` and `live_log.rs` still join paths.
+//! `hil_repo` writes the test layout through it; `live_log.rs` still joins paths.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
