@@ -207,11 +207,12 @@ fn bound(v: &Value) -> String {
     v.as_f64().map_or_else(|| "none".to_string(), num)
 }
 
-/// Each test's limits with the decision rule, `w` and `U` it was judged on (decision 216). `U` is
-/// `k` times `u`; where Core records no declared source it is "U not declared".
+/// Each test's limits with the decision rule, `w` and `U` it was judged on (decision 147). Core's
+/// `u` is the source's declared expanded uncertainty `U`, printed as given with its coverage factor
+/// `k`; where Core records no declared source it is "U not declared".
 fn limits_section(d: &mut Doc, rd: &Value) {
     d.heading(1, "Limits and decision rule");
-    d.para("Per test, each limit with the decision rule it was judged under, the guard band w and the expanded uncertainty U (k times u) of the measurement's declared source.");
+    d.para("Per test, each limit with the decision rule it was judged under, the guard band w and the expanded uncertainty U, with its coverage factor k, of the measurement's declared source.");
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut simple = false;
     for t in rd["tests"].as_array().into_iter().flatten() {
@@ -223,7 +224,8 @@ fn limits_section(d: &mut Doc, rd: &Value) {
                 for l in limits {
                     simple |= l["rule"] == "simple_acceptance";
                     let u = match (l["u_declared"] == true, l["u"].as_f64(), l["k"].as_f64()) {
-                        (true, Some(u), Some(k)) => num(u * k),
+                        (true, Some(u), Some(k)) => format!("{} (k = {})", num(u), num(k)),
+                        (true, Some(u), None) => num(u),
                         _ => "U not declared".to_string(),
                     };
                     rows.push(vec![

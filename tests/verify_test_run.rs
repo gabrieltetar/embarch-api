@@ -383,7 +383,8 @@ async fn the_test_pdf_prints_each_limits_rule_w_and_u() {
     assert!(typ.contains("guard_band, w multiple 1"), "{typ}");
     assert!(typ.contains("4500 to 5500 mV"), "{typ}");
     assert!(typ.contains("Test t2 has no limit."), "{typ}");
-    assert!(typ.contains("\"20\""), "U is k times u: {typ}");
+    assert!(typ.contains("\"10 (k = 2)\""), "U is Core's declared U, printed with its k: {typ}");
+    assert!(!typ.contains("\"20\""), "U is not k times U: {typ}");
     assert!(!typ.contains("not carried"), "{typ}");
 }
 
