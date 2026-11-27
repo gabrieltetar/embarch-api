@@ -179,7 +179,7 @@ fn number_or_text(v: &str) -> Value {
 }
 
 /// Prints `card` (to stderr, so `--json` keeps stdout) and reads one line; true only for `yes`.
-fn ask(card: &Value, question: &str, input: &mut dyn BufRead) -> bool {
+pub fn ask(card: &Value, question: &str, input: &mut dyn BufRead) -> bool {
     eprintln!("{}", render(card));
     eprint!("{question}? Type {YES} to send: ");
     let mut line = String::new();

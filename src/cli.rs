@@ -15,12 +15,15 @@ use crate::{Commands, TargetSelection};
 
 /// Runs a subcommand and, when it reached a lease-gated route, appends its line
 /// to the live log (`interfaces/live-log.md`) after Core has answered.
-pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreClient) -> i32 {
+pub async fn run(command: Commands, json: bool, as_person: bool, config: Arc<Config>, core: CoreClient) -> i32 {
     // The person's acts hold no agent client and write no live-log line (decision 141).
     let command = match command {
         Commands::Person { action } => return crate::person_cli::run(action, json, &config.core).await,
         other => other,
     };
+    if as_person {
+        return run_as_person(command, json, config).await;
+    }
     let debug = format!("{command:?}");
     let tool = crate::live_log::cli_tool_name(&debug);
     let ((code, answer), entries) = embarch_core_client::call_trace::scope(crate::live_log::with_cli_answer(run_command(
@@ -43,6 +46,27 @@ pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreC
     if let Some(notice) = crate::live_log::record(&config, &core, call).await.notice() {
         eprintln!("{notice}");
     }
+    code
+}
+
+/// `--as-person` (decision 143): an identity act made with the person's token, after the act
+/// is shown and a `yes` is typed (decision 141's rule). Holds no agent client, writes no
+/// live-log line, and refuses every other subcommand before anything is sent.
+async fn run_as_person(command: Commands, json: bool, config: Arc<Config>) -> i32 {
+    let debug = format!("{command:?}");
+    let name = crate::live_log::cli_tool_name(&debug);
+    if crate::identity_act::IdentityAct::from_command(&name).is_none() {
+        return error_result(json, format!("--as-person applies only to the identity acts, not to {name}"));
+    }
+    let client = match embarch_core_client::CoreClient::new_with_scope(&config.core, embarch_core_client::TokenScope::Person) {
+        Ok(c) => c,
+        Err(e) => return error_result(json, format!("--as-person: {e:#}")),
+    };
+    let shown = serde_json::json!({ "act": name, "as": "the person", "arguments": debug });
+    if !crate::person_cli::ask(&shown, &format!("make this act ({name})"), &mut std::io::stdin().lock()) {
+        return error_result(json, format!("not sent: no typed `yes`; {name} was not made"));
+    }
+    let ((code, _), _) = embarch_core_client::call_trace::scope(crate::live_log::with_cli_answer(run_command(command, json, config, client))).await;
     code
 }
 

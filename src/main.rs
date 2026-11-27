@@ -12,6 +12,7 @@ mod guide;
 mod hil_repo;
 mod hil_run;
 mod host_study;
+mod identity_act;
 mod instrument;
 mod lease;
 mod live_log;
@@ -64,6 +65,12 @@ struct Cli {
     /// Only meaningful alongside a subcommand; harmless (ignored) in MCP mode.
     #[arg(long)]
     json: bool,
+
+    /// Make an identity act (enroll-probe, declare-signal, ...) with the person's token, after
+    /// the act is shown and `yes` is typed. For an attested Core, which refuses the agent's token
+    /// those acts (decision 143). Refused for every other subcommand.
+    #[arg(long, global = true)]
+    as_person: bool,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -1387,7 +1394,7 @@ async fn async_main() -> Result<()> {
         // for, and how it came out. `{command:?}` is clap's derived `Debug`,
         // which carries the subcommand's own arguments with it.
         tracing::info!("cli invocation: {command:?} (config {})", config_path.display());
-        let exit_code = cli::run(command, cli.json, Arc::new(config), core).await;
+        let exit_code = cli::run(command, cli.json, cli.as_person, Arc::new(config), core).await;
         tracing::info!("cli invocation finished with exit code {exit_code}");
         std::process::exit(exit_code);
     }
@@ -1421,7 +1428,7 @@ async fn async_main() -> Result<()> {
 }
 
 /// The client the MCP server and the CLI verbs use: always the agent's token
-/// (`embarch-api` decision 109). No tool, verb or flag reaches the person's.
+/// (`embarch-api` decision 109). Only `person` and `--as-person` (cli.rs, decisions 141, 143) reach the person's.
 fn agent_core_client(config: &CoreConfig) -> Result<CoreClient> {
     CoreClient::new_with_scope(config, TokenScope::Agent)
 }

@@ -1781,7 +1781,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Declare the DUT's two USB identities for bootloading via embarch-core's PUT /bootload/ports (embarch-topology decision 36): bootloader (required) is where the image goes, app is the application's shell port where the entry command goes. Each is VID:PID or VID:PID:SERIAL in hex, with an optional interface. Declared, never detected: nothing over USB says a CDC ACM device is this DUT's MCUboot. Core refuses a pair one port could match both of — give the bootloader its own PID, or declare serials or interfaces that differ. Replaces any earlier declaration. Use list_serial_ports to see what Core's machine enumerates.")]
+    #[tool(description = "Declare the DUT's two USB identities for bootloading via embarch-core's PUT /bootload/ports (embarch-topology decision 36): bootloader (required) is where the image goes, app is the application's shell port where the entry command goes. Each is VID:PID or VID:PID:SERIAL in hex, with an optional interface. Declared, never detected: nothing over USB says a CDC ACM device is this DUT's MCUboot. Core refuses a pair one port could match both of — give the bootloader its own PID, or declare serials or interfaces that differ. Replaces any earlier declaration. Use list_serial_ports to see what Core's machine enumerates. Your own act only on an unattested Core: on an attested Core this is the person's, Core refuses your token with a person-scope 403, and the person makes it with `embarch-api declare-bootload-ports --as-person` or in embarch-ui's Topology tab (embarch-api decision 143).")]
     async fn declare_bootload_ports(
         &self,
         Parameters(params): Parameters<DeclareBootloadPortsParams>,
@@ -1797,7 +1797,7 @@ impl EmbarchApi {
         };
         match self.core.declare_bootload_ports(app.as_ref(), &bootloader).await {
             Ok(ports) => Self::ok_json(serde_json::json!({ "declared": ports })),
-            Err(e) => Self::err_text(format!("declare_bootload_ports failed: {e:#}")),
+            Err(e) => Self::err_text(crate::identity_act::IdentityAct::DeclareBootloadPorts.error_text(format!("declare_bootload_ports failed: {e:#}"))),
         }
     }
 
@@ -1836,15 +1836,15 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Retract the DUT's declared bootload ports via embarch-core's DELETE /bootload/ports. removed is false, not an error, when none were declared.")]
+    #[tool(description = "Retract the DUT's declared bootload ports via embarch-core's DELETE /bootload/ports. removed is false, not an error, when none were declared. Your own act only on an unattested Core: on an attested Core this is the person's, Core refuses your token with a person-scope 403, and the person makes it with `embarch-api clear-bootload-ports --as-person` or in embarch-ui's Topology tab (embarch-api decision 143).")]
     async fn clear_bootload_ports(&self) -> Result<CallToolResult, McpError> {
         match self.core.clear_bootload_ports().await {
             Ok(removed) => Self::ok_json(serde_json::json!({ "removed": removed })),
-            Err(e) => Self::err_text(format!("clear_bootload_ports failed: {e:#}")),
+            Err(e) => Self::err_text(crate::identity_act::IdentityAct::ClearBootloadPorts.error_text(format!("clear_bootload_ports failed: {e:#}"))),
         }
     }
 
-    #[tool(description = "Declare a bench instrument Core drives over a USB serial line — an electronic load, a lab supply — via embarch-core's PUT /instruments (embarch-api decision 97, embarch-topology decision 49), or replace the one of the same name. port is VID:PID[:SERIAL] in hex; declared, never detected, so check list_serial_ports first. preset \"et54\" fills an ET54-series load's measured line facts; otherwise give baud, and terminators default to LF out and CR LF back. Declare ack_ok when the instrument acknowledges a set: every set is then checked and an unacknowledged one fails. Core refuses a second instrument one port could match together with the first: declare serials or interfaces that differ. safe_off is the list of commands, one per line, that switch the output off; Core sends them at a study's start and at a graceful stop, and a declaration without one is listed, not refused. Omit safe_off on a re-declare and the stored one is kept (PUT replaces by name); pass [] to clear it. metrology and calibration say what a reading is worth (embarch-api decision 138): U (expanded uncertainty, with its coverage factor k) and resolution decide whether a Test's limit can be judged at all; a calibration past its due date makes a verdict inconclusive; basis \"declared\" is the person's own number, and on a Core that is not attested a value you declare reads \"declared by the agent\", so declare only what a datasheet or certificate gives you. A calibration's certificate is a file path: only its SHA-256 is sent. A malformed due date, a negative U or resolution, or a range whose min is not below its max is refused before Core is called. Omit metrology or calibration on a re-declare and the stored ones are kept; metrology [] or clear_calibration drops them. Touches no hardware.")]
+    #[tool(description = "Declare a bench instrument Core drives over a USB serial line — an electronic load, a lab supply — via embarch-core's PUT /instruments (embarch-api decision 97, embarch-topology decision 49), or replace the one of the same name. port is VID:PID[:SERIAL] in hex; declared, never detected, so check list_serial_ports first. preset \"et54\" fills an ET54-series load's measured line facts; otherwise give baud, and terminators default to LF out and CR LF back. Declare ack_ok when the instrument acknowledges a set: every set is then checked and an unacknowledged one fails. Core refuses a second instrument one port could match together with the first: declare serials or interfaces that differ. safe_off is the list of commands, one per line, that switch the output off; Core sends them at a study's start and at a graceful stop, and a declaration without one is listed, not refused. Omit safe_off on a re-declare and the stored one is kept (PUT replaces by name); pass [] to clear it. metrology and calibration say what a reading is worth (embarch-api decision 138): U (expanded uncertainty, with its coverage factor k) and resolution decide whether a Test's limit can be judged at all; a calibration past its due date makes a verdict inconclusive; basis \"declared\" is the person's own number, and on a Core that is not attested a value you declare reads \"declared by the agent\", so declare only what a datasheet or certificate gives you. A calibration's certificate is a file path: only its SHA-256 is sent. A malformed due date, a negative U or resolution, or a range whose min is not below its max is refused before Core is called. Omit metrology or calibration on a re-declare and the stored ones are kept; metrology [] or clear_calibration drops them. Touches no hardware. Your own act only on an unattested Core: on an attested Core this is the person's, Core refuses your token with a person-scope 403, and the person makes it with `embarch-api declare-instrument --as-person` or in embarch-ui's Topology tab (embarch-api decision 143).")]
     async fn declare_instrument(&self, Parameters(p): Parameters<DeclareInstrumentParams>) -> Result<CallToolResult, McpError> {
         let (metrology, calibration) = match declared_blocks(&p) {
             Ok(b) => b,
@@ -1871,11 +1871,11 @@ impl EmbarchApi {
             Err(e) => return Self::err_text(e),
         };
         if let Err(e) = crate::instrument::carry_stored_safe_off(&self.core, &mut inst, &args).await {
-            return Self::err_text(e);
+            return Self::err_text(crate::identity_act::IdentityAct::DeclareInstrument.error_text(e));
         }
         match self.core.declare_instrument(&inst).await {
             Ok(stored) => Self::ok_json(serde_json::json!({ "declared": stored })),
-            Err(e) => Self::err_text(format!("declare_instrument failed: {e:#}")),
+            Err(e) => Self::err_text(crate::identity_act::IdentityAct::DeclareInstrument.error_text(format!("declare_instrument failed: {e:#}"))),
         }
     }
 
@@ -1887,11 +1887,11 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Retract a declared bench instrument via embarch-core's DELETE /instruments/{name}. removed is false, not an error, when nothing was declared under the name.")]
+    #[tool(description = "Retract a declared bench instrument via embarch-core's DELETE /instruments/{name}. removed is false, not an error, when nothing was declared under the name. Your own act only on an unattested Core: on an attested Core this is the person's, Core refuses your token with a person-scope 403, and the person makes it with `embarch-api remove-instrument --as-person` or in embarch-ui's Topology tab (embarch-api decision 143).")]
     async fn remove_instrument(&self, Parameters(p): Parameters<RemoveInstrumentParams>) -> Result<CallToolResult, McpError> {
         match self.core.remove_instrument(&p.name).await {
             Ok(removed) => Self::ok_json(serde_json::json!({ "removed": removed })),
-            Err(e) => Self::err_text(format!("remove_instrument failed: {e:#}")),
+            Err(e) => Self::err_text(crate::identity_act::IdentityAct::RemoveInstrument.error_text(format!("remove_instrument failed: {e:#}"))),
         }
     }
 
@@ -2144,7 +2144,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Enroll a physical probe with embarch-topology's enrollment storage (embarch-topology decision 14), recording which board its serial number is wired to. role is one of exactly two values — 'dut' or 'dev-bench' — and Core answers 400 to anything else; what the board is called goes in name, which is free text recorded verbatim (embarch-ui decision 44). Omit role to enroll a bench board: a board that holds no role (a USB PD partner, an instrument's host board) but that a project still flashes and resets by its probe_serial, behind the same identity check; name is required then, and any number of bench boards may be enrolled. Requires exactly one debug probe currently attached, unless probe_serial picks a specific one — Core refuses (naming every candidate) otherwise, since the whole point is knowing exactly which board is meant before confirming. Once enrolled, flash/reset/run_study all refuse to touch that probe unless a live hardware-ID readback still matches what was recorded here. No project param — this isn't build-target selection.")]
+    #[tool(description = "Enroll a physical probe with embarch-topology's enrollment storage (embarch-topology decision 14), recording which board its serial number is wired to. role is one of exactly two values — 'dut' or 'dev-bench' — and Core answers 400 to anything else; what the board is called goes in name, which is free text recorded verbatim (embarch-ui decision 44). Omit role to enroll a bench board: a board that holds no role (a USB PD partner, an instrument's host board) but that a project still flashes and resets by its probe_serial, behind the same identity check; name is required then, and any number of bench boards may be enrolled. Requires exactly one debug probe currently attached, unless probe_serial picks a specific one — Core refuses (naming every candidate) otherwise, since the whole point is knowing exactly which board is meant before confirming. Once enrolled, flash/reset/run_study all refuse to touch that probe unless a live hardware-ID readback still matches what was recorded here. No project param — this isn't build-target selection. Your own act only on an unattested Core: on an attested Core this is the person's, Core refuses your token with a person-scope 403, and the person makes it with `embarch-api enroll-probe --as-person` or in embarch-ui's Topology tab (embarch-api decision 143).")]
     async fn enroll_probe(
         &self,
         Parameters(EnrollProbeParams { role, name, chip, probe_serial }): Parameters<EnrollProbeParams>,
@@ -2172,7 +2172,7 @@ impl EmbarchApi {
                 }
                 Self::ok_json(v)
             }
-            Err(e) => Self::err_text(format!("enroll_probe failed: {e:#}")),
+            Err(e) => Self::err_text(crate::identity_act::IdentityAct::EnrollProbe.error_text(format!("enroll_probe failed: {e:#}"))),
         }
     }
 
@@ -2298,7 +2298,7 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Declare (or re-declare) where a named DUT signal currently goes, via embarch-core's POST /signals (embarch-topology decision 18, wrapped per embarch-api decision 67). Idempotent by name: re-declaring an existing name overwrites it, which is the migration path for moving a signal from a Direct route (straight to a serial port, port_serial from list_serial_ports) onto dev-bench pins (via-dev-bench, rx_pin/tx_pin) or back — no saved Study changes, since a study names the signal and never its carrier. direction is one of dut-to-host, host-to-dut, bidirectional. route_kind is direct (needs port_serial) or via-dev-bench (needs rx_pin and tx_pin). interface, direct only, names the USB interface carrying the signal when port_serial's device exposes several serial ports under one serial (list_serial_ports shows each); without it Core refuses that device as ambiguous rather than guess. baud sets the signal's own line rate (e.g. 115200 for a DUT console); without it Core uses its default. The signal comes out of origin_role (a role, e.g. dut) or origin_board (a role-less bench board, by its enrolled name or probe serial; Core resolves it to the probe serial and refuses a board that is not enrolled or holds a role), exactly one; a reset or core-state read resolved from the signal then reaches that board. safe_off is the one command that switches the signal's output off; Core sends it at a study's start and at a graceful stop, and a declaration without one is listed, not refused. Omit safe_off on a re-declare and the stored one is kept; pass \"\" to clear it.")]
+    #[tool(description = "Declare (or re-declare) where a named DUT signal currently goes, via embarch-core's POST /signals (embarch-topology decision 18, wrapped per embarch-api decision 67). Idempotent by name: re-declaring an existing name overwrites it, which is the migration path for moving a signal from a Direct route (straight to a serial port, port_serial from list_serial_ports) onto dev-bench pins (via-dev-bench, rx_pin/tx_pin) or back — no saved Study changes, since a study names the signal and never its carrier. direction is one of dut-to-host, host-to-dut, bidirectional. route_kind is direct (needs port_serial) or via-dev-bench (needs rx_pin and tx_pin). interface, direct only, names the USB interface carrying the signal when port_serial's device exposes several serial ports under one serial (list_serial_ports shows each); without it Core refuses that device as ambiguous rather than guess. baud sets the signal's own line rate (e.g. 115200 for a DUT console); without it Core uses its default. The signal comes out of origin_role (a role, e.g. dut) or origin_board (a role-less bench board, by its enrolled name or probe serial; Core resolves it to the probe serial and refuses a board that is not enrolled or holds a role), exactly one; a reset or core-state read resolved from the signal then reaches that board. safe_off is the one command that switches the signal's output off; Core sends it at a study's start and at a graceful stop, and a declaration without one is listed, not refused. Omit safe_off on a re-declare and the stored one is kept; pass \"\" to clear it. Your own act only on an unattested Core: on an attested Core this is the person's, Core refuses your token with a person-scope 403, and the person makes it with `embarch-api declare-signal --as-person` or in embarch-ui's Topology tab (embarch-api decision 143).")]
     async fn declare_signal(
         &self,
         Parameters(DeclareSignalParams {
@@ -2321,11 +2321,11 @@ impl EmbarchApi {
             Err(e) => return Self::err_text(e),
         };
         if let Err(e) = carry_stored_signal_safe_off(&self.core, &mut link, &requested).await {
-            return Self::err_text(e);
+            return Self::err_text(crate::identity_act::IdentityAct::DeclareSignal.error_text(e));
         }
         match self.core.declare_signal(&link).await {
             Ok(()) => Self::ok_json(serde_json::json!({ "declared": true, "signal": link })),
-            Err(e) => Self::err_text(format!("declare_signal failed: {e:#}")),
+            Err(e) => Self::err_text(crate::identity_act::IdentityAct::DeclareSignal.error_text(format!("declare_signal failed: {e:#}"))),
         }
     }
 
@@ -2438,18 +2438,18 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Un-declare a signal via embarch-core's DELETE /signals/{name}. removed is false, not an error, when nothing was declared under that name.")]
+    #[tool(description = "Un-declare a signal via embarch-core's DELETE /signals/{name}. removed is false, not an error, when nothing was declared under that name. Your own act only on an unattested Core: on an attested Core this is the person's, Core refuses your token with a person-scope 403, and the person makes it with `embarch-api remove-signal --as-person` or in embarch-ui's Topology tab (embarch-api decision 143).")]
     async fn remove_signal(
         &self,
         Parameters(RemoveSignalParams { name }): Parameters<RemoveSignalParams>,
     ) -> Result<CallToolResult, McpError> {
         match self.core.remove_signal(&name).await {
             Ok(removed) => Self::ok_json(serde_json::json!({ "removed": removed, "name": name })),
-            Err(e) => Self::err_text(format!("remove_signal failed: {e:#}")),
+            Err(e) => Self::err_text(crate::identity_act::IdentityAct::RemoveSignal.error_text(format!("remove_signal failed: {e:#}"))),
         }
     }
 
-    #[tool(description = "Declare which board TYPE is in a role via embarch-core's PUT /probes/enrolled/{role}/board. A board type is the shape a firmware repo builds for (e.g. 'nrf54l15dk'), not a piece of hardware and not a probe: which probe serves a role is a separate binding, written by enroll_probe. This call opens no probe and reads no identity, so it works with nothing plugged in — which is the point, since a bench is usually described before it is wired. It deliberately leaves any recorded hardware ID in place, so that validate reports a board type that no longer matches the silicon on that probe rather than quietly forgetting it.")]
+    #[tool(description = "Declare which board TYPE is in a role via embarch-core's PUT /probes/enrolled/{role}/board. A board type is the shape a firmware repo builds for (e.g. 'nrf54l15dk'), not a piece of hardware and not a probe: which probe serves a role is a separate binding, written by enroll_probe. This call opens no probe and reads no identity, so it works with nothing plugged in — which is the point, since a bench is usually described before it is wired. It deliberately leaves any recorded hardware ID in place, so that validate reports a board type that no longer matches the silicon on that probe rather than quietly forgetting it. Your own act only on an unattested Core: on an attested Core this is the person's, Core refuses your token with a person-scope 403, and the person makes it with `embarch-api set-role-board --as-person` or in embarch-ui's Topology tab (embarch-api decision 143).")]
     async fn set_role_board(
         &self,
         Parameters(SetRoleBoardParams { role, board, chip }): Parameters<SetRoleBoardParams>,
@@ -2461,11 +2461,11 @@ impl EmbarchApi {
                 "chip": row.chip,
                 "probe_serial": row.probe_serial,
             })),
-            Err(e) => Self::err_text(format!("set_role_board failed: {e:#}")),
+            Err(e) => Self::err_text(crate::identity_act::IdentityAct::SetRoleBoard.error_text(format!("set_role_board failed: {e:#}"))),
         }
     }
 
-    #[tool(description = "Retract whatever board holds a role via embarch-core's DELETE /probes/enrolled/{role}, leaving that role empty — or, given probe_serial instead of role, the board enrolled through that probe via DELETE /probes/by-serial/{serial}, the only way to retract a bench board. Exactly one of role and probe_serial. Opens no probe: a board that is unplugged, or that no longer answers, retracts exactly like an attached one. removed is false, not an error, when nothing was enrolled under that role. This is also the only way to clear a board enrolled under an invented role (e.g. 'client-nucleo') from before the role vocabulary closed to dut/dev-bench.")]
+    #[tool(description = "Retract whatever board holds a role via embarch-core's DELETE /probes/enrolled/{role}, leaving that role empty — or, given probe_serial instead of role, the board enrolled through that probe via DELETE /probes/by-serial/{serial}, the only way to retract a bench board. Exactly one of role and probe_serial. Opens no probe: a board that is unplugged, or that no longer answers, retracts exactly like an attached one. removed is false, not an error, when nothing was enrolled under that role. This is also the only way to clear a board enrolled under an invented role (e.g. 'client-nucleo') from before the role vocabulary closed to dut/dev-bench. Your own act only on an unattested Core: on an attested Core this is the person's, Core refuses your token with a person-scope 403, and the person makes it with `embarch-api unenroll-probe --as-person` or in embarch-ui's Topology tab (embarch-api decision 143).")]
     async fn unenroll_probe(
         &self,
         Parameters(UnenrollProbeParams { role, probe_serial }): Parameters<UnenrollProbeParams>,
@@ -2473,17 +2473,17 @@ impl EmbarchApi {
         match (role, probe_serial) {
             (Some(role), None) => match self.core.unenroll_probe(&role).await {
                 Ok(removed) => Self::ok_json(serde_json::json!({ "removed": removed, "role": role })),
-                Err(e) => Self::err_text(format!("unenroll_probe failed: {e:#}")),
+                Err(e) => Self::err_text(crate::identity_act::IdentityAct::UnenrollProbe.error_text(format!("unenroll_probe failed: {e:#}"))),
             },
             (None, Some(serial)) => match self.core.unenroll_probe_by_serial(&serial).await {
                 Ok(removed) => Self::ok_json(serde_json::json!({ "removed": removed, "probe_serial": serial })),
-                Err(e) => Self::err_text(format!("unenroll_probe failed: {e:#}")),
+                Err(e) => Self::err_text(crate::identity_act::IdentityAct::UnenrollProbe.error_text(format!("unenroll_probe failed: {e:#}"))),
             },
             _ => Self::err_text("unenroll_probe needs exactly one of role and probe_serial".to_string()),
         }
     }
 
-    #[tool(description = "Declare dev-bench's runtime link via embarch-core's POST /dev-bench/link: the link bridge's USB serial and/or which interface of it, and/or (control_port) the USB identity of a CDC control port, and/or clear_control_port. At least one must be given; control_port with clear_control_port is refused. dev-bench must already be enrolled via enroll_probe first — this only ever amends that existing row. interface answers a question serial structurally cannot: a debug probe exposing two VCOM ports gives both the same USB serial, so only the interface number picks between them (the nRF54L15DK's own case: zephyr,console is uart20, wired to VCOM1 at interface 2). control_port {vid, pid, serial?, interface?} is for a bench whose control link is a native USB CDC port (an nRF52840 DK's own USB port, not its J-Link UART): vid and pid are hexadecimal strings, with or without 0x (decimal is not accepted: 4660 reads as 0x4660), and detection then finds the bench by that identity instead of by the SEGGER VID. Propose the identity to the person and wait for confirmation before enrolling, as enroll_probe does.")]
+    #[tool(description = "Declare dev-bench's runtime link via embarch-core's POST /dev-bench/link: the link bridge's USB serial and/or which interface of it, and/or (control_port) the USB identity of a CDC control port, and/or clear_control_port. At least one must be given; control_port with clear_control_port is refused. dev-bench must already be enrolled via enroll_probe first — this only ever amends that existing row. interface answers a question serial structurally cannot: a debug probe exposing two VCOM ports gives both the same USB serial, so only the interface number picks between them (the nRF54L15DK's own case: zephyr,console is uart20, wired to VCOM1 at interface 2). control_port {vid, pid, serial?, interface?} is for a bench whose control link is a native USB CDC port (an nRF52840 DK's own USB port, not its J-Link UART): vid and pid are hexadecimal strings, with or without 0x (decimal is not accepted: 4660 reads as 0x4660), and detection then finds the bench by that identity instead of by the SEGGER VID. Propose the identity to the person and wait for confirmation before enrolling, as enroll_probe does. Your own act only on an unattested Core: on an attested Core this is the person's, Core refuses your token with a person-scope 403, and the person makes it with `embarch-api dev-bench-link --as-person` or in embarch-ui's Topology tab (embarch-api decision 143).")]
     async fn dev_bench_link(
         &self,
         Parameters(DevBenchLinkParams { serial, interface, control_port, clear_control_port }): Parameters<DevBenchLinkParams>,
@@ -2494,7 +2494,7 @@ impl EmbarchApi {
                 v["linked"] = serde_json::json!(true);
                 Self::ok_json(v)
             }
-            Err(e) => Self::err_text(format!("dev_bench_link failed: {e}")),
+            Err(e) => Self::err_text(crate::identity_act::IdentityAct::DevBenchLink.error_text(format!("dev_bench_link failed: {e}"))),
         }
     }
 
