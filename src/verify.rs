@@ -471,7 +471,7 @@ fn check_measurements(files: &BTreeMap<String, Vec<u8>>, record: Option<&Value>)
         } else {
             c.fail("measurements.json is missing or not JSON, and the signed study file declares measurements".into());
         }
-        c.partial("step outcomes were not re-evaluated against their recorded replies: not recomputed by this version".into());
+        check_steps(&mut c, files, study.as_ref(), None);
         return c;
     };
     let Some(study) = study else {
@@ -485,7 +485,8 @@ fn check_measurements(files: &BTreeMap<String, Vec<u8>>, record: Option<&Value>)
     if signed_behaviours.is_some_and(|b| *b != ms_file["behaviours"]) {
         c.fail("measurements.json's behaviours differ from the ones the signed record holds".into());
     }
-    let declared_names: BTreeSet<&str> = declared.iter().filter_map(|d| d["name"].as_str()).collect();
+    let mut declared_names: BTreeSet<&str> = declared.iter().filter_map(|d| d["name"].as_str()).collect();
+    declared_names.extend(step_declared_names(&study));
     for name in by_name.keys() {
         if !declared_names.contains(name) {
             c.fail(format!("measurement {name} is not one the signed study file declares"));
@@ -573,11 +574,185 @@ fn check_measurements(files: &BTreeMap<String, Vec<u8>>, record: Option<&Value>)
     }
     c.compared.push(format!("{matched} of {} declared measurements recomputed from the raw captures and matched", declared.len()));
     c.compared.push("what Core read from the hardware (identities, the image, an instrument's reply) rests on Core's signature, not on a recompute".into());
-    c.partial("step outcomes were not re-evaluated against their recorded replies: not recomputed by this version".into());
+    check_steps(&mut c, files, Some(&study), Some(&rows));
     c
 }
 
-// ---- check 5 -----------------------------------------------------------------
+/// A host study's step definitions (`steps` then `teardown`) as `events.json`'s `list` and
+/// `index` address them; the names of the numbers its steps declare (`parse`, a prompt's answer)
+/// are measurements the study declares as much as its `measurements` array does.
+fn step_declared_names(study: &Value) -> Vec<&str> {
+    let mut out = Vec::new();
+    for list in ["steps", "teardown"] {
+        for s in study[list].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+            let inner = s["action"]["Repeat"]["steps"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+            for s in std::iter::once(s).chain(inner) {
+                for a in ["Exchange", "Instrument"] {
+                    if let Some(n) = s["action"][a]["parse"]["name"].as_str() {
+                        out.push(n);
+                    }
+                }
+                if let Some(n) = s["action"]["Prompt"]["answer"]["name"].as_str() {
+                    out.push(n);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The signed study file's definition of the step `events.json` records at `list`, `index` and
+/// (inside a `Repeat`) `inner_index`.
+fn step_definition<'a>(study: &'a Value, rec: &Value) -> Option<&'a Value> {
+    let list = match rec["list"].as_str()? {
+        "Steps" => "steps",
+        "Teardown" => "teardown",
+        _ => return None,
+    };
+    let top = study[list].as_array()?.get(rec["index"].as_u64()? as usize)?;
+    match rec["inner_index"].as_u64() {
+        None => Some(top),
+        Some(i) => top["action"]["Repeat"]["steps"].as_array()?.get(i as usize),
+    }
+}
+
+/// What Core's `judge` (`embarch-core/src/host_study.rs`) makes of an `Exchange` reply, as far as
+/// the recorded reply decides it. **A copy of that rule**, pinned by `tests/verify.rs`. `Err` is
+/// why the reply cannot decide it. The echo rule (`match_after_echo`), a lost port and a reply
+/// that was cut are what a recorded reply does not hold.
+fn recompute_outcome(rec: &Value, exchange: &Value) -> Result<&'static str, &'static str> {
+    let reply = rec["reply"].as_str().unwrap_or("");
+    let cut = rec["reply_truncated"].as_bool().unwrap_or(false);
+    let refused = exchange["refused_on"].as_str().filter(|r| reply.contains(r)).is_some();
+    if refused {
+        return Ok("Fail");
+    }
+    if cut && exchange["refused_on"].is_string() {
+        return Err("the reply was cut, so the refusal marker may have been in the part not kept");
+    }
+    let until_in_reply = exchange["until"].as_str().is_some_and(|u| reply.contains(u));
+    let recorded_seen = rec["until_seen"].as_bool().unwrap_or(false);
+    if until_in_reply && !exchange["match_after_echo"].as_bool().unwrap_or(false) {
+        return Ok("Pass");
+    }
+    if exchange["match_after_echo"].as_bool().unwrap_or(false) && until_in_reply {
+        return Err("the marker is in the reply but the echo rule decides where it counts, and the echo is not recorded");
+    }
+    if recorded_seen {
+        return if cut { Err("the reply was cut, so the marker may have been in the part not kept") } else { Ok("Pass") };
+    }
+    if rec["port_lost"].as_bool().unwrap_or(false) {
+        return Err("a lost port is Core's observation, not in the reply");
+    }
+    if reply.is_empty() && rec["reply_bytes"].as_u64() == Some(0) {
+        return Ok("Fail");
+    }
+    Ok("TimedOut")
+}
+
+fn recorded_outcome(o: &Value) -> Option<&str> {
+    match o {
+        Value::String(s) => Some(s),
+        Value::Object(m) => m.keys().next().map(String::as_str),
+        _ => None,
+    }
+}
+
+/// Check 2's step half: every step's outcome re-evaluated against its recorded reply with the
+/// signed study file's `until` and `refused_on`, and every step-time number re-parsed from the
+/// recorded reply with its pattern and compared with the step record and `measurements.json`.
+/// What a zip does not hold (an older `events.json` with no `list`/`index`, a study file with no
+/// steps) is reported as not recomputed, never as a match.
+fn check_steps(c: &mut Check, files: &BTreeMap<String, Vec<u8>>, study: Option<&Value>, rows: Option<&Vec<Value>>) {
+    let events = json_of(files, "events.json");
+    let steps: &[Value] = events.as_ref().and_then(|e| e["steps"].as_array()).map(Vec::as_slice).unwrap_or(&[]);
+    let (mut outcomes, mut parsed, mut skipped) = (0usize, 0usize, 0usize);
+    let mut unlocated = 0usize;
+    for rec in steps {
+        let step = rec["step_name"].as_str().unwrap_or("(unnamed)");
+        let Some(def) = study.and_then(|s| step_definition(s, rec)) else {
+            unlocated += 1;
+            continue;
+        };
+        let reply = rec["reply"].as_str().unwrap_or("");
+        let cut = rec["reply_truncated"].as_bool().unwrap_or(false);
+        let exchange = &def["action"]["Exchange"];
+        if exchange.is_object() {
+            match recompute_outcome(rec, exchange) {
+                Ok(want) => match recorded_outcome(&rec["outcome"]) {
+                    Some(have) if have == want => outcomes += 1,
+                    have => c.fail(format!(
+                        "step {step}: its recorded reply recomputes to {want}, events.json says {}",
+                        have.unwrap_or("(unrecorded)")
+                    )),
+                },
+                Err(why) => {
+                    skipped += 1;
+                    c.partial(format!("step {step}: outcome not recomputed ({why})"));
+                }
+            }
+        }
+        for a in ["Exchange", "Instrument"] {
+            let pdef = &def["action"][a]["parse"];
+            if !pdef.is_object() {
+                continue;
+            }
+            let Ok(sp) = serde_json::from_value::<embarch_study_designer::host_study::StepParse>(pdef.clone()) else {
+                c.fail(format!("step {step}: its parse in the signed study file is not a pattern, a unit and a name"));
+                continue;
+            };
+            let got = embarch_study_designer::host_study::parse_step_number(reply, &sp);
+            let mut want_incomplete: Vec<&str> = Vec::new();
+            if cut {
+                want_incomplete.push("truncated_reply");
+            }
+            if got.is_err() {
+                want_incomplete.push("parse_failed");
+            }
+            let want = got.as_ref().ok().copied();
+            let rp = &rec["parsed"];
+            let same_value = |v: &Value| match want {
+                Some(w) => v.as_f64() == Some(w),
+                None => v.is_null(),
+            };
+            let have_incomplete: Vec<&str> = rp["incomplete"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+            if rp["name"] != sp.name.as_str() || !same_value(&rp["value"]) || have_incomplete != want_incomplete {
+                c.fail(format!("{}: the step {step} record says {rp}, its recorded reply re-parses to {want:?} {want_incomplete:?}", sp.name));
+                continue;
+            }
+            if let Some(rows) = rows {
+                let row = rows.iter().find(|m| {
+                    m["name"] == sp.name.as_str() && m["source"]["step"] == step && m["source"]["iteration"] == rec["iteration"]
+                });
+                match row {
+                    None => {
+                        c.fail(format!("{}: the step {step} read it and measurements.json does not hold it", sp.name));
+                        continue;
+                    }
+                    Some(m) => {
+                        let inc: Vec<&str> = m["incomplete"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+                        if !same_value(&m["value"]) || inc != want_incomplete {
+                            c.fail(format!("{}: recomputed {want:?} from step {step}'s reply, measurements.json says {}", sp.name, m["value"]));
+                            continue;
+                        }
+                    }
+                }
+            }
+            parsed += 1;
+        }
+    }
+    if unlocated > 0 {
+        c.partial(format!(
+            "{unlocated} of {} steps are not in the signed study file by list and index, so their outcomes and numbers were not recomputed (a zip from before events.json recorded them)",
+            steps.len()
+        ));
+    }
+    if outcomes + parsed + skipped > 0 {
+        c.compared.push(format!("{outcomes} step outcomes re-evaluated against their recorded replies and matched; {parsed} step numbers re-parsed and matched"));
+    } else if unlocated == 0 {
+        c.compared.push("the zip records no step with an outcome or a number to recompute".into());
+    }
+}
 
 fn attribution(kind: &str, scope: &str) -> &'static str {
     match (kind, scope) {

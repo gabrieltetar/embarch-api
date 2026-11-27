@@ -93,26 +93,56 @@ fn call_segment(entries: &[(String, String)], prev: &str, head: &str, first: u64
 /// to 4 of a log five long) and a citation of the entry at seq 3, and the zip
 /// holds the segment.
 fn core_files_with(k: &SigningKey, calls: bool) -> BTreeMap<String, String> {
+    core_files_full(k, calls, false)
+}
+
+/// With `host`, the steps are the study's own and the records carry what Core records (list,
+/// index, the reply, the flags, the parsed number), and `measurements.json` holds the parse.
+fn core_files_full(k: &SigningKey, calls: bool, host: bool) -> BTreeMap<String, String> {
     let mut f = BTreeMap::new();
-    f.insert("study.json".into(), json!({
+    let mut study = json!({
         "name": "GATT rate / loss",
         "streams": [{ "id": 0, "name": "rate", "encoding": { "Samples": { "unit": "Volts" } } }],
         "measurements": [{ "name": "avg", "reducer": "mean", "tap": 0 }],
-    }).to_string());
-    f.insert("events.json".into(), json!({ "study_name": "GATT rate / loss", "provenance": "declared by the study", "steps": [
+    });
+    let mut steps = json!([
         { "step_name": "connect", "outcome": "Pass", "started_utc_ms": 1000, "ended_utc_ms": 2000 },
         { "step_name": "read", "outcome": { "Fail": { "reason": "no reply" } } },
-    ] }).to_string());
+    ]);
+    if host {
+        study["steps"] = json!([
+            { "name": "connect", "timeout_ms": 1000, "action": { "Exchange": { "signal": "console", "line": "vbus", "until": "OK",
+                "refused_on": "ERR", "parse": { "name": "vbus", "pattern": "vbus: (\\S+) mV", "unit": "mV" } } } },
+            { "name": "read", "timeout_ms": 1000, "action": { "Exchange": { "signal": "console", "line": "go", "until": "DONE",
+                "refused_on": "ERR" } } },
+        ]);
+        steps = json!([
+            { "step_name": "connect", "outcome": "Pass", "started_utc_ms": 1000, "ended_utc_ms": 2000, "list": "Steps", "index": 0,
+              "reply": "vbus: 5012 mV\nOK\n", "reply_truncated": false, "reply_bytes": 17, "until_seen": true, "port_lost": false,
+              "parsed": { "name": "vbus", "value": 5012.0 } },
+            { "step_name": "read", "outcome": { "Fail": { "reason": "refused: the reply holds the refusal marker" } }, "list": "Steps",
+              "index": 1, "reply": "ERR nope\n", "reply_truncated": false, "reply_bytes": 9, "until_seen": false, "port_lost": false },
+        ]);
+    }
+    f.insert("study.json".into(), study.to_string());
+    f.insert("events.json".into(), json!({ "study_name": "GATT rate / loss", "provenance": "declared by the study", "steps": steps }).to_string());
     f.insert("streams/rate.bin".into(), "raw-bytes".into());
     f.insert("streams/rate.csv".into(), CSV.into());
-    f.insert("measurements.json".into(), json!({
+    let mut ms = json!({
         "schema": 1, "run_id": RUN, "behaviours": { "mean": 1 },
         "measurements": [{ "name": "avg", "value": 2.0, "unit": "V", "at_utc_ms": 1010,
             "source": { "file": "streams/rate.csv", "rows": [0, 1] }, "by": "bench", "instrument": null,
             "bench_image": "unverified",
             "method": { "kind": "reducer", "name": "mean", "behaviour": 1, "window": {} },
             "resolution": null, "uncertainty": null, "u_source": "undeclared", "declared_by": [], "incomplete": [] }],
-    }).to_string());
+    });
+    if host {
+        ms["measurements"].as_array_mut().unwrap().push(json!({ "name": "vbus", "value": 5012.0, "unit": "mV", "at_utc_ms": 1500,
+            "source": { "file": "events.json", "step": "connect" }, "by": "dut", "instrument": null, "bench_image": "unverified",
+            "method": { "kind": "parse", "pattern": "vbus: (\\S+) mV" }, "resolution": null, "uncertainty": null,
+            "u_source": "undeclared", "declared_by": [], "incomplete": [] }));
+    }
+    f.insert("measurements.json".into(), ms.to_string());
     let entries = call_entries(CALL_BEFORE);
     let mut record = json!({ "_type": "https://in-toto.io/Statement/v1", "subject": subjects(&f),
         "predicateType": "urn:embarch:predicate:study-run:v1",
@@ -237,7 +267,10 @@ async fn published_with(k: &SigningKey, report: Option<&str>) -> BTreeMap<String
 
 /// The same, with the signed record naming a call-log range and the zip holding its segment.
 async fn published_full(k: &SigningKey, report: Option<&str>, calls: bool) -> BTreeMap<String, Vec<u8>> {
-    let core = core_files_with(k, calls);
+    published_from(k, report, core_files_with(k, calls)).await
+}
+
+async fn published_from(k: &SigningKey, report: Option<&str>, core: BTreeMap<String, String>) -> BTreeMap<String, Vec<u8>> {
     let mock = MockCore::start(router(&core, &manifest_for(k, &core, &[]))).await;
     let cfg: CoreConfig = serde_json::from_value(json!({ "token": "t", "base_url": mock.base_url() })).unwrap();
     let dir = tmp("pub");
@@ -581,4 +614,44 @@ async fn check_6_recomputes_the_call_log_claim_and_the_appendix_prints_it() {
     assert_eq!(status(&check(&m1, "rd-m1", &pub_hex(&k), None), 6), Status::Pass);
     let appendix = String::from_utf8(m1["appendix.typ"].clone()).unwrap();
     assert!(appendix.contains("no call log"), "{appendix}");
+}
+
+// ---- check 2: step outcomes and step-time numbers (EMB-374) ------------------
+
+#[tokio::test]
+async fn check_2_recomputes_step_outcomes_and_numbers_and_names_what_it_catches() {
+    let k = key(7);
+    let files = published_from(&k, None, core_files_full(&k, false, true)).await;
+    let r = check(&files, "host-ok", &pub_hex(&k), None);
+    assert_eq!(status(&r, 2), Status::Pass, "{}", r.to_text());
+    assert!(r.to_text().contains("2 step outcomes re-evaluated") && r.to_text().contains("1 step numbers re-parsed"), "{}", r.to_text());
+
+    // One reply byte changed so the refusal marker vanishes: the recorded Fail no longer follows.
+    let mut f = files.clone();
+    edit(&mut f, "events.json", "ERR nope", "ERX nope");
+    let r = check(&f, "host-marker", &pub_hex(&k), None);
+    assert_eq!(status(&r, 2), Status::Fail, "{}", r.to_text());
+    assert!(r.to_text().contains("step read: its recorded reply recomputes to TimedOut"), "{}", r.to_text());
+
+    // A step's parsed number altered, in the record and then in measurements.json.
+    let mut f = files.clone();
+    edit(&mut f, "events.json", "\"value\":5012.0", "\"value\":5013.0");
+    let r = check(&f, "host-rec", &pub_hex(&k), None);
+    assert_eq!(status(&r, 2), Status::Fail, "{}", r.to_text());
+    assert!(r.to_text().contains("vbus: the step connect record says"), "{}", r.to_text());
+    let mut f = files.clone();
+    edit(&mut f, "measurements.json", "\"value\":5012.0", "\"value\":5013.0");
+    let r = check(&f, "host-ms", &pub_hex(&k), None);
+    assert_eq!(status(&r, 2), Status::Fail, "{}", r.to_text());
+    assert!(r.to_text().contains("vbus: recomputed Some(5012.0) from step connect's reply"), "{}", r.to_text());
+
+    // A cut reply cannot decide the refusal: reported, not matched.
+    let mut f = files.clone();
+    let mut ev: Value = serde_json::from_slice(&f["events.json"]).unwrap();
+    ev["steps"][1]["reply"] = json!("nope\n");
+    ev["steps"][1]["reply_truncated"] = json!(true);
+    f.insert("events.json".into(), ev.to_string().into_bytes());
+    let r = check(&f, "host-cut", &pub_hex(&k), None);
+    assert_eq!(status(&r, 2), Status::Partial, "{}", r.to_text());
+    assert!(r.to_text().contains("step read: outcome not recomputed (the reply was cut"), "{}", r.to_text());
 }
