@@ -99,6 +99,11 @@ fn core_files_with(k: &SigningKey, calls: bool) -> BTreeMap<String, String> {
 /// With `host`, the steps are the study's own and the records carry what Core records (list,
 /// index, the reply, the flags, the parsed number), and `measurements.json` holds the parse.
 fn core_files_full(k: &SigningKey, calls: bool, host: bool) -> BTreeMap<String, String> {
+    core_files_inner(k, calls, host, None)
+}
+
+/// With `release`, the record carries `observed.mode` and `observed.release` and the report-data the newer attestation.
+fn core_files_inner(k: &SigningKey, calls: bool, host: bool, release: Option<(&str, Value)>) -> BTreeMap<String, String> {
     let mut f = BTreeMap::new();
     let mut study = json!({
         "name": "GATT rate / loss",
@@ -153,6 +158,10 @@ fn core_files_full(k: &SigningKey, calls: bool, host: bool) -> BTreeMap<String, 
             "first_seq": 2, "last_seq": 4, "cites": [{ "seq": 3, "hash": entries[1].1 }] });
         f.insert("call-log-segment.jsonl".into(), call_segment(&entries, CALL_BEFORE, &entries[2].1, 2, 4));
     }
+    if let Some((mode, rel)) = &release {
+        record["predicate"]["observed"]["mode"] = json!(mode);
+        record["predicate"]["observed"]["release"] = rel.clone();
+    }
     f.insert("record.dsse.json".into(), envelope(k, &record));
 
     let (run_line, run_hash) = log_line(json!({ "type": "run", "study_id": RUN, "kind": "device", "status": "completed",
@@ -176,6 +185,9 @@ fn core_files_full(k: &SigningKey, calls: bool, host: bool) -> BTreeMap<String, 
         "record_sha256": sha(f["record.dsse.json"].as_bytes()),
     });
     let mut rd = rd;
+    if let Some((mode, rel)) = &release {
+        rd["attestation"] = json!({ "label": "agent-scoped only", "core_mode": mode, "release": rel, "reason": "x" });
+    }
     if calls {
         rd["observed"]["call_log"] = json!({ "head": entries[2].1, "first_seq": 2, "last_seq": 4, "count": 3 });
     }
@@ -654,4 +666,43 @@ async fn check_2_recomputes_step_outcomes_and_numbers_and_names_what_it_catches(
     let r = check(&f, "host-cut", &pub_hex(&k), None);
     assert_eq!(status(&r, 2), Status::Partial, "{}", r.to_text());
     assert!(r.to_text().contains("step read: outcome not recomputed (the reply was cut"), "{}", r.to_text());
+}
+
+// ---- check 6 reads the attestation by the signed record's mode and release (EMB-332) ----
+
+#[tokio::test]
+async fn check_6_reads_the_attestation_by_the_signed_records_mode_and_release() {
+    let k = key(7);
+    let rel = json!({ "suite_version": "1.2.3", "manifest_sha256": "ab".repeat(32) });
+    for (mode, release) in [("service", rel.clone()), ("development", Value::Null)] {
+        let files = published_from(&k, None, core_files_inner(&k, false, false, Some((mode, release.clone())))).await;
+        let r = check(&files, "rel-ok", &pub_hex(&k), None);
+        assert_eq!(status(&r, 6), Status::Pass, "{mode}: {}", r.to_text());
+        let appendix = String::from_utf8(files["appendix.typ"].clone()).unwrap();
+        assert!(appendix.contains("Core mode") && appendix.contains(mode) && appendix.contains("Release"), "{appendix}");
+        assert!(!appendix.contains("Core attested"), "{appendix}");
+
+        let rd: Value = serde_json::from_slice(&files["report-data.json"]).unwrap();
+        for (field, bad) in [("core_mode", json!(if mode == "service" { "development" } else { "service" })), ("release", json!({ "suite_version": "9" }))] {
+            let mut f = files.clone();
+            let mut b = rd.clone();
+            b["attestation"][field] = bad;
+            f.insert("report-data.json".into(), b.to_string().into_bytes());
+            let r = check(&f, "rel-bad", &pub_hex(&k), None);
+            assert_eq!(status(&r, 6), Status::Fail, "{}", r.to_text());
+            assert!(r.to_text().contains(&format!("attestation.{field}")), "{}", r.to_text());
+        }
+        // The old key beside the new ones is refused too.
+        let mut f = files.clone();
+        let mut b = rd.clone();
+        b["attestation"]["core_attested"] = json!(false);
+        f.insert("report-data.json".into(), b.to_string().into_bytes());
+        let r = check(&f, "rel-old", &pub_hex(&k), None);
+        assert!(r.to_text().contains("attestation.core_attested"), "{}", r.to_text());
+    }
+    // A record without `release` keeps the milestone-1 shape.
+    let m1 = published(&k).await;
+    assert_eq!(status(&check(&m1, "rel-m1", &pub_hex(&k), None), 6), Status::Pass);
+    let appendix = String::from_utf8(m1["appendix.typ"].clone()).unwrap();
+    assert!(appendix.contains("Core attested") && !appendix.contains("Core mode"), "{appendix}");
 }

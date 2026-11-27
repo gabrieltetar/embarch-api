@@ -284,6 +284,15 @@ fn count_outcomes(events: &Value) -> Value {
     json!({ "total": pass + fail + timed_out + other, "pass": pass, "fail": fail, "timed_out": timed_out, "other": other })
 }
 
+/// What `attestation` must be. A record whose `observed` carries a `release` key is a newer Core's: the report names its
+/// mode and release and has no `core_attested`. Any other record keeps the milestone-1 shape.
+fn attestation_claim(record: &Value, label: &str) -> Value {
+    match record["predicate"]["observed"].get("release") {
+        Some(release) => json!({ "label": label, "core_mode": record["predicate"]["observed"]["mode"], "release": release }),
+        None => json!({ "label": label, "core_attested": false }),
+    }
+}
+
 fn squash(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
 }
@@ -328,7 +337,7 @@ pub(crate) fn check_report_claims(files: &BTreeMap<String, Vec<u8>>, manifest: O
         "schema": 1, "study_id": id, "kind": run["kind"], "revision": manifest["predicate"]["revision"],
         "run_status": run_status, "steps": steps,
         "subject": { "study_name": events["study_name"], "provenance": events["provenance"] },
-        "attestation": { "label": label, "core_attested": false },
+        "attestation": attestation_claim(record, label),
         "go_by": go_by, "published_by": published_by, "adopted": adopted,
         "observed": observed,
         "claimed": { "build": record["predicate"]["claimed"]["build"] },
@@ -338,12 +347,15 @@ pub(crate) fn check_report_claims(files: &BTreeMap<String, Vec<u8>>, manifest: O
     let mut differing: Vec<String> = Vec::new();
     for (k, want) in expected.as_object().into_iter().flatten() {
         let have = &rd[k.as_str()];
-        let same = if k == "attestation" {
-            have["label"] == want["label"] && have["core_attested"] == want["core_attested"]
-        } else {
-            have == want
-        };
-        if !same {
+        let same = if k == "attestation" { true } else { have == want };
+        if k == "attestation" {
+            // Compare every key but `reason`, which is Core's wording; name each one that differs.
+            let keys: std::collections::BTreeSet<&String> =
+                want.as_object().into_iter().flat_map(|o| o.keys()).chain(have.as_object().into_iter().flat_map(|o| o.keys())).collect();
+            for sub in keys.into_iter().filter(|s| s.as_str() != "reason" && have.get(s.as_str()) != want.get(s.as_str())) {
+                differing.push(format!("attestation.{sub}"));
+            }
+        } else if !same {
             if k == "observed" {
                 // Name the sub-key, so a call-log claim that disagrees is named as such.
                 let keys: std::collections::BTreeSet<&String> =

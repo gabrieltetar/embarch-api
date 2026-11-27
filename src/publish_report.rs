@@ -317,14 +317,21 @@ pub fn appendix_source(i: &ReportInputs) -> String {
     ]);
 
     d.heading(2, "Attestation");
-    d.kv(&[
-        ("Label", at(rd, "/attestation/label")),
-        ("Core attested", at(rd, "/attestation/core_attested")),
+    let mut rows = vec![("Label", at(rd, "/attestation/label"))];
+    if rd["attestation"].get("core_mode").is_some() {
+        rows.push(("Core mode", at(rd, "/attestation/core_mode")));
+        rows.push(("Release", at(rd, "/attestation/release")));
+    }
+    if rd["attestation"].get("core_attested").is_some() {
+        rows.push(("Core attested", at(rd, "/attestation/core_attested")));
+    }
+    rows.extend([
         ("Reason", at(rd, "/attestation/reason")),
         ("Run begun with", at(rd, "/go_by")),
         ("Published by", at(rd, "/published_by")),
         ("Qualifiers", qualifiers(rd, i.measurements).join(", ")),
     ]);
+    d.kv(&rows);
 
     d.heading(2, "Measurements");
     let rows = measurement_rows(i.measurements);
