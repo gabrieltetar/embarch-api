@@ -13,6 +13,7 @@ pub mod attest;
 pub mod call_trace;
 pub mod desk_discovery;
 pub mod client;
+pub mod config_discovery;
 pub mod lease_gate;
 pub mod sse;
 pub mod study_events;
