@@ -75,6 +75,9 @@ pub mod publish_oracle;
 /// to 121). Behind `pdf` with the exports it regenerates.
 #[cfg(feature = "pdf")]
 pub mod verify;
+/// `verify` of a Test run's zip (`embarch-api` decision 146).
+#[cfg(feature = "pdf")]
+pub mod verify_test;
 /// `verify` checks 4, 6 and 9 (`embarch-api` decisions 122 to 125).
 #[cfg(feature = "pdf")]
 pub mod verify_report;

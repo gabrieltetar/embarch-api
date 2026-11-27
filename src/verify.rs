@@ -190,7 +190,7 @@ fn read_zip(path: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
 }
 
 /// A DSSE envelope's payload and whether its signature verifies under `key`.
-fn open_envelope(bytes: &[u8], key: &VerifyingKey, fingerprint: &str) -> Result<Value, String> {
+pub(crate) fn open_envelope(bytes: &[u8], key: &VerifyingKey, fingerprint: &str) -> Result<Value, String> {
     let env: Value = serde_json::from_slice(bytes).map_err(|e| format!("is not JSON: {e}"))?;
     let b64 = base64::engine::general_purpose::STANDARD;
     let payload_type = env["payloadType"].as_str().unwrap_or("");
@@ -223,7 +223,7 @@ fn open_envelope(bytes: &[u8], key: &VerifyingKey, fingerprint: &str) -> Result<
     Err(last)
 }
 
-fn subjects(statement: &Value) -> BTreeMap<String, String> {
+pub(crate) fn subjects(statement: &Value) -> BTreeMap<String, String> {
     statement["subject"]
         .as_array()
         .map(|a| {
@@ -259,10 +259,21 @@ pub fn verify_zip(path: &Path, opts: &Options) -> Result<Report> {
     let attested = opts.attested_fingerprint.is_some_and(|a| a.trim().eq_ignore_ascii_case(&fingerprint));
     let files = read_zip(path)?;
 
+    if crate::verify_test::is_test_zip(&files) {
+        return Ok(Report {
+            zip: path.display().to_string(),
+            produced_by: produced_by(&files),
+            verified_by: env!("CARGO_PKG_VERSION"),
+            key_fingerprint: fingerprint.clone(),
+            attested,
+            checks: crate::verify_test::checks(&files, &key, &fingerprint, attested),
+        });
+    }
+
     let mut checks = Vec::new();
     let (c0, manifest, record) = check_signatures(&files, &key, &fingerprint, attested);
     checks.push(c0);
-    checks.push(check_manifest(&files, manifest.as_ref()));
+    checks.push(check_manifest(&files, manifest.as_ref(), RECORD_NAME));
     checks.push(check_measurements(&files, record.as_ref()));
     checks.push(Check::fixed(3, "verdicts", Status::NotApplicable, "a Study has no verdict; nothing to recompute"));
     checks.push(crate::verify_report::check_pdf_text(&files));
@@ -352,7 +363,7 @@ fn check_signatures(
 
 // ---- check 1 -----------------------------------------------------------------
 
-fn check_manifest(files: &BTreeMap<String, Vec<u8>>, manifest: Option<&Value>) -> Check {
+pub(crate) fn check_manifest(files: &BTreeMap<String, Vec<u8>>, manifest: Option<&Value>, record_file: &str) -> Check {
     let mut c = Check::new(1, "the manifest");
     let Some(m) = manifest else {
         c.fail("no manifest could be read (check 0)".into());
@@ -384,7 +395,7 @@ fn check_manifest(files: &BTreeMap<String, Vec<u8>>, manifest: Option<&Value>) -
             c.fail(format!("{name} is in the zip and in neither list of the manifest"));
         }
     }
-    for (what, key, file) in [("record", "record_sha256", RECORD_NAME), ("report-data", "report_data_sha256", REPORT_DATA_NAME)] {
+    for (what, key, file) in [("record", "record_sha256", record_file), ("report-data", "report_data_sha256", REPORT_DATA_NAME)] {
         if let (Some(want), Some(b)) = (m["predicate"][key].as_str(), files.get(file)) {
             if sha(b) != want {
                 c.fail(format!("the manifest's {key} is not the hash of {file}: the {what} was swapped"));
@@ -461,7 +472,7 @@ fn csv_points(csv: &[u8], column: Option<&str>) -> Vec<Point> {
     points
 }
 
-fn check_measurements(files: &BTreeMap<String, Vec<u8>>, record: Option<&Value>) -> Check {
+pub(crate) fn check_measurements(files: &BTreeMap<String, Vec<u8>>, record: Option<&Value>) -> Check {
     let mut c = Check::new(2, "the measurements");
     let study = json_of(files, "study.json");
     let declared: Vec<Value> = study.as_ref().and_then(|s| s["measurements"].as_array().cloned()).unwrap_or_default();
@@ -905,45 +916,8 @@ fn check_log_segment(files: &BTreeMap<String, Vec<u8>>, manifest: Option<&Value>
             return c;
         }
     };
-    let mut prev: Option<String> = None;
-    let mut seq: Option<u64> = None;
-    for (i, l) in lines.iter().enumerate() {
-        let n = i + 1;
-        let (entry, hash) = (&l["entry"], l["hash"].as_str().unwrap_or(""));
-        if entry.is_null() || sha(&serde_json::to_vec(entry).unwrap_or_default()) != hash {
-            c.fail(format!("line {n}: the entry does not match its hash: it was altered"));
-            return c;
-        }
-        let this_prev = entry["prev"].as_str().unwrap_or("").to_string();
-        match &prev {
-            Some(p) if *p != this_prev => {
-                c.fail(format!("line {n}: its prev is not the previous entry's hash: an entry was removed, added or reordered"));
-                return c;
-            }
-            None if i == 0 && this_prev != GENESIS => {
-                c.problems.push(format!("the segment starts at a later entry than the log's first (prev {}…)", &this_prev[..this_prev.len().min(8)]))
-            }
-            _ => {}
-        }
-        let this_seq = entry["seq"].as_u64();
-        if seq.is_some_and(|s| this_seq != Some(s + 1)) || this_seq.is_none() {
-            c.fail(format!("line {n}: its seq does not follow the previous entry's"));
-            return c;
-        }
-        seq = this_seq;
-        prev = Some(hash.to_string());
-    }
-    c.compared.push(format!("{} entries: every hash and prev recomputes from the first entry", lines.len()));
-    if let Some(m) = manifest {
-        let head = m["predicate"]["run_log"]["head"].as_str();
-        let length = m["predicate"]["run_log"]["length"].as_u64();
-        if prev.as_deref() != head || length != Some(lines.len() as u64) {
-            c.fail("the segment does not end at the head, or hold the number of entries, the signed manifest names (an entry was dropped from the end, or the segment is another's)".into());
-        } else {
-            c.compared.push("the chain ends at the signed head, and its length is the signed one".into());
-        }
-    } else {
-        c.fail("no signed manifest to compare the chain's head with".into());
+    if !check_chain(&mut c, &lines, manifest) {
+        return c;
     }
     let rd = json_of(files, REPORT_DATA_NAME).unwrap_or(Value::Null);
     let id = rd["study_id"].as_str().unwrap_or("");
@@ -980,6 +954,52 @@ fn check_log_segment(files: &BTreeMap<String, Vec<u8>>, manifest: Option<&Value>
     c
 }
 
+/// Check 8's chain: every hash, `prev` and `seq` of the segment's lines, ending at the manifest's
+/// signed head and length. `false` when the chain itself is broken (nothing after it is meaningful).
+pub(crate) fn check_chain(c: &mut Check, lines: &[Value], manifest: Option<&Value>) -> bool {
+    let mut prev: Option<String> = None;
+    let mut seq: Option<u64> = None;
+    for (i, l) in lines.iter().enumerate() {
+        let n = i + 1;
+        let (entry, hash) = (&l["entry"], l["hash"].as_str().unwrap_or(""));
+        if entry.is_null() || sha(&serde_json::to_vec(entry).unwrap_or_default()) != hash {
+            c.fail(format!("line {n}: the entry does not match its hash: it was altered"));
+            return false;
+        }
+        let this_prev = entry["prev"].as_str().unwrap_or("").to_string();
+        match &prev {
+            Some(p) if *p != this_prev => {
+                c.fail(format!("line {n}: its prev is not the previous entry's hash: an entry was removed, added or reordered"));
+                return false;
+            }
+            None if i == 0 && this_prev != GENESIS => {
+                c.problems.push(format!("the segment starts at a later entry than the log's first (prev {}…)", &this_prev[..this_prev.len().min(8)]))
+            }
+            _ => {}
+        }
+        let this_seq = entry["seq"].as_u64();
+        if seq.is_some_and(|s| this_seq != Some(s + 1)) || this_seq.is_none() {
+            c.fail(format!("line {n}: its seq does not follow the previous entry's"));
+            return false;
+        }
+        seq = this_seq;
+        prev = Some(hash.to_string());
+    }
+    c.compared.push(format!("{} entries: every hash and prev recomputes from the first entry", lines.len()));
+    if let Some(m) = manifest {
+        let head = m["predicate"]["run_log"]["head"].as_str();
+        let length = m["predicate"]["run_log"]["length"].as_u64();
+        if prev.as_deref() != head || length != Some(lines.len() as u64) {
+            c.fail("the segment does not end at the head, or hold the number of entries, the signed manifest names (an entry was dropped from the end, or the segment is another's)".into());
+        } else {
+            c.compared.push("the chain ends at the signed head, and its length is the signed one".into());
+        }
+    } else {
+        c.fail("no signed manifest to compare the chain's head with".into());
+    }
+    true
+}
+
 /// Check 8's second half: `call-log-segment.jsonl` against the `observed.call_log`
 /// range the signed record names (`embarch-core` decisions 111, 116, 117). The
 /// hash rule is Core's `CallLog::segment_bytes`: the SHA-256 of the entry's
@@ -991,7 +1011,7 @@ fn check_log_segment(files: &BTreeMap<String, Vec<u8>>, manifest: Option<&Value>
 /// array of `{seq, hash}`, is how a signed record will cite an entry; no record
 /// cites one yet, so the key is this check's reading of what the Test phase
 /// will write.
-fn check_call_log(c: &mut Check, files: &BTreeMap<String, Vec<u8>>, record: Option<&Value>) {
+pub(crate) fn check_call_log(c: &mut Check, files: &BTreeMap<String, Vec<u8>>, record: Option<&Value>) {
     let range = record.map(|r| &r["predicate"]["observed"]["call_log"]).filter(|r| !r.is_null());
     let Some(bytes) = files.get(CALL_SEGMENT_NAME) else {
         if range.is_some() {
