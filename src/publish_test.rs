@@ -144,6 +144,8 @@ pub fn report_source(rd: &Value) -> Result<String> {
         d.table(&["Test", "Verdict", "Reason", "Behind it (run: study runs)", "DUT image"], &tests);
     }
 
+    limits_section(&mut d, rd);
+
     d.heading(1, "Tests that did not run");
     let not_run: Vec<Vec<String>> = rd["not_run"]
         .as_array()
@@ -187,13 +189,61 @@ pub fn report_source(rd: &Value) -> Result<String> {
     }
 
     d.heading(1, "Decision rule");
-    d.para("The roll-up rules Core applied to the tests' verdicts. The limit and decision rule of each individual test (simple acceptance or a guard band) are not carried in report-data.json, so this report does not state them per limit.");
+    d.para("The roll-up rules Core applied to the tests' verdicts. Each test's own decision rule, per limit, is under Limits and decision rule above.");
     let rules: Vec<Vec<String>> =
         rd["rules"].as_array().into_iter().flatten().map(|r| vec![show(&r["name"]), show(&r["behaviour"])]).collect();
     if !rules.is_empty() {
         d.table(&["Rule", "Behaviour"], &rules);
     }
     Ok(d.0)
+}
+
+/// A number as the report prints it, without float noise.
+fn num(x: f64) -> String {
+    format!("{}", (x * 1e9).round() / 1e9)
+}
+
+fn bound(v: &Value) -> String {
+    v.as_f64().map_or_else(|| "none".to_string(), num)
+}
+
+/// Each test's limits with the decision rule, `w` and `U` it was judged on (decision 216). `U` is
+/// `k` times `u`; where Core records no declared source it is "U not declared".
+fn limits_section(d: &mut Doc, rd: &Value) {
+    d.heading(1, "Limits and decision rule");
+    d.para("Per test, each limit with the decision rule it was judged under, the guard band w and the expanded uncertainty U (k times u) of the measurement's declared source.");
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut simple = false;
+    for t in rd["tests"].as_array().into_iter().flatten() {
+        let id = show(&t["test_id"]);
+        match t["limits"].as_array() {
+            None => d.para(&format!("Test {id}: report-data.json carries neither its limits nor its decision rule, because Core could not find the test in run.json.")),
+            Some(l) if l.is_empty() => d.para(&format!("Test {id} has no limit.")),
+            Some(limits) => {
+                for l in limits {
+                    simple |= l["rule"] == "simple_acceptance";
+                    let u = match (l["u_declared"] == true, l["u"].as_f64(), l["k"].as_f64()) {
+                        (true, Some(u), Some(k)) => num(u * k),
+                        _ => "U not declared".to_string(),
+                    };
+                    rows.push(vec![
+                        id.clone(),
+                        show(&l["measurement"]),
+                        format!("{} to {} {}", bound(&l["lower"]), bound(&l["upper"]), show(&l["unit"])),
+                        format!("{}, w multiple {}", show(&l["rule"]), bound(&l["w_multiple"])),
+                        bound(&l["w"]),
+                        u,
+                    ]);
+                }
+            }
+        }
+    }
+    if !rows.is_empty() {
+        d.table(&["Test", "Measurement", "Limit", "Rule", "w", "U"], &rows);
+    }
+    if simple {
+        d.para("Under simple acceptance (w = 0) a result at a limit may be a false accept, with a probability of up to 50 % (ILAC-G8).");
+    }
 }
 
 /// What the appendix pins about the run: `run.json`'s hash, the plan's and the suite's.
@@ -267,7 +317,7 @@ pub fn appendix_source(rd: &Value, pins: &RunPins) -> String {
     }
     d.heading(2, "Limits and losses");
     d.para(&format!(
-        "Not carried in this report: the standard's requirement count ({}: Core joins no atlas), per-limit decision rules, a resumed pair published as one.",
+        "Not carried in this report: the standard's requirement count ({}: Core joins no atlas), a resumed pair published as one.",
         at(rd, "/standard/requirement_count")
     ));
     d.heading(2, "Hash manifest");

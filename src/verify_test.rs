@@ -24,7 +24,7 @@ use embarch_study_designer::verdicts::{Evidence, Judged, Qualifier, Reason, Rule
 use serde_json::{json, Value};
 
 use crate::publish::{JUNIT_NAME, MANIFEST_NAME, MEASUREMENTS_NAME, OCP_NAME, REPORT_DATA_NAME, REPORT_PDF};
-use crate::publish_report::Supersedes;
+use crate::publish_report::{show, Supersedes};
 use crate::publish_test::{appendix_source, report_source, RunPins, RUN_JSON_NAME};
 use crate::publish_test_export::{junit_xml, ocp_jsonl, TestExportInputs};
 use crate::report_pdf::{APPENDIX_FILE, REPORT_FILE};
@@ -393,6 +393,28 @@ fn utc_date(ms: u64) -> String {
 }
 
 /// `embarch-core`'s `judge_measurements`, a copy.
+/// Each limit of a test with the decision rule, `U` and `w` its verdict was judged on, as Core
+/// writes them (decision 154 of Core): `u` and `k` are the test's declared source, `w` is 0
+/// under simple acceptance and for a measurement with no source.
+fn limits_of(t: &RunTest) -> Value {
+    let guard = t.decision_rule.kind != "simple_acceptance";
+    Value::Array(
+        t.limits
+            .iter()
+            .map(|l| {
+                let source = t.sources.iter().find(|s| s.measurement == l.measurement);
+                let u = source.map(|s| s.u);
+                json!({
+                    "measurement": l.measurement, "unit": l.unit, "lower": l.lower, "upper": l.upper, "expect": l.expect,
+                    "rule": t.decision_rule.kind, "w_multiple": t.decision_rule.w_multiple,
+                    "u": u, "k": source.map(|s| s.k), "u_declared": source.is_some(),
+                    "w": if guard { t.decision_rule.w_multiple * u.unwrap_or(0.0) } else { 0.0 },
+                })
+            })
+            .collect(),
+    )
+}
+
 fn judge_measurements(test: &RunTest, doc: &Value) -> Vec<MeasurementRecord> {
     doc["measurements"]
         .as_array()
@@ -882,6 +904,8 @@ impl Zip<'_> {
                     "verdict": rec["verdict"], "reason": rec["reason"],
                     "qualifiers": if r.reached { serde_json::to_value(&r.judged.qualifiers).unwrap_or(Value::Null) } else { json!([]) },
                     "counts": r.counts, "runs": r.runs, "note": rec["note"], "dut_image": rec["dut_image"],
+                    "decision_rule": json!({ "kind": t.decision_rule.kind, "w_multiple": t.decision_rule.w_multiple }),
+                    "limits": limits_of(t),
                     "study_ids": rec["study_records"].as_array().into_iter().flatten().map(|s| s["study_id"].clone()).collect::<Vec<_>>(),
                 })
             })
@@ -1009,6 +1033,14 @@ fn check_report_claims(z: &Zip, d: &Derived, c: &mut Check) {
         return;
     }
     let mut differing: Vec<String> = Vec::new();
+    for t in want["tests"].as_array().into_iter().flatten() {
+        let have = z.rd["tests"].as_array().and_then(|a| a.iter().find(|h| h["test_id"] == t["test_id"]));
+        for k in ["decision_rule", "limits"] {
+            if have.is_some_and(|h| h[k] != t[k]) {
+                c.fail(format!("test {}: report-data.json's {k} is not what run.json gives for it ({} against {})", show(&t["test_id"]), have.map_or(Value::Null, |h| h[k].clone()), t[k]));
+            }
+        }
+    }
     for (k, w) in want.as_object().into_iter().flatten() {
         let have = &z.rd[k.as_str()];
         let same = if k == "attestation" { have["label"] == w["label"] && have["core_attested"] == w["core_attested"] } else { have == w };

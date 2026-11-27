@@ -4,6 +4,7 @@
 //! crate's `judge_run`, `judge_test` and `Rules`; `publish` then writes the zip against a mock Core
 //! and its manifest is signed over the files embarch-api made. Nothing here reaches a real Core.
 #![cfg(feature = "pdf")]
+#![recursion_limit = "256"]
 
 mod support;
 
@@ -72,6 +73,8 @@ struct Knobs {
     drop_record_entry: bool,
     /// `result.json` says t1's run failed (the study's own record and events still say pass).
     flip_result_run: bool,
+    /// `report-data.json` says t1's limit was judged with another `w` than its declared source gives.
+    alter_limit_w: bool,
 }
 
 fn t1_judged() -> Judged {
@@ -89,7 +92,7 @@ fn test_json(id: &str, requirements: &[&str], limit: (f64, f64)) -> Value {
         "requirements": requirements, "revision_range": { "from": "3.0", "to": null },
         "bench": { "name": "A", "config": "default" },
         "precondition": "reset", "requires": [], "run_count": 1,
-        "decision_rule": { "kind": "simple_acceptance", "w_multiple": 0.0 },
+        "decision_rule": if id == "t1" { json!({ "kind": "guard_band", "w_multiple": 1.0 }) } else { json!({ "kind": "simple_acceptance", "w_multiple": 0.0 }) },
         "limits": if id == "t1" { json!([{ "measurement": "vbus", "unit": "mV", "lower": limit.0, "upper": limit.1 }]) } else { json!([]) },
         "setup_terms": [],
         "sources": if id == "t1" { json!([{ "measurement": "vbus", "unit": "mV", "range_min": 0.0, "range_max": 10000.0, "resolution": 1.0, "U": 10.0, "k": 2.0 }]) } else { json!([]) },
@@ -212,9 +215,13 @@ fn core_files(k: &SigningKey, knobs: Knobs) -> BTreeMap<String, String> {
         "tests": [
             { "test_id": "t1", "bench": "A", "definition_hash": "t1".repeat(32), "requirements": ["R1"], "verdict": t1_verdict, "reason": null,
               "qualifiers": jt1.qualifiers, "counts": serde_json::from_str::<Value>(COUNTS).unwrap(), "runs": [{ "verdict": "pass", "reason": null }],
-              "note": null, "dut_image": "released", "study_ids": ["s1"] },
+              "note": null, "dut_image": "released", "study_ids": ["s1"],
+              "decision_rule": { "kind": "guard_band", "w_multiple": 1.0 },
+              "limits": [{ "measurement": "vbus", "unit": "mV", "lower": 4500.0, "upper": 5500.0, "expect": null, "rule": "guard_band", "w_multiple": 1.0,
+                           "u": 10.0, "k": 2.0, "u_declared": true, "w": if knobs.alter_limit_w { 11.0 } else { 10.0 } }] },
             { "test_id": "t2", "bench": "A", "definition_hash": "t2".repeat(32), "requirements": ["R2"], "verdict": null, "reason": "not_run",
-              "qualifiers": [], "counts": null, "runs": [], "note": null, "dut_image": null, "study_ids": [] },
+              "qualifiers": [], "counts": null, "runs": [], "note": null, "dut_image": null, "study_ids": [],
+              "decision_rule": { "kind": "simple_acceptance", "w_multiple": 0.0 }, "limits": [] },
         ],
         "manual_verdicts": [],
         "not_run": [{ "source": "run", "test_id": "t2", "requirements": ["R2"], "reason": "not_run" },
@@ -356,6 +363,28 @@ async fn a_fixture_test_zip_passes_every_check() {
     let c3 = r.checks.iter().find(|c| c.id == 3).unwrap();
     assert!(c3.compared.iter().any(|l| l.contains("1 runs recomputed through judge_run")), "{:?}", c3.compared);
     assert!(c3.compared.iter().any(|l| l.contains("rest on Core's signature")), "{:?}", c3.compared);
+}
+
+#[tokio::test]
+async fn a_limit_whose_w_report_data_alters_fails_check_6_naming_the_test() {
+    let k = key(7);
+    let files = published(&k, Knobs { alter_limit_w: true, ..Knobs::default() }).await;
+    let r = check(&files, &k);
+    assert_eq!(status(&r, 6), Status::Fail, "{}", dump(&r));
+    assert!(problems(&r, 6).contains("test t1: report-data.json's limits"), "{}", problems(&r, 6));
+    assert_eq!(status(&r, 3), Status::Pass, "{}", dump(&r));
+}
+
+#[tokio::test]
+async fn the_test_pdf_prints_each_limits_rule_w_and_u() {
+    let k = key(7);
+    let files = published(&k, Knobs::default()).await;
+    let typ = String::from_utf8_lossy(&files["report.typ"]).into_owned();
+    assert!(typ.contains("guard_band, w multiple 1"), "{typ}");
+    assert!(typ.contains("4500 to 5500 mV"), "{typ}");
+    assert!(typ.contains("Test t2 has no limit."), "{typ}");
+    assert!(typ.contains("\"20\""), "U is k times u: {typ}");
+    assert!(!typ.contains("not carried"), "{typ}");
 }
 
 #[tokio::test]
