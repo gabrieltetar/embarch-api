@@ -42,6 +42,7 @@ const DOCUMENTED_ASYMMETRIES: &[Asymmetry] = &[
     Asymmetry::CliOnly("patches"),
     Asymmetry::CliOnly("stack"),
     Asymmetry::CliOnly("guide"),
+    Asymmetry::CliOnly("person"),
     Asymmetry::CliOnly("verify"),
     Asymmetry::CliOnly("core-key"),
     Asymmetry::CliOnly("list-studies"),

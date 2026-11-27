@@ -43,6 +43,7 @@ use std::process::Command;
 const EVERY_SUBCOMMAND: &[&[&str]] = &[
     &["list-projects"],
     &["guide", "hil"],
+    &["person", "name", "Ada"],
     &["verify", "/no/such/zip.zip", "--public-key", "0000000000000000000000000000000000000000000000000000000000000000"],
     &["list-targets", "demo"],
     &["status"],

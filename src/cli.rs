@@ -16,6 +16,11 @@ use crate::{Commands, TargetSelection};
 /// Runs a subcommand and, when it reached a lease-gated route, appends its line
 /// to the live log (`interfaces/live-log.md`) after Core has answered.
 pub async fn run(command: Commands, json: bool, config: Arc<Config>, core: CoreClient) -> i32 {
+    // The person's acts hold no agent client and write no live-log line (decision 141).
+    let command = match command {
+        Commands::Person { action } => return crate::person_cli::run(action, json, &config.core).await,
+        other => other,
+    };
     let debug = format!("{command:?}");
     let tool = crate::live_log::cli_tool_name(&debug);
     let ((code, answer), entries) = embarch_core_client::call_trace::scope(crate::live_log::with_cli_answer(run_command(
@@ -460,6 +465,7 @@ async fn run_command(command: Commands, json: bool, config: Arc<Config>, core: C
         Commands::Patches { action } => crate::patches::run(action, json),
         Commands::Stack { action } => crate::stack::run(action, json),
         Commands::Guide { action } => crate::guide::run(action, json),
+        Commands::Person { action } => crate::person_cli::run(action, json, &config.core).await,
         Commands::Verify { zip, public_key, attested_fingerprint } => verify(&zip, &public_key, attested_fingerprint.as_deref(), json),
     }
 }
@@ -3082,7 +3088,7 @@ mod tests {
             .filter(|l| l.trim_start().starts_with(&format!("Command{}::", "s")))
             .count();
         assert_eq!(
-            arms, 70,
+            arms, 72,
             "the subcommand surface changed. Add the new subcommand to \
              `tests/json_surface.rs`'s `EVERY_SUBCOMMAND` (so its `--json` output \
              is checked for `schema_version`) and update this count."

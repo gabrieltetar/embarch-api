@@ -3761,6 +3761,22 @@ impl CoreClient {
         self.send(self.client.post(url).json(&body), self.status_timeout).await
     }
 
+    /// `PUT /units/{key}` with `{serial, board_revision}` — the person's declaration of a
+    /// unit's serial and board revision (core decision 147). Core refuses the agent's token
+    /// `403`; only the person's surface calls this.
+    pub async fn declare_unit(&self, key: &str, serial: &str, board_revision: &str) -> Result<serde_json::Value> {
+        let url = format!("{}/units/{}", self.base_url().await?, urlencode(key));
+        let body = serde_json::json!({ "serial": serial, "board_revision": board_revision });
+        self.send(self.client.put(url).json(&body), self.status_timeout).await
+    }
+
+    /// `PUT /person` with `{name}` — the person's declared name (core decision 147);
+    /// the agent's token is refused `403`. Only the person's surface calls this.
+    pub async fn declare_person(&self, name: &str) -> Result<serde_json::Value> {
+        let url = format!("{}/person", self.base_url().await?);
+        self.send(self.client.put(url).json(&serde_json::json!({ "name": name })), self.status_timeout).await
+    }
+
     /// `POST /test-runs` with `{run, plan, suite?, studies}` — prepares a Test run and
     /// starts nothing (core decision 134): Core re-expands `run.json` from its
     /// definitions and refuses one it does not reproduce. `201 {run_id, run_hash,

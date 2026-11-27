@@ -19,6 +19,7 @@ mod live_log;
 mod logging;
 mod session_desk;
 mod patches;
+mod person_cli;
 mod reflash;
 mod stack;
 mod study;
@@ -1194,6 +1195,13 @@ pub enum Commands {
     Patches {
         #[command(subcommand)]
         action: patches::PatchesAction,
+    },
+    /// The engineer's own acts, sent with the person's token and only after a
+    /// typed `yes`: confirm a definition, give a Test run's go, answer its
+    /// prompt, declare a unit or a name. A person's verb: no MCP tool has it.
+    Person {
+        #[command(subcommand)]
+        action: person_cli::PersonAction,
     },
     /// Check a published Study zip offline: signatures, manifest, measurements,
     /// labels, exports and the run log's segment, from the zip and Core's
