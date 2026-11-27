@@ -189,6 +189,8 @@ async fn every_outbound_call_carries_the_bearer_token() {
     let _ = client.test_run_go("run-1", "hash-1", "nonce-1").await;
     let _ = client.declare_unit("DUT-1", "SN7", "B").await;
     let _ = client.declare_person("Ada").await;
+    let _ = client.run_log().await;
+    let _ = client.manual_verdict(&serde_json::json!({ "test_id": "t" })).await;
     let _ = client.lease_take("sweep", Some("sweep"), 60).await;
     let _ = client.lease_renew(None).await;
     let _ = client.lease_release().await;
@@ -326,6 +328,8 @@ async fn every_outbound_call_carries_the_bearer_token() {
         ("POST", "/test-runs/run-1/go"),
         ("PUT", "/units/DUT-1"),
         ("PUT", "/person"),
+        ("GET", "/run-log"),
+        ("POST", "/manual-verdicts"),
         ("POST", "/study/study-1/adopt"),
         ("POST", "/study/study-1/report-data"),
         ("POST", "/study/study-1/publish"),

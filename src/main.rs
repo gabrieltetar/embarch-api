@@ -14,7 +14,6 @@ mod hil_run;
 mod host_study;
 mod instrument;
 mod lease;
-mod ledger;
 mod live_log;
 mod logging;
 mod session_desk;
@@ -22,6 +21,7 @@ mod patches;
 mod person_cli;
 mod reflash;
 mod stack;
+mod test_ledger;
 mod study;
 mod tools;
 mod worktree;
@@ -389,65 +389,53 @@ pub enum Commands {
         #[arg(long)]
         prose_reviewed_by: Option<String>,
     },
-    /// Append one row to the project's hardware test ledger
-    /// (`embarch/ledger/rows.jsonl`): which test ran, its result, on what
-    /// branch and commit, with which image and which roles attached. Branch
-    /// and commit default to the tree as it stands, the roles to what Core
-    /// reports attached.
-    LedgerAdd {
-        /// A test id from `embarch/ledger/tests.toml`.
-        test: String,
-        /// pass, fail or skipped.
-        result: String,
+    /// Show the test ledger: the entries of Core's run log (a Test run's tests and the
+    /// manual verdicts), newest last, and the legacy `embarch/ledger/` rows apart.
+    /// Brings `embarch/tests/results.jsonl` to the log first.
+    TestShow {
         #[arg(long, default_value = "desk")]
         project: String,
-        #[arg(long, default_value = "")]
-        notes: String,
-        /// The image that ran: hashed (SHA-256) into the row.
-        #[arg(long)]
-        image: Option<PathBuf>,
-        /// An image hash, instead of --image.
-        #[arg(long)]
-        image_hash: Option<String>,
-        #[arg(long)]
-        study_id: Option<String>,
-        #[arg(long)]
-        commit: Option<String>,
-        #[arg(long)]
-        branch: Option<String>,
-        /// Roles attached, instead of reading them from Core.
-        #[arg(long = "role")]
-        roles: Option<Vec<String>>,
-        /// Replace the bench header's known-broken list (repeat; none given
-        /// leaves it alone, one empty string clears it).
-        #[arg(long = "broken")]
-        broken: Option<Vec<String>>,
-    },
-    /// Show the ledger: the bench-state header and the last rows. Closes any
-    /// submitted study row whose study has ended.
-    LedgerShow {
-        #[arg(long, default_value = "desk")]
-        project: String,
-        /// Only this test's rows.
+        /// Only this test's entries.
         #[arg(long)]
         test: Option<String>,
-        /// How many rows, newest last. Default 20.
+        /// How many entries, newest last. Default 20.
         #[arg(long)]
         limit: Option<usize>,
     },
-    /// The tests that have not run or must rerun, grouped by the hardware
-    /// each is missing, plus those runnable now. Computed, never stored.
-    LedgerPending {
+    /// The tests that have not run or must rerun on the current image, grouped by the
+    /// bench each needs, computed from Core's run log. Never stored.
+    TestPending {
         #[arg(long, default_value = "desk")]
         project: String,
-        /// Roles to treat as attached, instead of reading them from Core.
-        #[arg(long = "attached")]
-        attached: Option<Vec<String>>,
-        /// The image as rebuilt now: a pass whose row hash differs reruns.
+        /// The image as rebuilt now: only runs on it count.
         #[arg(long)]
         image: Option<PathBuf>,
         #[arg(long)]
         image_hash: Option<String>,
+    },
+    /// Enter a manual verdict through Core's `POST /manual-verdicts`. With the agent's
+    /// token it is recorded as relayed by the agent and never counts as a pass.
+    TestAdd {
+        /// The test id.
+        test: String,
+        /// pass, fail or inconclusive.
+        verdict: String,
+        #[arg(long)]
+        reason: String,
+        /// The DUT's unit key (its hardware ID).
+        #[arg(long)]
+        unit_key: String,
+        #[arg(long, default_value = "desk")]
+        project: String,
+        /// The test's definition hash, 64 hex; default is the hash of the test in the
+        /// repo's suites.
+        #[arg(long)]
+        definition_hash: Option<String>,
+        /// The image on the DUT.
+        #[arg(long)]
+        dut_image: Option<String>,
+        #[arg(long)]
+        note: Option<String>,
     },
     /// Propose a test, a capability or a hook for the engineer to confirm
     /// (decision 134). The crate checks it first; a proposal it refuses never
@@ -644,9 +632,6 @@ pub enum Commands {
         /// project, but rebuilding the DUT's firmware is.
         #[arg(long)]
         project: Option<String>,
-        /// The ledger test id this run is for; the ledger row records it.
-        #[arg(long)]
-        test: Option<String>,
         #[command(flatten)]
         target: TargetSelection,
     },

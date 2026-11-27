@@ -131,38 +131,33 @@ impl EmbarchApi {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct LedgerAddParams {
+pub struct TestAddParams {
     /// A project name, or omit for this session's desk's firmware repo.
     #[serde(default)]
     pub project: String,
-    /// A test id from the project's embarch/ledger/tests.toml.
+    /// The test id.
     pub test: String,
-    /// pass, fail or skipped.
-    pub result: String,
-    pub notes: Option<String>,
-    /// Path of the image that ran; its SHA-256 goes into the row.
-    pub image_path: Option<String>,
-    /// An image hash, instead of image_path.
-    pub image_hash: Option<String>,
-    pub study_id: Option<String>,
-    /// Defaults to the tree's HEAD.
-    pub commit: Option<String>,
-    /// Defaults to the tree's current branch.
-    pub branch: Option<String>,
-    /// Roles attached when it ran; defaults to what Core reports.
-    pub roles: Option<Vec<String>>,
-    /// Replaces the bench header's known-broken list; an empty list clears it.
-    pub broken: Option<Vec<String>>,
+    /// pass, fail or inconclusive.
+    pub verdict: String,
+    /// Why, in a sentence.
+    pub reason: String,
+    /// The DUT's unit key (its hardware ID).
+    pub unit_key: String,
+    /// The test's definition hash, 64 lowercase hex; omitted, the hash of the test in the repo's suites.
+    pub definition_hash: Option<String>,
+    /// The image on the DUT.
+    pub dut_image: Option<String>,
+    pub note: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct LedgerShowParams {
+pub struct TestShowParams {
     /// A project name, or omit for this session's desk's firmware repo.
     #[serde(default)]
     pub project: String,
-    /// Only this test's rows.
+    /// Only this test's entries.
     pub test: Option<String>,
-    /// How many rows, newest last. Defaults to 20.
+    /// How many entries, newest last. Defaults to 20.
     pub limit: Option<usize>,
 }
 
@@ -265,13 +260,11 @@ pub struct TestStatusParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct LedgerPendingParams {
+pub struct TestPendingParams {
     /// A project name, or omit for this session's desk's firmware repo.
     #[serde(default)]
     pub project: String,
-    /// Roles to treat as attached, instead of reading them from Core.
-    pub attached: Option<Vec<String>>,
-    /// Path of the image as rebuilt now: a pass whose row hash differs reruns.
+    /// Path of the image as rebuilt now: only runs on it count.
     pub image_path: Option<String>,
     pub image_hash: Option<String>,
 }
@@ -789,9 +782,6 @@ pub struct RunStudyParams {
     /// rebuilding the DUT's firmware is, and there is nowhere else for the
     /// build target to come from.
     pub project: Option<String>,
-    /// The hardware-ledger test id this run is for (embarch-api decision 98).
-    /// The row run_study appends records it; without one the row has no test.
-    pub test: Option<String>,
     /// Zephyr board name for the DUT reflash. Only meaningful alongside
     /// project, for a discovery = "zephyr-west" project — see list_targets.
     /// A static DUT project refuses this and every field below it rather
@@ -2601,9 +2591,8 @@ impl EmbarchApi {
             allow_version_mismatch: params.allow_version_mismatch.unwrap_or(false),
             project: params.project.as_deref(),
             selection: params.selection(),
-            // The project the ledger row uses (decision 98): the one named,
-            // else this session's desk's. Neither resolving sends no claim
-            // (decision 111).
+            // The project the build claim uses: the one named, else this
+            // session's desk's. Neither resolving sends no claim (decision 111).
             build: self
                 .project(params.project.as_deref().unwrap_or(""))
                 .map(crate::build_claims::for_project)
@@ -2614,23 +2603,7 @@ impl EmbarchApi {
             .await
         {
             Ok(outcome) => {
-                let mut value = outcome.to_json();
-                // The ledger row (decision 98): the named project, else this session's desk's.
-                value["ledger"] = match self.project(params.project.as_deref().unwrap_or("")) {
-                    Ok(p) => {
-                        crate::ledger::record_submission(
-                            &p.source_path,
-                            &self.core,
-                            params.test.as_deref(),
-                            &outcome.study_id,
-                            study.name.as_str(),
-                            crate::reflash::dut_image(&outcome),
-                        )
-                        .await
-                    }
-                    Err(e) => serde_json::json!({ "skipped": e.message }),
-                };
-                Self::ok_json(value)
+                Self::ok_json(outcome.to_json())
             }
             Err(e) => match e.downcast_ref::<StudyConflictError>() {
                 Some(conflict) => Self::err_text(format!(
@@ -2642,47 +2615,37 @@ impl EmbarchApi {
         }
     }
 
-    #[tool(description = "Append one row to the project's hardware test ledger (embarch-api decision 98): which test (an id from embarch/ledger/tests.toml) ran, its result (pass, fail or skipped), on which branch and commit (default: the tree's), with which image (image_path is hashed) and which roles attached (default: what Core reports, by role, board name and instrument). broken replaces the bench header's known-broken list. Project omitted means this session's desk's firmware repo.")]
-    async fn ledger_add(&self, Parameters(p): Parameters<LedgerAddParams>) -> Result<CallToolResult, McpError> {
+    #[tool(description = "Enter a manual verdict for a test (embarch-api decision 142) through Core's POST /manual-verdicts: test, verdict (pass, fail or inconclusive), reason and the DUT's unit_key; definition_hash defaults to the hash of the test in the repo's suites. It is an entry in Core's run log first and embarch/tests/results.jsonl follows it. With your token it is recorded relayed by the agent, which never counts as a pass or in coverage; the answer says so. Project omitted means this session's desk's firmware repo.")]
+    async fn test_add(&self, Parameters(p): Parameters<TestAddParams>) -> Result<CallToolResult, McpError> {
         let project = self.project(&p.project)?;
-        let report = crate::ledger::add(
+        let report = crate::test_ledger::add(
             &project.source_path,
             &self.core,
-            crate::ledger::AddArgs {
+            crate::test_ledger::AddArgs {
                 test: &p.test,
-                result: &p.result,
-                notes: p.notes.as_deref().unwrap_or(""),
-                image_path: p.image_path.as_deref(),
-                image_hash: p.image_hash.as_deref(),
-                study_id: p.study_id.as_deref(),
-                commit: p.commit.as_deref(),
-                branch: p.branch.as_deref(),
-                roles: p.roles,
-                broken: p.broken,
+                verdict: &p.verdict,
+                reason: &p.reason,
+                unit_key: &p.unit_key,
+                definition_hash: p.definition_hash.as_deref(),
+                dut_image: p.dut_image.as_deref(),
+                note: p.note.as_deref(),
             },
         )
         .await;
         Self::lease_result(report)
     }
 
-    #[tool(description = "Show the project's hardware test ledger: the bench-state header (what is attached, from Core, and what is known broken) and the last rows, newest last. First closes any row a run_study left `submitted` whose study has since ended, so a finished study's pass or fail lands here without a separate call.")]
-    async fn ledger_show(&self, Parameters(p): Parameters<LedgerShowParams>) -> Result<CallToolResult, McpError> {
+    #[tool(description = "Show the test ledger: the last entries of Core's run log (a Test run's tests and the manual verdicts, a relayed one marked and never counted), newest last, with embarch/tests/results.jsonl first brought to the log; rows of the legacy embarch/ledger/ are listed apart as before Test, not in Core's log, and never moved.")]
+    async fn test_show(&self, Parameters(p): Parameters<TestShowParams>) -> Result<CallToolResult, McpError> {
         let project = self.project(&p.project)?;
-        let report = crate::ledger::show(&project.source_path, &self.core, p.test.as_deref(), p.limit.unwrap_or(20)).await;
+        let report = crate::test_ledger::show(&project.source_path, &self.core, p.test.as_deref(), p.limit.unwrap_or(20)).await;
         Self::lease_result(report)
     }
 
-    #[tool(description = "The hardware tests that have not run or must rerun, computed from the ledger and never stored: runnable_now (every role the test needs is attached) and by_missing_role (grouped by the hardware each lacks). A test reruns when its latest row was not a pass, when that row's commit is no longer reachable from its branch (folded or rebased away), or when its image hash differs from image_path/image_hash as rebuilt now. attached overrides what Core reports; the answer says which one it used.")]
-    async fn ledger_pending(&self, Parameters(p): Parameters<LedgerPendingParams>) -> Result<CallToolResult, McpError> {
+    #[tool(description = "The hardware tests that have not run or must rerun, computed from Core's run log and never stored, grouped by the bench each test needs (by_bench). A test is pending when its latest run on the current DUT image is not a pass (fail, inconclusive, not-reached), it never ran on that image, or its commit is no longer reachable from its branch (folded or rebased away). image_path or image_hash names the image as rebuilt now. A relayed manual verdict is listed beside its test and never clears it.")]
+    async fn test_pending(&self, Parameters(p): Parameters<TestPendingParams>) -> Result<CallToolResult, McpError> {
         let project = self.project(&p.project)?;
-        let report = crate::ledger::pending_view(
-            &project.source_path,
-            &self.core,
-            p.attached,
-            p.image_path.as_deref(),
-            p.image_hash.as_deref(),
-        )
-        .await;
+        let report = crate::test_ledger::pending_view(&project.source_path, &self.core, p.image_path.as_deref(), p.image_hash.as_deref()).await;
         Self::lease_result(report)
     }
 

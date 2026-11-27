@@ -3777,6 +3777,21 @@ impl CoreClient {
         self.send(self.client.put(url).json(&serde_json::json!({ "name": name })), self.status_timeout).await
     }
 
+    /// `GET /run-log` — `{verified, error, length, head, entries}`, `entries` the
+    /// `{entry, hash}` lines in chain order (core decision 111). Either token may read it.
+    pub async fn run_log(&self) -> Result<serde_json::Value> {
+        let url = format!("{}/run-log", self.base_url().await?);
+        self.send(self.client.get(url), self.status_timeout).await
+    }
+
+    /// `POST /manual-verdicts` with `{test_id, definition_hash, unit_key, verdict, reason,
+    /// dut_image?, note?}` (core decision 147): a `manual_verdict` entry in the run log,
+    /// answered `{entry, hash}`. Either token; the agent's is recorded `relayed: true`.
+    pub async fn manual_verdict(&self, body: &serde_json::Value) -> Result<serde_json::Value> {
+        let url = format!("{}/manual-verdicts", self.base_url().await?);
+        self.send(self.client.post(url).json(body), self.status_timeout).await
+    }
+
     /// `POST /test-runs` with `{run, plan, suite?, studies}` — prepares a Test run and
     /// starts nothing (core decision 134): Core re-expands `run.json` from its
     /// definitions and refuses one it does not reproduce. `201 {run_id, run_hash,

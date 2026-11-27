@@ -230,7 +230,7 @@ fn image_sha256(status: Option<&embarch_core_client::StatusResponse>, chip: Opti
 
 fn now_stamp() -> String {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    crate::ledger::utc_stamp(secs)
+    crate::test_ledger::utc_stamp(secs)
 }
 
 fn append(path: &Path, line: &str) -> std::io::Result<()> {
