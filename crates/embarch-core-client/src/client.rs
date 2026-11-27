@@ -123,6 +123,14 @@ pub struct StatusResponse {
     /// is Core saying it has flashed nothing since it started.
     #[serde(default)]
     pub last_images: Option<Vec<FlashedImage>>,
+    /// Which Core this is: `"service"` or `"development"` (embarch-core
+    /// decision 129). `None` for a Core predating it: unknown, not `service`.
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// The fingerprint of the key Core seals attestations with (decision 129).
+    /// `None` for a Core predating it.
+    #[serde(default)]
+    pub keyid: Option<String>,
 }
 
 /// Environment variable `dispatch` reads on every request for a lease token
@@ -4231,6 +4239,15 @@ impl CoreClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn status_parses_cores_mode_and_keyid_and_a_body_with_neither() {
+        let new: StatusResponse = serde_json::from_str(r#"{"status":"ok","probes":[],"mode":"development","keyid":"abc123"}"#).unwrap();
+        assert_eq!(new.mode.as_deref(), Some("development"));
+        assert_eq!(new.keyid.as_deref(), Some("abc123"));
+        let old: StatusResponse = serde_json::from_str(r#"{"status":"ok","probes":[]}"#).unwrap();
+        assert!(old.mode.is_none() && old.keyid.is_none());
+    }
+
     #[test]
     fn new_is_the_agents_client_and_a_person_client_uses_the_person_token() {
         let cfg: CoreConfig = serde_json::from_value(serde_json::json!({
