@@ -15,6 +15,7 @@
 
 use anyhow::{bail, Context, Result};
 use crate::config::Config;
+use embarch_core_client::desk_discovery;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -29,38 +30,8 @@ pub const DESK: &str = "desk";
 /// service (embarch-desk `client::SESSION_HEADER`, `client::CWD_HEADER`).
 const SESSION_HEADER: &str = "x-embarch-session";
 const CWD_HEADER: &str = "x-embarch-cwd";
-const DESK_DEFAULT_PORT: u16 = 4891;
 const DESK_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 const DESK_READ_TIMEOUT: Duration = Duration::from_secs(2);
-
-fn home() -> Result<PathBuf> {
-    Ok(PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?))
-}
-
-/// The desk service's directory under an XDG base, as embarch-desk's
-/// `paths.rs` finds it.
-fn desk_dir(own: &str, xdg: &str, fallback: &[&str]) -> Result<PathBuf> {
-    if let Some(d) = std::env::var_os(own) {
-        return Ok(PathBuf::from(d));
-    }
-    let base = match std::env::var_os(xdg).filter(|s| !s.is_empty()) {
-        Some(x) => PathBuf::from(x),
-        None => fallback.iter().try_fold(home()?, |p, part| Ok::<_, anyhow::Error>(p.join(part)))?,
-    };
-    Ok(base.join("embarch-desk"))
-}
-
-fn data_dir() -> Result<PathBuf> {
-    desk_dir("EMBARCH_DESK_DATA_DIR", "XDG_DATA_HOME", &[".local", "share"])
-}
-
-fn config_dir() -> Result<PathBuf> {
-    desk_dir("EMBARCH_DESK_CONFIG_DIR", "XDG_CONFIG_HOME", &[".config"])
-}
-
-fn desk_port() -> u16 {
-    std::env::var("EMBARCH_DESK_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(DESK_DEFAULT_PORT)
-}
 
 /// The session this process serves, if any, and the folder it runs in.
 fn caller() -> (Option<String>, PathBuf) {
@@ -73,12 +44,12 @@ fn caller() -> (Option<String>, PathBuf) {
 /// one local request, and no client library that refuses to block inside
 /// the MCP server's runtime.
 fn ask_desk(sid: &str, cwd: &Path) -> Option<Value> {
-    let token = std::fs::read_to_string(config_dir().ok()?.join("desk-token")).ok()?;
+    let token = std::fs::read_to_string(desk_discovery::token_path().ok()?).ok()?;
     let cwd = cwd.to_str().filter(|c| !c.chars().any(char::is_control)).unwrap_or("");
     if sid.chars().any(|c| c.is_control()) {
         return None;
     }
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], desk_port()));
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], desk_discovery::port()));
     let mut s = std::net::TcpStream::connect_timeout(&addr, DESK_CONNECT_TIMEOUT).ok()?;
     s.set_read_timeout(Some(DESK_READ_TIMEOUT)).ok()?;
     s.set_write_timeout(Some(DESK_READ_TIMEOUT)).ok()?;
@@ -139,7 +110,7 @@ fn session_desk() -> Result<(String, Vec<PathBuf>)> {
     if let Some(answer) = sid.as_deref().and_then(|s| ask_desk(s, &cwd)).as_ref().and_then(from_service) {
         return answer;
     }
-    let path = data_dir()?.join("desks.json");
+    let path = desk_discovery::data_dir()?.join("desks.json");
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("the desk service is not answering and no desks are published at {} — is embarch-desk installed?", path.display()))?;
     let v: Value = serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
